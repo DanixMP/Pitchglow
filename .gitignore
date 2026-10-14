@@ -2,3 +2,5 @@ node_modules/
 dist/
 *.log
 .vite/
+# Reference video (third-party content): kept locally, never committed
+Goal.mp4

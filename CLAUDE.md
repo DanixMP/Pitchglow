@@ -4,7 +4,7 @@
 
 A web app that records your voice and shows it as a glowing **pitch line moving across piano-key lanes**. It then **auto-tunes** the recording so it snaps to the notes of a scale you pick.
 
-The visual and UX reference is **`Goal.mp4`** (vertical video, 1:45) in the project root. When unsure how something should look or behave, match the video.
+The visual and UX reference is **`Goal.mp4`** (vertical video, 1:45) in the project root. When unsure how something should look or behave, match the video. The video is third-party content: it lives only in the local project folder (gitignored, removed from the git history before the first push), so this description is the spec of record.
 
 ### What Goal.mp4 shows (the spec)
 
