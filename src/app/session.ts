@@ -9,6 +9,11 @@
 //   (they are loaded into store.tuning/cleanup and written back to the track on change).
 
 import { AudioInput } from '../audio/audio-input';
+import { outputLatency, sharedContext } from '../audio/context';
+import { scheduleClicks } from '../audio/metronome';
+import { alignTake, countInTimes, detectClickLatency } from '../audio/sync';
+import { downmix } from '../dsp/analyze';
+import type { Scale } from '../dsp/scales';
 import { MixPlayer, type MixTrackSpec } from '../audio/mix-player';
 import { renderMix } from '../audio/mixdown';
 import { PitchTracker, type PitchFrame } from '../audio/pitch-tracker';
@@ -17,25 +22,37 @@ import { TunedRenderer } from '../audio/tuned-renderer';
 import { wavBlob, wavBlobChannels } from '../audio/wav';
 import {
   addTrack,
+  applyKey,
+  createInstrumentalTrack,
   createProject,
   createVocalTrack,
   duplicateProject as duplicateProjectModel,
   effectiveGain,
+  instrumentalOf,
+  newId,
   nextProjectName,
   removeTrack as removeTrackModel,
+  titleFromFileName,
   updateTrack as updateTrackModel,
+  withInstrumental,
   withoutTake,
   type Project,
   type Track,
 } from '../project/model';
 import { packFrames, unpackFrames } from '../storage/pitch-track';
-import { RecordingStore, type RecordingMeta } from '../storage/recording-store';
+import { RecordingStore, type Asset, type RecordingMeta } from '../storage/recording-store';
 import type { CleanupPrefs, TuningPrefs } from '../storage/settings';
 import type { PianoRoll } from '../ui/piano-roll';
 import { processedLabelOf, processSettingsOf, tuneSettingsOf, wantsProcessed } from './processing';
 import { openProject, type AppStore, type RenderState } from './state';
 
 const MIN_RECORDING_SECONDS = 0.3;
+/** Imported instrumentals: limits that keep memory sane on phones. */
+const MAX_IMPORT_BYTES = 80 * 1024 * 1024;
+const MAX_IMPORT_SECONDS = 15 * 60;
+const IMPORT_EXTENSIONS = /\.(mp3|wav|wave|m4a|aac|mp4|ogg|oga|opus|flac|webm)$/i;
+/** Count-in tempo when the song has no detected BPM. */
+const DEFAULT_BPM = 100;
 const PREVIEW_CHANNEL = 'preview';
 const SAVE_DELAY_MS = 400;
 
@@ -53,13 +70,19 @@ interface Rendered {
 
 export class Session {
   readonly player = new MixPlayer();
-  private readonly input = new AudioInput((block) => this.onBlock(block));
+  private readonly input = new AudioInput((block, time) => this.onBlock(block, time));
   private readonly renderer = new TunedRenderer();
   private db: RecordingStore | null = null;
 
   private sampleRate = 0;
   private tracker: PitchTracker | null = null;
-  private take: { audio: SampleBuffer; frames: PitchFrame[] } | null = null;
+  private take: { audio: SampleBuffer; frames: PitchFrame[]; firstTime: number | null } | null = null;
+  /** Recording over the song: when/where playback started, for aligning the take afterwards. */
+  private sync: { playStart: number; songPosition: number; latency: number } | null = null;
+  /** Calibration listens to raw blocks instead of the tracker. */
+  private blockSink: ((block: Float32Array, time: number) => void) | null = null;
+  /** Decoded instrumentals by asset id. */
+  private assets = new Map<string, AudioBuffer>();
 
   /** Take preview (no song open). */
   private preview: (LoadedTake & Rendered) | null = null;
@@ -108,20 +131,71 @@ export class Session {
       this.sampleRate = await this.input.start(source, { noiseSuppression: micFilter });
     }
     this.tracker = new PitchTracker(this.sampleRate, (f) => this.onFrame(f));
-    this.take = record ? { audio: new SampleBuffer(), frames: [] } : null;
+    this.take = record ? { audio: new SampleBuffer(), frames: [], firstTime: null } : null;
     this.roll.start();
     this.store.set({ mode: record ? 'recording' : 'listening', recordingSeconds: 0, status: '' });
+    const song = openProject(this.store.get());
+    if (record && song && this.songIsAudible(song)) await this.playAlong(song);
+  }
+
+  /** Whether recording into this song should play it back (something audible to sing along to). */
+  private songIsAudible(song: Project): boolean {
+    return this.player.duration > 0 && song.tracks.some((t) => effectiveGain(t, song.tracks) > 0);
+  }
+
+  /**
+   * Plays the song (optionally after a one-bar count-in) while the take records, and remembers the
+   * timing so the take can be placed exactly where it was sung (see sync.ts).
+   */
+  private async playAlong(song: Project): Promise<void> {
+    const ctx = this.player.context;
+    const { input } = this.store.get();
+    const end = this.player.duration;
+    const position = this.player.currentTime >= end - 0.05 ? 0 : this.player.currentTime;
+    this.player.seek(position);
+    let startAt = ctx.currentTime + 0.12;
+    if (input.countIn) {
+      const count = countInTimes(startAt, song.bpm ?? DEFAULT_BPM);
+      scheduleClicks(ctx, count.clicks);
+      startAt = count.end;
+    }
+    const liveStart = ctx.currentTime;
+    const playStart = await this.player.play(startAt);
+    const latency = input.calibratedMs !== null ? input.calibratedMs / 1000 : outputLatency(ctx) + this.input.inputLatency;
+    this.sync = { playStart, songPosition: position, latency };
+    // Other tracks as ghosts on the live roll, lined up with what you hear.
+    const toLive = position - (playStart - liveStart) - outputLatency(ctx);
+    this.roll.setGhosts(
+      song.tracks
+        .filter((t) => t.kind === 'vocal' && t.takeId && this.takes.has(t.takeId))
+        .map((t) => ({ frames: this.takes.get(t.takeId!)!.frames.map((f) => ({ ...f, time: f.time + t.offset - toLive })), hue: t.hue })),
+    );
   }
 
   async stopLive(): Promise<void> {
     const finished = this.take;
+    const sync = this.sync;
     this.take = null;
+    this.sync = null;
     this.tracker = null;
+    if (sync) this.player.pause();
     await this.input.stop();
     this.roll.stop();
     this.store.set({ mode: this.store.get().projectId ? 'playback' : 'idle' });
-    if (finished) await this.saveTake(finished);
-    else if (this.store.get().projectId) this.refreshSongView();
+    if (finished) {
+      const offset =
+        sync && finished.firstTime !== null
+          ? alignTake({
+              playStart: sync.playStart,
+              songPosition: sync.songPosition,
+              firstSampleTime: finished.firstTime,
+              outputLatency: sync.latency,
+              inputLatency: 0,
+              nudge: this.store.get().input.nudgeMs / 1000,
+            })
+          : 0;
+      await this.saveTake(finished, offset);
+    } else if (this.store.get().projectId) this.refreshSongView();
   }
 
   get isLive(): boolean {
@@ -129,8 +203,12 @@ export class Session {
     return mode === 'listening' || mode === 'recording';
   }
 
-  private onBlock(block: Float32Array): void {
-    this.take?.audio.push(block);
+  private onBlock(block: Float32Array, time: number): void {
+    if (this.blockSink) return this.blockSink(block, time);
+    if (this.take) {
+      if (this.take.firstTime === null) this.take.firstTime = time;
+      this.take.audio.push(block);
+    }
     this.tracker?.push(block);
   }
 
@@ -144,7 +222,7 @@ export class Session {
     return this.take && this.sampleRate ? this.take.audio.length / this.sampleRate : 0;
   }
 
-  private async saveTake(t: { audio: SampleBuffer; frames: PitchFrame[] }): Promise<void> {
+  private async saveTake(t: { audio: SampleBuffer; frames: PitchFrame[] }, offset = 0): Promise<void> {
     const samples = t.audio.toFloat32();
     const duration = samples.length / this.sampleRate;
     if (duration < MIN_RECORDING_SECONDS) {
@@ -168,7 +246,7 @@ export class Session {
       // Recording inside a song: the take becomes a new vocal track, with the settings it was sung with.
       this.takes.set(meta.id, loaded);
       const { tuning, cleanup } = this.store.get();
-      this.addTrackFromTake(meta, tuning, cleanup);
+      this.addTrackFromTake(meta, tuning, cleanup, offset);
     } else {
       this.showPreview(loaded, false);
     }
@@ -327,12 +405,16 @@ export class Session {
     this.closePreview();
     const project = this.store.get().projects.find((p) => p.id === id);
     if (!project) throw new Error('Song not found');
-    for (const t of project.tracks) if (t.takeId) await this.loadTake(t.takeId);
+    for (const t of project.tracks) {
+      if (t.takeId) await this.loadTake(t.takeId);
+      if (t.assetId) await this.loadAsset(t.assetId).catch((err) => this.store.set({ status: describeError(err) }));
+    }
 
     const { tuning, cleanup } = this.store.get();
     this.stash = { tuning, cleanup };
     const first = project.tracks.find((t) => t.kind === 'vocal') ?? null;
-    this.store.set({ projectId: id, selectedTrackId: null, mode: 'playback', trackRender: {} });
+    this.store.set({ projectId: id, selectedTrackId: null, mode: 'playback', trackRender: {}, detection: null });
+    this.roll.setScaleHint(project.key ?? null);
     this.player.unload();
     this.selectTrack(first?.id ?? null);
     this.rebuildMix();
@@ -356,6 +438,7 @@ export class Session {
     this.trackAudio.clear();
     this.player.unload();
     this.roll.clear();
+    this.roll.setScaleHint(null);
     const stash = this.stash;
     this.stash = null;
     this.store.set({
@@ -364,6 +447,7 @@ export class Session {
       trackRender: {},
       duration: 0,
       mode: 'idle',
+      detection: null,
       ...(stash ? { tuning: stash.tuning, cleanup: { ...stash.cleanup, micFilter: this.store.get().cleanup.micFilter } } : {}),
     });
   }
@@ -402,10 +486,10 @@ export class Session {
     });
   }
 
-  private addTrackFromTake(meta: RecordingMeta, tuning: TuningPrefs, cleanup: CleanupPrefs): void {
+  private addTrackFromTake(meta: RecordingMeta, tuning: TuningPrefs, cleanup: CleanupPrefs, offset = 0): void {
     const project = openProject(this.store.get());
     if (!project) return;
-    const track = createVocalTrack(meta, tuning, cleanup, project.tracks);
+    const track = { ...createVocalTrack(meta, tuning, cleanup, project.tracks.filter((t) => t.kind === 'vocal')), offset };
     this.mutateProject(project.id, (p) => addTrack(p, track));
     this.selectTrack(track.id);
     this.rebuildMix();
@@ -415,11 +499,13 @@ export class Session {
   removeTrack(trackId: string): void {
     const project = openProject(this.store.get());
     if (!project) return;
+    const removed = project.tracks.find((t) => t.id === trackId);
+    if (removed?.assetId) void this.releaseAsset(removed.assetId, project.id);
     this.cancelRender(trackId);
     this.trackAudio.delete(trackId);
     this.mutateProject(project.id, (p) => removeTrackModel(p, trackId));
     if (this.store.get().selectedTrackId === trackId) {
-      const next = openProject(this.store.get())?.tracks[0]?.id ?? null;
+      const next = openProject(this.store.get())?.tracks.find((t) => t.kind === 'vocal')?.id ?? null;
       this.selectTrack(next);
     }
     this.rebuildMix();
@@ -429,7 +515,8 @@ export class Session {
   selectTrack(trackId: string | null): void {
     const state = this.store.get();
     const project = openProject(state);
-    const track = project?.tracks.find((t) => t.id === trackId) ?? null;
+    // Instrumentals have no auto-tune/clean-up: they can't take over the inspector.
+    const track = project?.tracks.find((t) => t.id === trackId && t.kind === 'vocal') ?? null;
     const base = this.stash ?? { tuning: state.tuning, cleanup: state.cleanup };
     this.store.set({
       selectedTrackId: track?.id ?? null,
@@ -494,6 +581,140 @@ export class Session {
     const selected = project.tracks.find((t) => t.id === state.selectedTrackId);
     this.roll.setGhosts(project.tracks.filter((t) => t !== selected && t.kind === 'vocal').map((t) => ({ frames: shifted(t), hue: t.hue })));
     this.roll.showRecording(selected ? shifted(selected) : [], this.player.duration, this.player.currentTime);
+  }
+
+  // --- instrumentals --------------------------------------------------------------------------
+
+  /**
+   * Imports an audio file as the song's instrumental. With no song open (or `newSong`), a new song
+   * named after the file is created. The original file is stored; key and tempo are detected in the
+   * background and offered via `state.detection`.
+   */
+  importInstrumental(file: File, newSong = false): void {
+    this.run(async () => {
+      if (file.size > MAX_IMPORT_BYTES) throw new Error(`“${file.name}” is larger than ${MAX_IMPORT_BYTES / 1024 / 1024} MB.`);
+      if (!file.type.startsWith('audio/') && !file.type.startsWith('video/') && !IMPORT_EXTENSIONS.test(file.name)) {
+        throw new Error(`“${file.name}” doesn’t look like an audio file.`);
+      }
+      if (this.isLive) await this.stopLive();
+      this.store.set({ importing: true, status: '' });
+      try {
+        const data = await file.arrayBuffer();
+        let buffer: AudioBuffer;
+        try {
+          buffer = await this.player.decode(data);
+        } catch {
+          throw new Error(`This browser can’t decode “${file.name}”. Try MP3 or WAV.`);
+        }
+        if (buffer.duration > MAX_IMPORT_SECONDS) throw new Error(`“${file.name}” is longer than ${MAX_IMPORT_SECONDS / 60} minutes.`);
+        const asset: Asset = { id: newId(), name: titleFromFileName(file.name), type: file.type, createdAt: Date.now(), data };
+        const db = await this.getDb();
+        await db.putAsset(asset);
+        this.assets.set(asset.id, buffer);
+
+        if (newSong || !this.store.get().projectId) {
+          const project = { ...createProject(asset.name) };
+          await db.putProjects([project]);
+          this.store.set((s) => ({ projects: [project, ...s.projects] }));
+          await this.openProjectNow(project.id);
+        }
+        const project = openProject(this.store.get())!;
+        const previous = instrumentalOf(project);
+        this.mutateProject(project.id, (p) => withInstrumental(p, createInstrumentalTrack(asset)));
+        if (previous?.assetId) await this.releaseAsset(previous.assetId, project.id, previous.id);
+        this.rebuildMix();
+        this.player.seek(0);
+
+        // Key + tempo, in the worker. The tempo is kept (count-in); the key is offered to the user.
+        const channels = Array.from({ length: buffer.numberOfChannels }, (_, c) => buffer.getChannelData(c));
+        const analysis = await this.renderer.analyze(downmix(channels), buffer.sampleRate);
+        const bpm = analysis.tempo && analysis.tempo.confidence > 1.3 ? Math.round(analysis.tempo.bpm) : null;
+        const key = analysis.key && analysis.key.confidence > 0.5 ? analysis.key.scale : null;
+        if (bpm) this.mutateProject(project.id, (p) => ({ ...p, bpm, updatedAt: Date.now() }));
+        if (this.store.get().projectId === project.id) this.store.set({ detection: { projectId: project.id, key, bpm } });
+      } finally {
+        this.store.set({ importing: false });
+      }
+    });
+  }
+
+  /** Accept the detected key: every vocal track (and new tracks) auto-tunes in it. */
+  applyDetectedKey(): void {
+    const { detection, projectId } = this.store.get();
+    if (!detection?.key || detection.projectId !== projectId) return;
+    this.setSongKey(detection.key);
+    this.store.set({ detection: null });
+  }
+
+  dismissDetection(): void {
+    this.store.set({ detection: null });
+  }
+
+  setSongKey(key: Scale): void {
+    const project = openProject(this.store.get());
+    if (!project) return;
+    this.mutateProject(project.id, (p) => applyKey(p, key));
+    if (this.stash) this.stash = { ...this.stash, tuning: { ...this.stash.tuning, enabled: true, root: key.root, type: key.type } };
+    this.roll.setScaleHint(key);
+    this.selectTrack(this.store.get().selectedTrackId); // reload the inspector with the new key
+    for (const t of openProject(this.store.get())!.tracks) this.scheduleTrackRender(t.id);
+  }
+
+  private async loadAsset(id: string): Promise<AudioBuffer> {
+    const cached = this.assets.get(id);
+    if (cached) return cached;
+    const asset = await (await this.getDb()).getAsset(id);
+    if (!asset) throw new Error('The instrumental file is missing.');
+    const buffer = await this.player.decode(asset.data);
+    this.assets.set(id, buffer);
+    return buffer;
+  }
+
+  /** Deletes an imported file once no song uses it any more. */
+  private async releaseAsset(assetId: string, exceptProjectId: string, exceptTrackId?: string): Promise<void> {
+    const usedElsewhere = this.store
+      .get()
+      .projects.some((p) => p.tracks.some((t) => t.assetId === assetId && !(p.id === exceptProjectId && (exceptTrackId === undefined || t.id === exceptTrackId))));
+    if (usedElsewhere) return;
+    this.assets.delete(assetId);
+    await (await this.getDb()).deleteAsset(assetId);
+  }
+
+  // --- latency calibration ----------------------------------------------------------------------
+
+  /**
+   * Loopback calibration: plays clicks through the speakers and listens with the mic, measuring the
+   * true round trip. Needs speakers (not headphones). Stores the result in the input prefs.
+   */
+  calibrateLatency(): void {
+    this.run(async () => {
+      if (this.isLive) await this.stopLive();
+      this.player.pause();
+      this.store.set({ calibrating: true, status: '' });
+      const blocks: { samples: Float32Array; time: number }[] = [];
+      try {
+        this.blockSink = (samples, time) => blocks.push({ samples, time });
+        await this.input.start('mic', { noiseSuppression: false });
+        const ctx = sharedContext();
+        const first = ctx.currentTime + 0.6;
+        const clicks = Array.from({ length: 6 }, (_, i) => first + i * 0.45);
+        scheduleClicks(ctx, clicks, { level: 0.9, accentFirst: false });
+        await new Promise((r) => setTimeout(r, (clicks[clicks.length - 1] - ctx.currentTime + 0.7) * 1000));
+        await this.input.stop();
+        if (!blocks.length) throw new Error('No sound came in from the microphone.');
+        const all = new SampleBuffer();
+        for (const b of blocks) all.push(b.samples);
+        const latency = detectClickLatency(all.toFloat32(), blocks[0].time, ctx.sampleRate, clicks);
+        if (latency === null) {
+          this.store.set({ status: 'Couldn’t hear the clicks. Use speakers (not headphones), turn the volume up, and try again.' });
+        } else {
+          this.store.set((s) => ({ input: { ...s.input, calibratedMs: Math.round(latency * 1000) } }));
+        }
+      } finally {
+        this.blockSink = null;
+        this.store.set({ calibrating: false });
+      }
+    });
   }
 
   // --- playback -------------------------------------------------------------------------------
@@ -601,7 +822,7 @@ export class Session {
 
   private scheduleTrackRender(trackId: string, delay = 120): void {
     const project = openProject(this.store.get());
-    const track = project?.tracks.find((t) => t.id === trackId);
+    const track = project?.tracks.find((t) => t.id === trackId && t.kind === 'vocal');
     const take = track?.takeId ? this.takes.get(track.takeId) : undefined;
     if (!project || !track || !take) return;
     const settings = processSettingsOf(track.tuning, { ...track.cleanup, micFilter: false });
@@ -644,6 +865,13 @@ export class Session {
     const listen = this.store.get().listenProcessed;
     const specs: MixTrackSpec[] = [];
     for (const t of project.tracks) {
+      if (t.kind === 'instrumental') {
+        const buffer = t.assetId ? this.assets.get(t.assetId) : undefined;
+        if (buffer) {
+          specs.push({ id: t.id, samples: EMPTY, sampleRate: buffer.sampleRate, buffer, gain: effectiveGain(t, project.tracks), offset: t.offset });
+        }
+        continue;
+      }
       const take = t.takeId ? this.takes.get(t.takeId) : undefined;
       if (!take) continue;
       const audio = this.trackAudio.get(t.id);
@@ -683,6 +911,9 @@ export class Session {
     this.renderer.cancel(channel);
   }
 }
+
+/** Placeholder `samples` for buffer-backed (instrumental) mix specs. */
+const EMPTY = new Float32Array(0);
 
 function nextRecordingName(recordings: readonly RecordingMeta[]): string {
   const used = recordings.map((r) => /^Recording (\d+)$/.exec(r.name)?.[1]).filter(Boolean).map(Number);

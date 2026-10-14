@@ -7,7 +7,8 @@ export async function renderMix(
   specs: readonly MixTrackSpec[],
   sampleRate: number,
 ): Promise<{ channels: Float32Array[]; sampleRate: number }> {
-  const duration = specs.reduce((m, s) => Math.max(m, s.offset + s.samples.length / s.sampleRate), 0);
+  const lengthOf = (s: MixTrackSpec) => (s.buffer ? s.buffer.duration : s.samples.length / s.sampleRate);
+  const duration = specs.reduce((m, s) => Math.max(m, s.offset + lengthOf(s)), 0);
   const length = Math.max(1, Math.ceil(duration * sampleRate));
   const ctx = new OfflineAudioContext({ numberOfChannels: 2, length, sampleRate });
 
@@ -16,13 +17,17 @@ export async function renderMix(
   limiter.connect(ctx.destination);
 
   for (const spec of specs) {
-    if (spec.gain === 0 || spec.samples.length === 0) continue;
-    const buffer = ctx.createBuffer(1, spec.samples.length, spec.sampleRate);
-    buffer.copyToChannel(spec.samples as Float32Array<ArrayBuffer>, 0);
+    if (spec.gain === 0 || lengthOf(spec) === 0) continue;
+    let buffer = spec.buffer;
+    if (!buffer) {
+      buffer = ctx.createBuffer(1, spec.samples.length, spec.sampleRate);
+      buffer.copyToChannel(spec.samples as Float32Array<ArrayBuffer>, 0);
+    }
     const source = new AudioBufferSourceNode(ctx, { buffer });
     const gain = new GainNode(ctx, { gain: spec.gain });
     source.connect(gain).connect(limiter);
-    source.start(spec.offset);
+    // A negative offset (take started before the song, e.g. a count-in) skips the take's head.
+    source.start(Math.max(0, spec.offset), Math.max(0, -spec.offset));
   }
   const rendered = await ctx.startRendering();
   return { channels: [rendered.getChannelData(0), rendered.getChannelData(1)], sampleRate };

@@ -27,7 +27,7 @@ export function mountSongsPanel(store: AppStore, session: Session): void {
     dot.setAttribute('aria-hidden', 'true');
     for (const t of p.tracks.slice(0, 5)) {
       const d = document.createElement('i');
-      d.style.background = `hsl(${t.hue} 70% 62%)`;
+      d.style.background = t.hue < 0 ? '#8a8a90' : `hsl(${t.hue} 70% 62%)`;
       dot.append(d);
     }
     if (p.tracks.length === 0) dot.append(document.createElement('i'));

@@ -80,6 +80,43 @@ export function saveCleanup(prefs: CleanupPrefs): void {
   }
 }
 
+// --- input / sync ---------------------------------------------------------------------------
+
+export interface InputPrefs {
+  /** One bar of clicks before recording over a song. */
+  countIn: boolean;
+  /** Manual timing correction for takes recorded over a song, ms (+ = later). */
+  nudgeMs: number;
+  /** Measured round-trip latency from loopback calibration, ms (null = use the browser's estimate). */
+  calibratedMs: number | null;
+}
+
+export const DEFAULT_INPUT: InputPrefs = { countIn: true, nudgeMs: 0, calibratedMs: null };
+
+const INPUT_KEY = 'recorder.input';
+
+export function loadInput(): InputPrefs {
+  try {
+    const raw = JSON.parse(localStorage.getItem(INPUT_KEY) ?? 'null') as Partial<InputPrefs> | null;
+    if (!raw) return { ...DEFAULT_INPUT };
+    return {
+      countIn: typeof raw.countIn === 'boolean' ? raw.countIn : DEFAULT_INPUT.countIn,
+      nudgeMs: typeof raw.nudgeMs === 'number' && Math.abs(raw.nudgeMs) <= 300 ? raw.nudgeMs : 0,
+      calibratedMs: typeof raw.calibratedMs === 'number' && raw.calibratedMs >= 0 && raw.calibratedMs < 1000 ? raw.calibratedMs : null,
+    };
+  } catch {
+    return { ...DEFAULT_INPUT };
+  }
+}
+
+export function saveInput(prefs: InputPrefs): void {
+  try {
+    localStorage.setItem(INPUT_KEY, JSON.stringify(prefs));
+  } catch {
+    // Storage unavailable: settings just won't persist.
+  }
+}
+
 export function saveTuning(prefs: TuningPrefs): void {
   try {
     localStorage.setItem(KEY, JSON.stringify(prefs));

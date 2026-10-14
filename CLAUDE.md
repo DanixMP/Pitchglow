@@ -72,6 +72,21 @@ Look: a near-black background (#0f0f10-ish), muted dark lane fills whose hue cyc
   - Gain, mute and solo changes are live (`setGain`). A track's processed render arriving calls `setTracks` again, which keeps position and play state.
   - Each track renders on its own worker **channel** (latest-wins per track). The worker keeps an LRU of 8 cleaned takes.
   - Recording while a song is open adds the take as a new vocal track. The mix exports through `OfflineAudioContext` (`src/audio/mixdown.ts`) as a stereo WAV with a safety limiter; Phase 10 replaces this with the full master strip.
+- **Instrumentals (Phase 9):**
+  - "Import beat" (Songs header = new song; Tracks header = into this song) or drop an audio file anywhere. Limits: 80 MB, 15 min.
+  - The original bytes are stored in the `assets` store (`Asset { id, name, type, data: ArrayBuffer }`), and the file is decoded with `decodeAudioData` on the shared context when the song opens. The decoded stereo `AudioBuffer` goes straight into the mix (`MixTrackSpec.buffer`).
+  - An instrumental track (`kind: 'instrumental'`, `hue −1`) sits first, starts at −3 dB, has no auto-tune or clean-up, and can't take over the inspector. Replacing or removing it deletes the asset once no song uses it.
+- **Key/tempo detection** (`src/dsp/analyze.ts`, run in the worker):
+  - **Key:** a chroma of 55 Hz–2 kHz (4096-point FFT at ~11 kHz, per-frame normalized) correlated with the 24 Krumhansl–Kessler profiles. It's offered when r > 0.5.
+  - **Tempo:** a spectral-flux onset envelope (11.6 ms hops), autocorrelation over 60–200 BPM with a log-normal prior at 110 BPM, and parabolic refinement. It's kept when the peak/mean ratio is > 1.3.
+  - The BPM is stored on the song (used by the count-in). The key is offered in a banner, and `applyKey` switches every vocal track's auto-tune on in that key (the stashed defaults too). The roll's `setScaleHint` shows the key's lanes even with auto-tune off.
+- **Recording over the beat:**
+  - **One shared `AudioContext`** (`src/audio/context.ts`) is used for the mic and playback. The capture worklet stamps each 512-sample block with its context frame (`currentFrame`).
+  - Record in a song with audible tracks: an optional one-bar count-in (`scheduleClicks`), then `MixPlayer.play(at)`, which returns the exact start time.
+  - `alignTake` (`src/audio/sync.ts`): offset = songPos + (firstSampleTime − playStart) − latency + nudge. Latency = the calibrated round trip if set, else `outputLatency + baseLatency` + the mic's `getSettings().latency` (default 10 ms).
+  - Offsets can be negative (the count-in sits before the song); the player and mixdown skip the head.
+  - Verified in the app: a demo take recorded with a 96 BPM count-in landed at −2.699 s, against −2.69 s predicted.
+- **Latency calibration:** plays 6 clicks through the speakers and finds each onset in the mic signal (`detectClickLatency`, median). The result is stored as `input.calibratedMs`. Input prefs (`recorder.input` in localStorage): `countIn`, `nudgeMs` (±200), `calibratedMs`.
 - **Roll in a song:** the selected track is drawn normally (frames shifted by its offset), and the other vocal tracks are drawn as **ghost lines** in their track colour (`PianoRoll.setGhosts`).
 - **IndexedDB (`recorder`):**
   - Stores: `meta` + `data` (takes), `projects`, `assets` (Phase 9).
@@ -105,14 +120,18 @@ src/
     fft.ts                radix-2 complex FFT
     denoise.ts            STFT Wiener noise reduction (noise profile from quiet frames)
     process.ts            processing chain: denoise -> tune/harmony (+ denoise cache)
+    analyze.ts            key (chroma + Krumhansl) and tempo (onset autocorrelation) of instrumentals
     resample.ts           low-pass + decimate to the analysis rate
   audio/
-    capture-worklet.ts    AudioWorkletProcessor: forwards input blocks
+    context.ts            the shared AudioContext (mic + playback on one clock) + output latency
+    capture-worklet.ts    AudioWorkletProcessor: forwards input blocks stamped with their context frame
     audio-input.ts        mic / demo-tone sources -> worklet -> callback
     pitch-tracker.ts      ring buffer + hop scheduling -> PitchFrame stream
     sample-buffer.ts      collects PCM blocks during a take
     mix-player.ts         multi-track playback (per-track gain lanes, offsets, live gain, swap) + latency-compensated clock
     mixdown.ts            OfflineAudioContext stereo mixdown of the same track specs
+    sync.ts               take alignment math, click-loopback latency detection, count-in times
+    metronome.ts          scheduled click sounds
     render-worker.ts      Web Worker: processRecording off the main thread, caches the cleaned audio
     tuned-renderer.ts     main-thread client for the worker (per-channel latest-wins, returns notes)
     wav.ts                16-bit PCM WAV encoder (mono or interleaved multi-channel)
@@ -141,6 +160,7 @@ src/
       songs-panel.ts      songs list: new, open, rename, duplicate, delete
       takes-panel.ts      takes library + search, add-to-song
       tracks-panel.ts     track rows (keyed, updated in place): select, rename, M/S, fader, remove; drop zone
+      import-panel.ts     Import beat buttons, file drop overlay, key/BPM detection banner
       tuning-panel.ts     Auto-tune + Harmony sections
       cleanup-panel.ts    Noise reduction section
 public/                   manifest, icon.svg, icons/*.png (generated)
@@ -299,12 +319,13 @@ The user asked for pitch and reverb effects, a remix-studio style mixer, importi
 - [ ] Try it on real recordings (user): several takes in one song, solo/mute, per-track auto-tune
 
 ### Phase 9 — Instrumental import & singing over the beat
-- [ ] Import instrumental: file picker + drag & drop (mp3/wav/m4a/ogg/flac), size/length limits, store the original blob
-- [ ] Decode + resample to the project rate; stereo support throughout playback
-- [ ] Key + BPM detection; offer to set the project key (auto-tune scale) and tempo
-- [ ] Record a new vocal track while the project plays (headphones prompt, count-in option)
-- [ ] Latency compensation (measured + manual nudge + optional loopback calibration); unit-test the alignment math
-- [ ] Piano roll highlights the project key's scale lanes while recording over the beat
+- [x] Import an instrumental: file picker + drop anywhere (mp3/wav/m4a/ogg/flac/webm), 80 MB / 15 min limits, original bytes stored
+- [x] Decode on the shared context; stereo `AudioBuffer` played and mixed directly
+- [x] Key + BPM detection in the worker; banner offers the key for auto-tune (switches every vocal track to it); BPM kept for the count-in
+- [x] Record a new vocal track while the song plays (one-bar count-in option, headphones hint, ghosts lined up with what you hear)
+- [x] Latency compensation: one shared clock + timestamped blocks + browser latency estimate, manual Sync nudge, loopback calibration; alignment and detection unit-tested
+- [x] Piano roll shows the song key's lanes while recording (scale hint, even with auto-tune off)
+- [ ] Real-world check (user): record over a real beat with headphones; calibrate with speakers; tune the nudge if takes sit early/late
 
 ### Phase 10 — Mixer (remix studio)
 - [ ] Live Web Audio mix graph per project; play/pause/seek across all tracks in sync

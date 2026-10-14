@@ -3,9 +3,10 @@
 // older pending ones resolve to null; different channels don't affect each other.
 
 import type { PitchFrame } from './pitch-tracker';
+import type { AnalysisResult } from '../dsp/analyze';
 import type { ProcessSettings } from '../dsp/process';
 import { packFrames } from '../storage/pitch-track';
-import type { RenderRequest, RenderResponse } from './render-worker';
+import type { AnalyzeRequest, RenderRequest, RenderResponse } from './render-worker';
 import RenderWorker from './render-worker.ts?worker';
 
 export interface RenderOutput {
@@ -20,6 +21,18 @@ export class TunedRenderer {
     number,
     { channel: string; resolve: (out: RenderOutput | null) => void; reject: (err: Error) => void }
   >();
+  private analyses = new Map<number, { resolve: (r: AnalysisResult) => void; reject: (err: Error) => void }>();
+
+  /** Detects key and tempo of an instrumental (mono samples are transferred, not copied). */
+  analyze(samples: Float32Array, sampleRate: number): Promise<AnalysisResult> {
+    const worker = this.ensureWorker();
+    const id = this.nextId++;
+    return new Promise((resolve, reject) => {
+      this.analyses.set(id, { resolve, reject });
+      const req: AnalyzeRequest = { kind: 'analyze', id, samples, sampleRate };
+      worker.postMessage(req, [samples.buffer]);
+    });
+  }
 
   /** Renders the processed version. Resolves to null if a newer render was requested on the same channel. */
   render(
@@ -65,6 +78,13 @@ export class TunedRenderer {
     if (this.worker) return this.worker;
     const worker = new RenderWorker();
     worker.onmessage = (e: MessageEvent<RenderResponse>) => {
+      const a = this.analyses.get(e.data.id);
+      if (a) {
+        this.analyses.delete(e.data.id);
+        if (e.data.analysis) a.resolve(e.data.analysis);
+        else a.reject(new Error(e.data.error ?? 'Analysis failed'));
+        return;
+      }
       const p = this.pending.get(e.data.id);
       if (!p) return; // superseded
       this.pending.delete(e.data.id);

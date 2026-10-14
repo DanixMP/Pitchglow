@@ -3,11 +3,15 @@
 // position and play state. A single clock (with output-latency compensation) drives the visuals.
 
 import { scheduleTrack } from '../project/model';
+import { sharedContext } from './context';
 
 export interface MixTrackSpec {
   id: string;
+  /** Mono audio (vocal takes) … */
   samples: Float32Array;
   sampleRate: number;
+  /** … or a decoded (often stereo) buffer, used as-is (instrumentals). Takes precedence over samples. */
+  buffer?: AudioBuffer;
   /** Linear gain (mute/solo already applied). */
   gain: number;
   /** Start position in the song, seconds. */
@@ -46,6 +50,17 @@ export class MixPlayer {
     return this._duration;
   }
 
+  /** The shared context (created on first use). */
+  get context(): AudioContext {
+    return this.ensureContext();
+  }
+
+  /** Decodes an audio file (mp3/wav/m4a/ogg/flac…) at the context's sample rate. */
+  decode(data: ArrayBuffer): Promise<AudioBuffer> {
+    // decodeAudioData detaches its argument, so give it a copy and keep the caller's bytes intact.
+    return this.ensureContext().decodeAudioData(data.slice(0));
+  }
+
   /** Song position in seconds, compensated for output latency so visuals match what you hear. */
   get currentTime(): number {
     if (!this._playing || !this.ctx) return this.offset;
@@ -77,8 +92,9 @@ export class MixPlayer {
     const next = new Map<string, Lane>();
     for (const spec of specs) {
       const prev = this.lanes.get(spec.id);
-      const sameAudio = prev && prev.spec.samples === spec.samples && prev.spec.sampleRate === spec.sampleRate;
-      const buffer = sameAudio ? prev.buffer : makeBuffer(ctx, spec.samples, spec.sampleRate);
+      const sameAudio =
+        prev && prev.spec.buffer === spec.buffer && prev.spec.samples === spec.samples && prev.spec.sampleRate === spec.sampleRate;
+      const buffer = sameAudio ? prev.buffer : (spec.buffer ?? makeBuffer(ctx, spec.samples, spec.sampleRate));
       const gainNode = prev?.gainNode ?? new GainNode(ctx);
       if (!prev) gainNode.connect(this.master!);
       gainNode.gain.value = spec.gain;
@@ -117,12 +133,16 @@ export class MixPlayer {
 
   // --- transport ------------------------------------------------------------------------------
 
-  async play(): Promise<void> {
-    if (!this.ctx || this.lanes.size === 0 || this._playing) return;
+  /**
+   * Starts playback. `at` = context time to start (default: right away); returns the context time
+   * the current position starts playing, so callers can align recordings to it.
+   */
+  async play(at?: number): Promise<number> {
+    if (!this.ctx || this.lanes.size === 0 || this._playing) return this.startedAt;
     if (this.offset >= this._duration - 0.01) this.offset = 0;
     await this.ctx.resume();
-    if (this._playing) return;
-    const now = this.ctx.currentTime + START_LEAD;
+    if (this._playing) return this.startedAt;
+    const now = Math.max(at ?? 0, this.ctx.currentTime + START_LEAD);
     for (const lane of this.lanes.values()) {
       const s = scheduleTrack(this.offset, lane.spec.offset, lane.buffer.duration);
       if (!s) continue;
@@ -134,6 +154,7 @@ export class MixPlayer {
     this.startedAt = now;
     this._playing = true;
     this.armEndTimer();
+    return now;
   }
 
   pause(): void {
@@ -153,17 +174,20 @@ export class MixPlayer {
   // --- internals ------------------------------------------------------------------------------
 
   private ensureContext(): AudioContext {
-    if (!this.ctx) {
-      this.ctx = new AudioContext();
-      this.master = new GainNode(this.ctx);
-      this.master.connect(this.ctx.destination);
+    const ctx = sharedContext();
+    if (this.ctx !== ctx) {
+      this.ctx = ctx;
+      this.master = new GainNode(ctx);
+      this.master.connect(ctx.destination);
     }
-    return this.ctx;
+    return ctx;
   }
 
   private armEndTimer(): void {
     window.clearTimeout(this.endTimer);
-    const remaining = this._duration - this.currentTime;
+    // Until the end, plus any scheduled start delay (count-in) that hasn't happened yet.
+    const pending = this.ctx ? Math.max(0, this.startedAt - this.ctx.currentTime) : 0;
+    const remaining = this._duration - this.currentTime + pending;
     this.endTimer = window.setTimeout(() => {
       if (!this._playing) return;
       if (this.currentTime >= this._duration - 0.03) {

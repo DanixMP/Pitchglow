@@ -3,6 +3,7 @@
 // A project is a song: one optional instrumental (Phase 9) plus any number of vocal tracks. Each
 // vocal track points at a take in the library and carries its own mix and processing settings.
 
+import type { Scale } from '../dsp/scales';
 import { DEFAULT_TUNING, type CleanupPrefs, type TuningPrefs } from '../storage/settings';
 
 export type TrackKind = 'vocal' | 'instrumental';
@@ -42,6 +43,9 @@ export interface Project {
   /** Master transpose in semitones (Phase 11). */
   keyShift: number;
   masterGainDb: number;
+  /** Musical key (detected from the instrumental, or chosen); applied to new tracks' auto-tune. */
+  key?: Scale | null;
+  bpm?: number | null;
 }
 
 /** Track colours: spread around the wheel, starting with the app's accent-ish yellow. */
@@ -84,6 +88,56 @@ export function createVocalTrack(
     cleanup: { denoise: cleanup.denoise, denoiseDb: cleanup.denoiseDb },
     hue: TRACK_HUES[existing.length % TRACK_HUES.length],
   };
+}
+
+/** Neutral colour marker for instrumental tracks. */
+export const INSTRUMENTAL_HUE = -1;
+
+export function createInstrumentalTrack(asset: { id: string; name: string }, id = newId()): Track {
+  const { tuning, cleanup } = defaultTrackSettings();
+  return {
+    id,
+    kind: 'instrumental',
+    name: asset.name,
+    takeId: null,
+    assetId: asset.id,
+    gainDb: -3, // leave room for the vocal
+    pan: 0,
+    mute: false,
+    solo: false,
+    offset: 0,
+    pitch: 0,
+    tuning: { ...tuning, enabled: false },
+    cleanup,
+    hue: INSTRUMENTAL_HUE,
+  };
+}
+
+export function instrumentalOf(p: Project): Track | null {
+  return p.tracks.find((t) => t.kind === 'instrumental') ?? null;
+}
+
+/** Puts the instrumental first (replacing any previous one), keeping the vocals' order. */
+export function withInstrumental(p: Project, track: Track, now = Date.now()): Project {
+  return { ...p, updatedAt: now, tracks: [track, ...p.tracks.filter((t) => t.kind !== 'instrumental')] };
+}
+
+/** Sets the song key and switches every vocal track's auto-tune on, in that key. */
+export function applyKey(p: Project, key: Scale, now = Date.now()): Project {
+  return {
+    ...p,
+    key,
+    updatedAt: now,
+    tracks: p.tracks.map((t) =>
+      t.kind === 'vocal' ? { ...t, tuning: { ...t.tuning, enabled: true, root: key.root, type: key.type } } : t,
+    ),
+  };
+}
+
+/** Song title from an imported file name: "my_beat-final (1).mp3" -> "my beat-final (1)". */
+export function titleFromFileName(fileName: string): string {
+  const base = fileName.replace(/\.[a-z0-9]{2,5}$/i, '').replace(/_+/g, ' ').trim();
+  return base || 'Imported beat';
 }
 
 /** Defaults for a track created without explicit settings. */

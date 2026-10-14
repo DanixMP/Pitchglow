@@ -1313,3 +1313,87 @@ body {
     display: none;
   }
 }
+
+/* --- instrumentals, detection, sync (Phase 9) ------------------------------------------------- */
+
+.song-meta {
+  margin-left: 4px;
+  color: var(--fg);
+  letter-spacing: 0.06em;
+}
+
+.tracks-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.detection {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  margin: 0 0 8px;
+  padding: 8px 6px 8px 12px;
+  border-radius: 10px;
+  background: rgba(246, 196, 83, 0.1);
+  border: 1px solid rgba(246, 196, 83, 0.4);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.detection > span {
+  flex: 1;
+  min-width: 12ch;
+}
+
+.track.is-instrumental {
+  cursor: default;
+  background: #141418;
+}
+
+.track.is-instrumental .track-color {
+  width: 16px;
+  height: 16px;
+  margin-left: -3px;
+  color: var(--muted);
+}
+
+.track.is-instrumental .track-color svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+  display: block;
+}
+
+.calibrate {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+
+.file-drop {
+  position: fixed;
+  inset: 12px;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  border: 2px dashed var(--accent);
+  border-radius: 20px;
+  background: rgba(15, 15, 16, 0.86);
+  backdrop-filter: blur(4px);
+  pointer-events: none;
+}
+
+.file-drop p {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--accent);
+}
+
+@media (max-width: 759px) {
+  .tracks-actions .btn span {
+    display: none;
+  }
+}

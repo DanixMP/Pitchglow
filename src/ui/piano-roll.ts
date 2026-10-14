@@ -7,7 +7,7 @@ import type { PitchFrame } from '../audio/pitch-tracker';
 import { PitchCorrector, correctTrack, type Correction, type TuneSettings } from '../dsp/autotune';
 import { isBlackKey, octaveOf, pitchClass, pitchClassName } from '../dsp/notes';
 import { harmonyNote } from '../dsp/harmony';
-import { scaleMask, scaleName } from '../dsp/scales';
+import { scaleMask, scaleName, type Scale } from '../dsp/scales';
 import { laneFill, litColor, theme } from './colors';
 
 export interface PianoRollOptions {
@@ -53,6 +53,8 @@ export class PianoRoll {
 
   private tuning: TuneSettings | null = null;
   private ghosts: { frames: readonly PitchFrame[]; hue: number }[] = [];
+  /** The song's key: shown as the lanes when auto-tune is off (so you see the key while singing). */
+  private scaleHint: Scale | null = null;
   private corrector: PitchCorrector | null = null;
   private mask = ALL_NOTES;
 
@@ -144,9 +146,19 @@ export class PianoRoll {
   /** Turns auto-tune display on (with these settings) or off (null). Re-corrects what is shown. */
   setTuning(settings: TuneSettings | null): void {
     this.tuning = settings;
-    this.mask = settings ? scaleMask(settings.scale) : ALL_NOTES;
+    this.updateMask();
     this.corrector = settings ? new PitchCorrector(settings) : null;
     this.retune();
+  }
+
+  setScaleHint(scale: Scale | null): void {
+    this.scaleHint = scale;
+    this.updateMask();
+  }
+
+  private updateMask(): void {
+    const scale = this.tuning?.scale ?? this.scaleHint;
+    this.mask = scale ? scaleMask(scale) : ALL_NOTES;
   }
 
   setTime(time: number): void {
@@ -539,7 +551,8 @@ export class PianoRoll {
   private drawKeyboard(L: Layout): void {
     const { ctx } = this;
     const radius = Math.min(4, L.laneH / 4);
-    const labelAll = this.tuning !== null && this.tuning.scale.type !== 'chromatic';
+    const shownScale = this.tuning?.scale ?? this.scaleHint;
+    const labelAll = !!shownScale && shownScale.type !== 'chromatic';
     const fontSize = Math.min(11, L.laneH * 0.62);
     const showLabels = L.laneH >= 9;
 

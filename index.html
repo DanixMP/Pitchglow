@@ -22,6 +22,10 @@
           <div class="col-head">
             <h2 id="songs-title" class="col-title">Songs <span id="songs-count" class="col-count"></span></h2>
             <div class="col-head-actions">
+              <button id="song-import" class="btn btn-small btn-ghost" type="button" title="Import an instrumental (MP3, WAV, M4A, OGG, FLAC) as a new song">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3z"/></svg>
+                <span>Import beat</span>
+              </button>
               <button id="song-new" class="btn btn-small" type="button">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></svg>
                 <span>New song</span>
@@ -88,11 +92,24 @@
 
         <section id="tracks" class="tracks" aria-label="Tracks" hidden>
           <div class="tracks-head">
-            <span class="field-label">Tracks</span>
-            <button id="song-close" class="btn btn-small btn-ghost" type="button">Close song</button>
+            <span class="field-label">Tracks <span id="song-meta" class="song-meta"></span></span>
+            <div class="tracks-actions">
+              <button id="track-import" class="btn btn-small btn-ghost" type="button" title="Import an instrumental into this song">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3z"/></svg>
+                <span>Import beat</span>
+              </button>
+              <button id="song-close" class="btn btn-small btn-ghost" type="button">Close song</button>
+            </div>
+          </div>
+          <div id="detection" class="detection" role="status" hidden>
+            <span id="detection-text"></span>
+            <button id="detection-apply" class="btn btn-small" type="button">Use for auto-tune</button>
+            <button id="detection-dismiss" class="icon-btn" type="button" aria-label="Dismiss">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19l5.6-5.6 5.6 5.6 1.4-1.4-5.6-5.6L19 6.4 17.6 5 12 10.6z"/></svg>
+            </button>
           </div>
           <ul id="track-list" class="track-list"></ul>
-          <p id="tracks-empty" class="tracks-empty">Drop a take here, or press <b>+</b> on a take, or just Record.</p>
+          <p id="tracks-empty" class="tracks-empty">Drop a take or a beat here, press <b>+</b> on a take, or just Record.</p>
         </section>
 
         <section class="readout" aria-live="polite">
@@ -128,6 +145,21 @@
               <span class="switch-track" aria-hidden="true"></span>
               <span class="switch-label">Mic noise filter <span class="switch-hint">live, browser</span></span>
             </label>
+            <label class="switch switch-quiet">
+              <input id="count-in" type="checkbox" role="switch" />
+              <span class="switch-track" aria-hidden="true"></span>
+              <span class="switch-label">Count-in <span class="switch-hint">one bar of clicks before recording over a song</span></span>
+            </label>
+            <label class="slider-field">
+              <span class="field-label">Sync</span>
+              <input id="sync-nudge" type="range" min="-200" max="200" step="5" value="0" aria-label="Sync nudge for takes recorded over a song" />
+              <span id="sync-nudge-value" class="slider-value">0 ms</span>
+            </label>
+            <div class="calibrate">
+              <button id="calibrate" class="btn btn-small" type="button">Calibrate latency</button>
+              <span id="calibrate-result" class="switch-hint"></span>
+              <button id="calibrate-reset" class="btn btn-small btn-ghost" type="button" hidden>Reset</button>
+            </div>
           </div>
         </details>
 
@@ -201,6 +233,8 @@
       </nav>
       <div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
     </div>
+    <input id="beat-file" type="file" accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg,.oga,.opus,.flac,.webm" hidden />
+    <div id="file-drop" class="file-drop" hidden><p>Drop the beat to import it</p></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

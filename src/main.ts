@@ -5,11 +5,12 @@ import { processSettingsOf, wantsProcessed } from './app/processing';
 import { Session } from './app/session';
 import { createAppStore } from './app/state';
 import { setupPwa } from './pwa';
-import { saveCleanup, saveTuning } from './storage/settings';
+import { saveCleanup, saveInput, saveTuning } from './storage/settings';
 import { Captions } from './ui/captions';
 import { $ } from './ui/dom';
 import { mountCleanupPanel } from './ui/panels/cleanup-panel';
 import { mountHeader } from './ui/panels/header';
+import { mountImportPanel } from './ui/panels/import-panel';
 import { mountInputPanel } from './ui/panels/input-panel';
 import { mountLayout } from './ui/panels/layout';
 import { mountLiveControls } from './ui/panels/live-controls';
@@ -33,6 +34,7 @@ mountInputPanel(store, session, captions);
 mountSongsPanel(store, session);
 mountTakesPanel(store, session);
 mountTracksPanel(store, session);
+mountImportPanel(store, session, captions);
 mountTuningPanel(store, captions);
 mountCleanupPanel(store, captions);
 const transport = mountTransport(store, session, roll, captions);
@@ -49,6 +51,11 @@ store.watch(
     saveCleanup(global.cleanup);
   },
   { shallow: true },
+);
+
+store.watch(
+  (s) => s.input,
+  (input) => saveInput(input),
 );
 
 // Keyboard shortcuts: R record/stop, T auto-tune on/off, Space play/pause, A original/processed.

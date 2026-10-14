@@ -51,13 +51,16 @@ export function mountTracksPanel(store: AppStore, session: Session): void {
 
   function createRow(track: Track): Row {
     const li = document.createElement('li');
-    li.className = 'track';
+    const instrumental = track.kind === 'instrumental';
+    li.className = 'track' + (instrumental ? ' is-instrumental' : '');
     li.dataset.id = track.id;
-    li.tabIndex = 0;
+    li.tabIndex = instrumental ? -1 : 0;
+    if (instrumental) li.title = 'Instrumental';
 
     const color = document.createElement('span');
     color.className = 'track-color';
-    color.style.background = `hsl(${track.hue} 70% 62%)`;
+    if (instrumental) color.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3z"/></svg>';
+    else color.style.background = `hsl(${track.hue} 70% 62%)`;
 
     const name = nameInput(track.name, 'Track name', (v) => session.updateTrackMix(track.id, { name: v }));
     name.classList.add('track-name');

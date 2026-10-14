@@ -1,16 +1,31 @@
 // Audio sources (microphone or a synthetic demo voice) -> capture worklet -> onBlock callback.
+// Uses the app's shared AudioContext, so captured blocks carry times on the same clock as playback.
 
 import captureWorkletUrl from './capture-worklet.ts?worker&url';
+import type { CaptureMessage } from './capture-worklet';
+import { sharedContext } from './context';
 import { midiToFreq } from '../dsp/notes';
 
 export type InputKind = 'mic' | 'demo';
 
+/** Contexts that already have the capture worklet module loaded. */
+const workletLoaded = new WeakSet<BaseAudioContext>();
+/** Fallback mic latency when the browser doesn't report one. */
+const DEFAULT_MIC_LATENCY = 0.01;
+
 export class AudioInput {
-  private ctx: AudioContext | null = null;
   private stream: MediaStream | null = null;
+  private nodes: AudioNode[] = [];
+  private capture: AudioWorkletNode | null = null;
   private stopDemo: (() => void) | null = null;
   private _kind: InputKind | null = null;
   private _noiseSuppression = false;
+  private _inputLatency = 0;
+
+  /**
+   * @param onBlock receives each captured block and the context time of its first sample.
+   */
+  constructor(private readonly onBlock: (block: Float32Array, time: number) => void) {}
 
   /** Whether the running mic uses the browser's built-in noise suppression. */
   get noiseSuppression(): boolean {
@@ -22,10 +37,13 @@ export class AudioInput {
     return this._kind;
   }
 
-  constructor(private readonly onBlock: (block: Float32Array) => void) {}
-
   get running(): boolean {
-    return this.ctx !== null;
+    return this._kind !== null;
+  }
+
+  /** Seconds from sound at the mic to the capture worklet (0 for the synthetic demo voice). */
+  get inputLatency(): number {
+    return this._inputLatency;
   }
 
   /**
@@ -34,31 +52,40 @@ export class AudioInput {
    */
   async start(kind: InputKind, opts: { noiseSuppression?: boolean } = {}): Promise<number> {
     await this.stop();
-    const ctx = new AudioContext({ latencyHint: 'interactive' });
-    this.ctx = ctx;
-    this._kind = kind;
-    this._noiseSuppression = kind === 'mic' && !!opts.noiseSuppression;
+    const ctx = sharedContext();
     try {
-      await ctx.audioWorklet.addModule(captureWorkletUrl);
+      if (!workletLoaded.has(ctx)) {
+        await ctx.audioWorklet.addModule(captureWorkletUrl);
+        workletLoaded.add(ctx);
+      }
       const capture = new AudioWorkletNode(ctx, 'capture-processor', {
         numberOfInputs: 1,
         numberOfOutputs: 1,
         channelCount: 1,
         channelCountMode: 'explicit',
       });
-      capture.port.onmessage = (e: MessageEvent<Float32Array>) => this.onBlock(e.data);
+      capture.port.onmessage = (e: MessageEvent<CaptureMessage>) => this.onBlock(e.data.samples, e.data.frame / ctx.sampleRate);
       // Keep the node pulled by the graph without making any sound.
       const mute = new GainNode(ctx, { gain: 0 });
       capture.connect(mute).connect(ctx.destination);
+      this.capture = capture;
+      this.nodes.push(capture, mute);
 
       if (kind === 'mic') {
         this.stream = await navigator.mediaDevices.getUserMedia({
           audio: { channelCount: 1, echoCancellation: false, noiseSuppression: !!opts.noiseSuppression, autoGainControl: false },
         });
-        ctx.createMediaStreamSource(this.stream).connect(capture);
+        const src = ctx.createMediaStreamSource(this.stream);
+        src.connect(capture);
+        this.nodes.push(src);
+        const reported = (this.stream.getAudioTracks()[0]?.getSettings() as { latency?: number } | undefined)?.latency;
+        this._inputLatency = typeof reported === 'number' && reported >= 0 ? reported : DEFAULT_MIC_LATENCY;
       } else {
         this.stopDemo = startDemoVoice(ctx, capture);
+        this._inputLatency = 0;
       }
+      this._kind = kind;
+      this._noiseSuppression = kind === 'mic' && !!opts.noiseSuppression;
       await ctx.resume();
       return ctx.sampleRate;
     } catch (err) {
@@ -72,10 +99,11 @@ export class AudioInput {
     this.stopDemo = null;
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
-    const ctx = this.ctx;
-    this.ctx = null;
+    if (this.capture) this.capture.port.onmessage = null;
+    this.capture = null;
+    for (const n of this.nodes) n.disconnect();
+    this.nodes = [];
     this._kind = null;
-    if (ctx && ctx.state !== 'closed') await ctx.close();
   }
 }
 
@@ -146,5 +174,6 @@ function startDemoVoice(ctx: AudioContext, capture: AudioNode): () => void {
     window.clearInterval(timer);
     osc.stop();
     vibrato.stop();
+    amp.disconnect();
   };
 }

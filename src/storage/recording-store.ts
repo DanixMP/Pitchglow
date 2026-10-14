@@ -20,6 +20,16 @@ export interface RecordingData {
   pitch: PackedPitchTrack;
 }
 
+/** An imported audio file (instrumental), kept in its original encoding. */
+export interface Asset {
+  id: string;
+  name: string;
+  /** MIME type of the original file. */
+  type: string;
+  createdAt: number;
+  data: ArrayBuffer;
+}
+
 const DB_NAME = 'recorder';
 /** v1: takes (meta + data). v2: + projects, + assets (imported files, Phase 9). Takes are untouched. */
 const DB_VERSION = 2;
@@ -130,6 +140,25 @@ export class RecordingStore {
   async deleteProject(id: string): Promise<void> {
     const tx = this.db.transaction(PROJECTS, 'readwrite');
     tx.objectStore(PROJECTS).delete(id);
+    await done(tx);
+  }
+
+  // --- assets (imported files) ---------------------------------------------------------------
+
+  async putAsset(asset: Asset): Promise<void> {
+    const tx = this.db.transaction(ASSETS, 'readwrite');
+    tx.objectStore(ASSETS).put(asset);
+    await done(tx);
+  }
+
+  async getAsset(id: string): Promise<Asset | undefined> {
+    const tx = this.db.transaction(ASSETS, 'readonly');
+    return promisify(tx.objectStore(ASSETS).get(id) as IDBRequest<Asset | undefined>);
+  }
+
+  async deleteAsset(id: string): Promise<void> {
+    const tx = this.db.transaction(ASSETS, 'readwrite');
+    tx.objectStore(ASSETS).delete(id);
     await done(tx);
   }
 

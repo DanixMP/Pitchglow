@@ -3,6 +3,7 @@
 import { headingCardOf, processedLabelOf, processSettingsOf, wantsProcessed } from '../../app/processing';
 import { openMeta, openProject, selectedTrack, type AppStore } from '../../app/state';
 import { $ } from '../dom';
+import { scaleName } from '../../dsp/scales';
 import { formatTime } from '../format';
 
 export function mountHeader(store: AppStore): void {
@@ -22,7 +23,8 @@ export function mountHeader(store: AppStore): void {
     } else if (song) {
       const track = selectedTrack(s);
       const n = song.tracks.length;
-      eyebrow = track ? `Editing · ${track.name}` : `Song · ${n} ${n === 1 ? 'track' : 'tracks'}`;
+      const meta = [song.key ? scaleName(song.key) : null, song.bpm ? `${song.bpm} BPM` : null].filter(Boolean).join(' · ');
+      eyebrow = track ? `Editing · ${track.name}` : `Song · ${n} ${n === 1 ? 'track' : 'tracks'}${meta ? ` · ${meta}` : ''}`;
       title = song.name;
       tone = null;
     } else if (s.mode === 'playback' && meta) {

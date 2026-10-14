@@ -1,9 +1,10 @@
 // Application state shape. Heavy, non-serialisable things (audio buffers, nodes) live in Session.
 
 import type { InputKind } from '../audio/audio-input';
+import type { Scale } from '../dsp/scales';
 import type { Project, Track } from '../project/model';
 import type { RecordingMeta } from '../storage/recording-store';
-import { loadCleanup, loadTuning, type CleanupPrefs, type TuningPrefs } from '../storage/settings';
+import { loadCleanup, loadInput, loadTuning, type CleanupPrefs, type InputPrefs, type TuningPrefs } from '../storage/settings';
 import { Store } from './store';
 
 /** idle → listening/recording (live input) or playback (a take or a song is open). */
@@ -18,9 +19,23 @@ export interface RenderState {
   notes: string[];
 }
 
+/** Key/tempo found in a freshly imported instrumental, waiting for the user to accept. */
+export interface Detection {
+  projectId: string;
+  key: Scale | null;
+  bpm: number | null;
+}
+
 export interface AppState {
   mode: Mode;
   source: InputKind;
+  /** Count-in, sync nudge, calibration. */
+  input: InputPrefs;
+  /** An instrumental is being imported/decoded. */
+  importing: boolean;
+  detection: Detection | null;
+  /** Loopback latency calibration in progress. */
+  calibrating: boolean;
   /**
    * The settings the inspector edits: the global defaults, or the selected track's settings while a
    * song is open (Session loads them in and writes edits back to the track).
@@ -59,6 +74,10 @@ export function createAppStore(): AppStore {
   return new Store<AppState>({
     mode: 'idle',
     source: 'mic',
+    input: loadInput(),
+    importing: false,
+    detection: null,
+    calibrating: false,
     tuning: loadTuning(),
     cleanup: loadCleanup(),
     recordings: [],

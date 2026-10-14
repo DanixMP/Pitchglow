@@ -2,11 +2,14 @@
 
 import { INTRO_CAPTIONS } from '../../app/explain';
 import type { Session } from '../../app/session';
-import type { AppStore } from '../../app/state';
+import { openProject, type AppStore } from '../../app/state';
+import { instrumentalOf } from '../../project/model';
 import type { Captions } from '../captions';
 import { $ } from '../dom';
 
 const INTRO_KEY = 'recorder.introSeen';
+/** Shown once per visit, the first time you record over a beat. */
+let headphonesHintShown = false;
 
 export function mountLiveControls(store: AppStore, session: Session, captions: Captions): void {
   const listen = $<HTMLButtonElement>('listen');
@@ -25,6 +28,11 @@ export function mountLiveControls(store: AppStore, session: Session, captions: C
       if (store.get().mode === 'recording') return session.stopLive();
       await session.startLive(true);
       explainIntro();
+      const song = openProject(store.get());
+      if (song && instrumentalOf(song) && !headphonesHintShown) {
+        headphonesHintShown = true;
+        captions.show('Headphones on, so the beat stays out of your vocal take.');
+      }
     }),
   );
 
