@@ -13,6 +13,10 @@ import type { PitchFrame } from '../audio/pitch-tracker';
 import type { Correction } from './autotune';
 import { midiToFreq } from './notes';
 
+/** Half a Hann window, 0.5 + 0.5·cos(πj/HANN_SIZE) for j = 0 … HANN_SIZE (+1 guard for interpolation). */
+const HANN_SIZE = 4096;
+const HANN = Float64Array.from({ length: HANN_SIZE + 2 }, (_, j) => 0.5 + 0.5 * Math.cos((Math.PI * Math.min(j, HANN_SIZE)) / HANN_SIZE));
+
 /** Grain spacing for unvoiced audio (identity, so any value works; ~5 ms keeps it light). */
 const UNVOICED_PERIOD_SECONDS = 0.005;
 /** Where windows barely overlap, blend towards the original instead of dividing by ~0. */
@@ -20,14 +24,49 @@ const MIN_WEIGHT = 0.25;
 /** Peak search window around the predicted next cycle, as a fraction of the period. */
 const MARK_SEARCH = 0.3;
 
-interface VoicedRegion {
-  /** Sample range covered by the region. */
+// The work is split so the real-time engine (Phase 13) can share it exactly:
+// - analyzePsola: voiced regions + analysis marks. Depends only on the audio and its pitch track,
+//   so it is computed once per take (in the worker).
+// - planGrains: the list of grains (source centre -> output centre, half-length) for one correction
+//   curve. Cheap, so it is redone on every settings change (instant knobs).
+// - renderGrains: overlap-adds the grains for any output range. Rendering in blocks gives exactly
+//   the same samples as rendering the whole take at once.
+
+/** Voiced stretch: sample range, its frames (index range into the pitch track) and analysis marks. */
+export interface PsolaRegion {
   start: number;
   end: number;
-  /** Frame times (s), periods (samples) and pitch ratios for the region's frames. */
-  times: number[];
-  periods: number[];
-  ratios: number[];
+  frameFrom: number;
+  frameTo: number;
+  marks: Int32Array;
+}
+
+export interface PsolaAnalysis {
+  length: number;
+  sampleRate: number;
+  /** Frame times (s) and pitch periods (samples; NaN = unvoiced), from the pitch track. */
+  times: Float64Array;
+  periods: Float64Array;
+  /** Sung pitch per frame (MIDI; NaN = unvoiced). */
+  midi: Float64Array;
+  regions: PsolaRegion[];
+}
+
+/** Grains in output order: copy src around `from` to the output around `to`, Hann half-length `half`. */
+export interface GrainPlan {
+  to: Int32Array;
+  from: Int32Array;
+  half: Int32Array;
+  count: number;
+  maxHalf: number;
+  /**
+   * true: unvoiced audio passes through (identity grains, and the source fills in where grains are
+   * sparse), as for the lead. false: voiced parts only, silence elsewhere (harmony voices, so breaths
+   * and "s" sounds aren't stacked once per voice).
+   */
+  passthrough: boolean;
+  /** Output length in samples (= the take). */
+  length: number;
 }
 
 export function renderTuned(
@@ -36,55 +75,164 @@ export function renderTuned(
   frames: readonly PitchFrame[],
   corrections: readonly Correction[],
 ): Float32Array {
-  const n = samples.length;
-  const out = new Float32Array(n);
-  const weight = new Float32Array(n);
-  const regions = voicedRegions(frames, corrections, sampleRate, n);
-  const smooth = zeroPhaseLowpass(samples, sampleRate, 900);
-  const unvoicedPeriod = Math.max(16, Math.round(sampleRate * UNVOICED_PERIOD_SECONDS));
-
-  let cursor = 0;
-  for (const region of regions) {
-    for (let m = cursor; m < region.start; m += unvoicedPeriod) overlapAdd(samples, out, weight, m, m, unvoicedPeriod);
-    renderVoiced(samples, smooth, out, weight, region, sampleRate);
-    cursor = region.end;
-  }
-  for (let m = cursor; m < n + unvoicedPeriod; m += unvoicedPeriod) overlapAdd(samples, out, weight, m, m, unvoicedPeriod);
-
-  for (let i = 0; i < n; i++) {
-    const w = weight[i];
-    out[i] = w >= MIN_WEIGHT ? out[i] / w : (out[i] + (MIN_WEIGHT - w) * samples[i]) / MIN_WEIGHT;
-  }
+  const plan = planGrains(analyzePsola(samples, sampleRate, frames), corrections);
+  const out = new Float32Array(samples.length);
+  renderGrains(samples, plan, 0, samples.length, out, new Float32Array(samples.length));
   return out;
 }
 
-function renderVoiced(
-  samples: Float32Array,
-  smooth: Float32Array,
-  out: Float32Array,
-  weight: Float32Array,
-  region: VoicedRegion,
-  sampleRate: number,
-): void {
-  const at = (sample: number, values: number[]) => interpolate(region.times, values, sample / sampleRate);
-  const periodAt = (s: number) => at(s, region.periods);
-  const ratioAt = (s: number) => at(s, region.ratios);
+/** Voiced regions and their analysis marks (one per cycle, on the peak of the low-passed signal). */
+export function analyzePsola(samples: Float32Array, sampleRate: number, frames: readonly PitchFrame[]): PsolaAnalysis {
+  const n = samples.length;
+  const times = new Float64Array(frames.length);
+  const periods = new Float64Array(frames.length);
+  const midi = new Float64Array(frames.length);
+  frames.forEach((f, i) => {
+    times[i] = f.time;
+    midi[i] = f.midi ?? NaN;
+    periods[i] = f.midi === null ? NaN : sampleRate / midiToFreq(f.midi);
+  });
+  const hop = estimateHop(frames);
+  const regions: PsolaRegion[] = [];
+  let open: { start: number; end: number; frameFrom: number; frameTo: number } | null = null;
+  const close = () => {
+    if (open && open.end > open.start) regions.push({ ...open, marks: new Int32Array(0) });
+    open = null;
+  };
+  frames.forEach((f, i) => {
+    if (f.midi === null) return close();
+    if (!open) open = { start: Math.max(0, Math.round((f.time - hop / 2) * sampleRate)), end: 0, frameFrom: i, frameTo: i };
+    open.frameTo = i + 1;
+    open.end = Math.min(n, Math.round((f.time + hop / 2) * sampleRate));
+  });
+  close();
+  const smooth = zeroPhaseLowpass(samples, sampleRate, 900);
+  for (const r of regions) {
+    const periodAt = (sample: number) => interpolate(times, periods, r.frameFrom, r.frameTo, sample / sampleRate);
+    r.marks = analysisMarks(smooth, r, periodAt);
+  }
+  return { length: n, sampleRate, times, periods, midi, regions };
+}
 
-  const marks = analysisMarks(smooth, region, periodAt);
-  let idx = 0;
-  for (let t = marks[0]; t < region.end; ) {
-    // Nearest analysis mark to this synthesis time (marks and t both increase, so walk forward).
-    while (idx + 1 < marks.length && Math.abs(marks[idx + 1] - t) <= Math.abs(marks[idx] - t)) idx++;
-    const a = marks[idx];
-    const synthPeriod = periodAt(t) / ratioAt(t);
-    const half = Math.round(Math.max(periodAt(a), synthPeriod));
-    overlapAdd(samples, out, weight, a, Math.round(t), half);
-    t += synthPeriod;
+/** The grains that move the voice along `corrections` (unvoiced audio: identity grains). */
+export function planGrains(analysis: PsolaAnalysis, corrections: readonly Correction[], passthrough = true): GrainPlan {
+  const { length: n, sampleRate, times, periods, midi, regions } = analysis;
+  const ratios = new Float64Array(periods.length);
+  for (let i = 0; i < periods.length; i++) {
+    const c = corrections[i]?.corrected;
+    ratios[i] = c === null || c === undefined || Number.isNaN(midi[i]) ? 1 : Math.pow(2, (c - midi[i]) / 12);
+  }
+  const unvoicedPeriod = Math.max(16, Math.round(sampleRate * UNVOICED_PERIOD_SECONDS));
+  const plan = new PlanBuilder(n, passthrough);
+  let cursor = 0;
+  for (const r of regions) {
+    if (passthrough) for (let m = cursor; m < r.start; m += unvoicedPeriod) plan.push(m, m, unvoicedPeriod);
+    const periodAt = (sample: number) => interpolate(times, periods, r.frameFrom, r.frameTo, sample / sampleRate);
+    const ratioAt = (sample: number) => interpolate(times, ratios, r.frameFrom, r.frameTo, sample / sampleRate);
+    const marks = r.marks;
+    let idx = 0;
+    for (let t = marks[0]; t < r.end; ) {
+      // Nearest analysis mark to this synthesis time (marks and t both increase, so walk forward).
+      while (idx + 1 < marks.length && Math.abs(marks[idx + 1] - t) <= Math.abs(marks[idx] - t)) idx++;
+      const a = marks[idx];
+      const synthPeriod = periodAt(t) / ratioAt(t);
+      plan.push(a, Math.round(t), Math.round(Math.max(periodAt(a), synthPeriod)));
+      t += synthPeriod;
+    }
+    cursor = r.end;
+  }
+  if (passthrough) for (let m = cursor; m < n + unvoicedPeriod; m += unvoicedPeriod) plan.push(m, m, unvoicedPeriod);
+  return plan.build();
+}
+
+/**
+ * Renders output samples [start, end) of a plan into `out[0 .. end-start)`, normalised by the summed
+ * window weight (blending towards the source where grains barely overlap). `weight` is scratch of at
+ * least the same length. Allocates nothing, so it can run on the audio thread.
+ */
+export function renderGrains(src: Float32Array, plan: GrainPlan, start: number, end: number, out: Float32Array, weight: Float32Array): void {
+  const len = end - start;
+  out.fill(0, 0, len);
+  weight.fill(0, 0, len);
+  const n = Math.min(src.length, plan.length);
+  const { to, from, half: halves, count, maxHalf } = plan;
+  // First grain that can reach `start` (grains are sorted by output centre).
+  let lo = 0;
+  let hi = count;
+  const reach = start - maxHalf;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (to[mid] < reach) lo = mid + 1;
+    else hi = mid;
+  }
+  for (let g = lo; g < count; g++) {
+    const t = to[g];
+    if (t - maxHalf >= end) break;
+    const f = from[g];
+    const half = halves[g];
+    const kMin = Math.max(-half + 1, -f, -t, start - t);
+    const kMax = Math.min(half - 1, n - 1 - f, n - 1 - t, end - 1 - t);
+    // Hann window 0.5 + 0.5·cos(πk/half) from a table (no Math.cos per sample). A pure function of
+    // (k, half), so any block split gives the same samples.
+    const scale = HANN_SIZE / half;
+    for (let k = kMin; k <= kMax; k++) {
+      const x = (k < 0 ? -k : k) * scale;
+      const i = x | 0;
+      const w = HANN[i] + (HANN[i + 1] - HANN[i]) * (x - i);
+      out[t + k - start] += w * src[f + k];
+      weight[t + k - start] += w;
+    }
+  }
+  if (plan.passthrough) {
+    for (let i = 0; i < len; i++) {
+      const w = weight[i];
+      const x = start + i < src.length ? src[start + i] : 0;
+      out[i] = w >= MIN_WEIGHT ? out[i] / w : (out[i] + (MIN_WEIGHT - w) * x) / MIN_WEIGHT;
+    }
+  } else {
+    // Fades to silence where the grains thin out (the edges of each sung note).
+    for (let i = 0; i < len; i++) out[i] /= Math.max(weight[i], MIN_WEIGHT);
+  }
+}
+
+class PlanBuilder {
+  private to = new Int32Array(1024);
+  private from = new Int32Array(1024);
+  private half = new Int32Array(1024);
+  private count = 0;
+  private maxHalf = 1;
+
+  constructor(
+    private readonly length: number,
+    private readonly passthrough: boolean,
+  ) {}
+
+  push(from: number, to: number, half: number): void {
+    if (this.count === this.to.length) {
+      const grow = (a: Int32Array) => {
+        const b = new Int32Array(a.length * 2);
+        b.set(a);
+        return b;
+      };
+      this.to = grow(this.to);
+      this.from = grow(this.from);
+      this.half = grow(this.half);
+    }
+    this.to[this.count] = to;
+    this.from[this.count] = from;
+    this.half[this.count] = half;
+    this.count++;
+    if (half > this.maxHalf) this.maxHalf = half;
+  }
+
+  build(): GrainPlan {
+    const c = this.count;
+    return { to: this.to.slice(0, c), from: this.from.slice(0, c), half: this.half.slice(0, c), count: c, maxHalf: this.maxHalf, length: this.length, passthrough: this.passthrough };
   }
 }
 
 /** One mark per cycle, each on the local peak of the low-passed signal. */
-function analysisMarks(sig: Float32Array, region: VoicedRegion, periodAt: (s: number) => number): number[] {
+function analysisMarks(sig: Float32Array, region: { start: number; end: number }, periodAt: (s: number) => number): Int32Array {
   const last = sig.length - 1;
   let m = argmax(sig, region.start, Math.min(region.end, region.start + Math.ceil(periodAt(region.start))));
   const marks = [m];
@@ -98,48 +246,7 @@ function analysisMarks(sig: Float32Array, region: VoicedRegion, periodAt: (s: nu
     m = argmax(sig, lo, hi + 1);
     marks.push(m);
   }
-  return marks;
-}
-
-/** Adds the Hann-windowed grain centred on `from` to the output centred on `to`. */
-function overlapAdd(src: Float32Array, out: Float32Array, weight: Float32Array, from: number, to: number, half: number): void {
-  const n = src.length;
-  const kMin = Math.max(-half + 1, -from, -to);
-  const kMax = Math.min(half - 1, n - 1 - from, n - 1 - to);
-  for (let k = kMin; k <= kMax; k++) {
-    const w = 0.5 + 0.5 * Math.cos((Math.PI * k) / half);
-    out[to + k] += w * src[from + k];
-    weight[to + k] += w;
-  }
-}
-
-/** Consecutive voiced frames -> sample ranges with their pitch periods and correction ratios. */
-function voicedRegions(
-  frames: readonly PitchFrame[],
-  corrections: readonly Correction[],
-  sampleRate: number,
-  length: number,
-): VoicedRegion[] {
-  const hop = estimateHop(frames);
-  const regions: VoicedRegion[] = [];
-  let current: VoicedRegion | null = null;
-  frames.forEach((f, i) => {
-    const corrected = corrections[i]?.corrected ?? null;
-    if (f.midi === null || corrected === null) {
-      current = null;
-      return;
-    }
-    if (!current) {
-      current = { start: 0, end: 0, times: [], periods: [], ratios: [] };
-      current.start = Math.max(0, Math.round((f.time - hop / 2) * sampleRate));
-      regions.push(current);
-    }
-    current.times.push(f.time);
-    current.periods.push(sampleRate / midiToFreq(f.midi));
-    current.ratios.push(Math.pow(2, (corrected - f.midi) / 12));
-    current.end = Math.min(length, Math.round((f.time + hop / 2) * sampleRate));
-  });
-  return regions.filter((r) => r.end > r.start);
+  return Int32Array.from(marks);
 }
 
 function estimateHop(frames: readonly PitchFrame[]): number {
@@ -149,12 +256,12 @@ function estimateHop(frames: readonly PitchFrame[]): number {
   return diffs.length ? diffs[diffs.length >> 1] : 0.01;
 }
 
-/** Linear interpolation of `values` sampled at ascending `times`, clamped at both ends. */
-function interpolate(times: number[], values: number[], t: number): number {
-  if (t <= times[0]) return values[0];
-  const last = times.length - 1;
+/** Linear interpolation of `values[from..to)` sampled at ascending `times`, clamped at both ends. */
+function interpolate(times: Float64Array, values: Float64Array, from: number, to: number, t: number): number {
+  if (t <= times[from]) return values[from];
+  const last = to - 1;
   if (t >= times[last]) return values[last];
-  let lo = 0;
+  let lo = from;
   let hi = last;
   while (hi - lo > 1) {
     const mid = (lo + hi) >> 1;

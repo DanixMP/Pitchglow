@@ -127,6 +127,35 @@ Look: a near-black background (#0f0f10-ish), muted dark lane fills whose hue cyc
     - Bitrates: 192 kbps stereo, 128 kbps mono. Rates MP3 can't carry are resampled to 48 kHz.
     - Verified: a 15.1 s mix → a valid 354 KB MPEG-1 L3 file.
   - **Onboarding** (`ui/panels/onboarding.ts`, texts in `STUDIO_TIPS`): one-time captions when a song first opens, a beat is in, the song has 2+ tracks, the loop goes on, or the key is shifted. They are shown only in playback mode and queued with `Captions.enqueue`, so they never cut each other off. Seen tips are kept in `localStorage['recorder.tipsSeen']` (delete it to see them again).
+- **Real-time voice engine (Phase 13)** (`src/dsp/voice-engine.ts`, `src/audio/engine/`):
+  - **A generator, not a causal stream.** During playback the whole take is known, so the engine renders whatever song position the transport asks for. No look-ahead or latency compensation is needed, seeks and loops are instant, and the output is **bit-identical** to the offline render.
+  - **PSOLA is split into three steps** (`psola.ts`):
+    - `analyzePsola`: voiced regions + analysis marks. Depends only on the audio and its pitch track, so it's computed once per take in the worker.
+    - `planGrains`: the grain list (source centre → output centre, half-length) for one correction curve.
+    - `renderGrains`: overlap-adds any output range; Hann weights come from a lookup table, not a `Math.cos` per sample. Block-by-block rendering equals whole-take rendering (tested).
+    - The old `renderTuned` is now plan + full-range render; it was checked bit for bit against the previous implementation.
+  - `planVoices` gives the lead and harmony plans: auto-tune in the sung key, then the transpose (track pitch + key shift).
+    - Harmony plans are **voiced-only**: silent in breaths and "s" sounds, fading out at note edges. They used to copy the unvoiced audio once per voice, stacking sibilants. They are mixed at `mix/√voices`; the per-track limiter is gone live, since the master limiter catches peaks. Take exports still limit.
+  - **Worker (`render-worker.ts`, `voice` requests per track channel):**
+    - It runs `prepareVoice` only when the clean-up input changes (key = take + denoise/gate/de-ess + rate): denoise → gate → **de-ess** (moved before tuning; sibilants are unvoiced, so PSOLA passes them through anyway) → resample to the context rate. Then it runs `analyzePsola` and, on every request, `planVoices`.
+    - Requests that pile up are merged, so a knob drag plans only the latest value. The response carries the source only if the main thread's version is stale. Plans are transferred.
+    - Measured: plan round trip 7–44 ms; re-planning a 3-min take with 3 harmonies takes 60–140 ms (which is why it runs in the worker).
+  - **Worklet (`engine-worklet.ts`, processor `voice-engine`):**
+    - One node per vocal lane; it holds the source + plans (`VoiceRenderer`, no allocations while rendering).
+    - Messages (`protocol.ts`): `source`, `plans`, `offset`, `play {startFrame, from, loop}`, `stop`.
+    - `transport.ts` (pure, tested) maps each context frame to a song position, splits blocks at loop wraps and applies 4 ms fades where a loop cuts a clip, mirroring MixPlayer's buffer lanes.
+  - **MixPlayer:**
+    - Buffer lanes (instrumentals) as before; engine lanes for every take (song tracks and the single-take preview).
+    - `setPlans` swaps plans without a gap. `setTracks` posts source/plans/offset changes. `play` posts the transport, `stop` silences.
+    - `loadEngine()` runs in `Session.init`. Takes at another rate are resampled once (`atRate`) and played without plans until the prepared source arrives.
+  - **Session:**
+    - `Voice { source, version, sentKey, plans }` per preview/track, updated by `updateVoice`. Clean-up changes are debounced 120 ms and show "Processing…"; plan-only changes go out immediately with no busy flag.
+    - `mixSpecs` gives the cleaned source + plans when listening to the processed version, else the raw take with no plans (A/B).
+    - The preview autoplays once its first plans arrive (~170 ms).
+  - **Export = same engine:** `renderMix`/`renderStems` load the worklet into the `OfflineAudioContext` and create engine nodes with the transport at 0; `renderVoice` exports a processed take. Export rate = the context rate (the plans' rate).
+    - Verified in the app: the engine export of a take (0 ms auto-tune + a harmony + limiter) is **identical** (max difference 0) to the offline reference `processRecording`.
+  - **CPU** (OfflineAudioContext, 8 tracks): the mix chain alone is 31% of a core. Engine lanes add ~0.6% per track for the lead and ~0.4% per harmony voice, so 8 tracks × lead + 3 harmonies ≈ 46% in total.
+  - **Dev hook:** `window.recorder = { store, session }` in `npm run dev` only, for console checks.
 - **Modes** (`AppState.mode`, driven by `Session`): `idle`, `listening` (live line, nothing saved), `recording` (live line + saving), `playback` (a saved recording is open and the roll follows `Player.currentTime`).
 
 ## Architecture
@@ -148,12 +177,13 @@ src/
     notes.ts              freq <-> MIDI, note names
     scales.ts             scale types, masks, nearest in-scale note
     autotune.ts           PitchCorrector: target note + retune-speed glide
-    psola.ts              TD-PSOLA renderer for the tuned audio
+    psola.ts              TD-PSOLA: analysis (marks) -> grain plan -> range render (shared by offline and the engine)
+    voice-engine.ts       voice plans (lead + harmonies) + VoiceRenderer: block rendering for the real-time engine
     harmony.ts            diatonic harmony voices + mixed render (renderWithHarmony)
     limiter.ts            look-ahead peak limiter
     fft.ts                radix-2 complex FFT
     denoise.ts            STFT Wiener noise reduction (noise profile from quiet frames)
-    process.ts            processing chain: denoise -> tune/harmony (+ denoise cache)
+    process.ts            prepareVoice (denoise -> gate -> de-ess -> rate) + processRecording (offline reference)
     analyze.ts            key (chroma + Krumhansl) and tempo (onset autocorrelation) of instrumentals
     vocoder.ts            phase-vocoder pitch shift (identity phase locking) for instrumentals
     reverb.ts             generated impulse responses (Room, Plate, Hall, Cathedral)
@@ -165,12 +195,16 @@ src/
     audio-input.ts        mic / demo-tone sources -> worklet -> callback
     pitch-tracker.ts      ring buffer + hop scheduling -> PitchFrame stream
     sample-buffer.ts      collects PCM blocks during a take
-    mix-player.ts         multi-track playback (per-track gain lanes, offsets, live gain, swap) + latency-compensated clock
-    mixdown.ts            OfflineAudioContext stereo mixdown of the same track specs
+    mix-player.ts         multi-track playback: buffer lanes (beats) + voice-engine lanes (takes), live plans/gain/pan/fx, loop, clock
+    mixdown.ts            OfflineAudioContext mixdown/stems/processed take through the same graph and engine
     sync.ts               take alignment math, click-loopback latency detection, count-in times
     metronome.ts          scheduled click sounds
-    render-worker.ts      Web Worker: processRecording off the main thread, caches the cleaned audio
-    tuned-renderer.ts     main-thread client for the worker (per-channel latest-wins, returns notes)
+    render-worker.ts      Web Worker: voice requests (clean-up + analysis + plans per track), key/tempo, key shift
+    engine/
+      engine-worklet.ts   AudioWorklet 'voice-engine': renders a take from source + plans, follows the transport
+      protocol.ts         engine messages + construction options (shared with the main thread)
+      transport.ts        pure: context frame -> song position, loop runs, loop fades
+    tuned-renderer.ts     main-thread client for the worker (voice: per-channel latest-wins; analyze; shift)
     wav.ts                16-bit PCM WAV encoder (mono or interleaved multi-channel); float WAV encode + WAV decode (song files)
     encode.ts             export encoding: WAV, or MP3 via mp3-worker.ts (LAME, LGPL, own chunk)
     mp3-worker.ts         Web Worker: lamejs MP3 encoder
@@ -433,12 +467,13 @@ The user asked for every setting to work in real time: hearing your voice proces
   - a value bubble while dragging, double-click to reset, full ARIA slider semantics.
   - Knobs, toggles, segmented controls and meters get the same neon treatment. Design tokens live in CSS variables; `prefers-reduced-motion` is respected.
 
-### Phase 13 — Real-time engine (playback)
-- [ ] Engine worklet + main-thread client; per-take analysis (pitch track, PSOLA marks) computed once and cached
-- [ ] Streaming PSOLA + corrector + transpose + harmony in the worklet; parity tests vs offline `renderWithHarmony`
-- [ ] MixPlayer lanes run through the engine with look-ahead compensation; tuning/harmony/pitch/key-shift changes are instant (no re-render)
-- [ ] Export through `OfflineAudioContext` with the same worklet (file = what you hear); stems too
-- [ ] CPU budget measured (N tracks × harmony voices); no allocations in `process()`
+### Phase 13 — Real-time engine (playback) — branch `realtime-engine`
+- [x] Engine worklet + main-thread client; per-take analysis (PSOLA marks on the cleaned source) computed once in the worker and cached per track channel
+- [x] Block rendering of PSOLA + corrector + transpose + harmony (generator design: no look-ahead needed); tests: blocks == whole take bit for bit, engine == offline `renderWithHarmony`, transport/loop maths
+- [x] MixPlayer engine lanes (songs and the take preview); tuning/harmony/pitch/key-shift changes are instant: browser-verified: +12 st mid-playback heard within ~140 ms (incl. 85 ms analysis window), plan round trip 7–44 ms, playhead never restarts; loop passes play identical pitch at identical positions
+- [x] Export through `OfflineAudioContext` with the same worklet (mix, stems, processed take); verified identical to the offline reference (max diff 0)
+- [x] CPU measured (8 tracks × lead + 3 harmonies ≈ 46% of a core incl. the 31% mix chain); no allocations in `process()`
+- [ ] Listening check (user): knob drags while playing, harmonies now voiced-only (no doubled "s" sounds)
 
 ### Phase 14 — Live monitoring (hear yourself)
 - [ ] Mic → engine (streaming YIN, low-latency PSOLA) → track FX chain → headphones; "Hear myself" toggle with a headphones warning

@@ -112,6 +112,9 @@ function frame(t: number): void {
   requestAnimationFrame(frame);
 }
 
+// Dev builds only: a handle for poking at the engine from the console / automated checks.
+if (import.meta.env.DEV) Object.assign(window, { recorder: { store, session } });
+
 setupPwa($<HTMLButtonElement>('install'));
 session.run(() => session.init());
 requestAnimationFrame(frame);
