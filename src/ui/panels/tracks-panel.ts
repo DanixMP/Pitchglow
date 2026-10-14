@@ -64,6 +64,7 @@ export function mountTracksPanel(store: AppStore, session: Session): { tick(dt: 
     onSeek: (t) => session.seek(t),
     onMove: (id, offset) => session.updateTrackMix(id, { offset }),
     onSelect: (id) => session.selectTrack(id),
+    onLoop: (start, end) => session.setLoopRegion(start, end),
   });
 
   // Drop takes from the library onto the tracks.
@@ -200,6 +201,7 @@ export function mountTracksPanel(store: AppStore, session: Session): { tick(dt: 
     const state = store.get();
     const song = openProject(state);
     if (!song) return;
+    timeline.setLoop(song.loop ?? null);
     const key = JSON.stringify([state.selectedTrackId, state.duration, song.bpm, song.tracks.map((t) => [t.id, t.offset, t.mute, t.solo, t.gainDb])]);
     if (key === clipsKey) return;
     clipsKey = key;

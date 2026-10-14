@@ -1,4 +1,5 @@
-// Playback transport: play/pause, seek, time, Original/processed A/B switch, processed export.
+// Playback transport: play/pause, seek, time, loop (songs), Original/processed A/B switch, and
+// export (format: WAV or MP3).
 
 import { listenModeText } from '../../app/explain';
 import { processedLabelOf, processSettingsOf, trackProcessSettings, wantsProcessed } from '../../app/processing';
@@ -25,6 +26,10 @@ export function mountTransport(store: AppStore, session: Session, roll: PianoRol
   const exportBtn = $<HTMLButtonElement>('export-tuned');
   const exportLabel = exportBtn.querySelector('span')!;
   const stemsBtn = $<HTMLButtonElement>('export-stems');
+  const formatSelect = $<HTMLSelectElement>('export-format');
+  const loopBtn = $<HTMLButtonElement>('loop');
+  loopBtn.addEventListener('click', () => session.toggleLoop());
+  formatSelect.addEventListener('change', () => store.set({ exportFormat: formatSelect.value === 'mp3' ? 'mp3' : 'wav' }));
   stemsBtn.addEventListener('click', () => session.exportStems());
   const player = session.player;
 
@@ -51,7 +56,7 @@ export function mountTransport(store: AppStore, session: Session, roll: PianoRol
   );
 
   store.watch(
-    (s) => [s.tuning, s.cleanup, s.listenProcessed, s.render, s.projectId, s.trackRender, s.duration] as const,
+    (s) => [s.tuning, s.cleanup, s.listenProcessed, s.render, s.projectId, s.trackRender, s.duration, s.exportFormat, openProject(s)?.loop] as const,
     () => {
       const v = viewOf(store.get());
       for (const btn of abButtons) {
@@ -64,9 +69,13 @@ export function mountTransport(store: AppStore, session: Session, roll: PianoRol
           btn.textContent = v.label;
         }
       }
+      const state = store.get();
       exportBtn.disabled = !v.exportEnabled;
-      exportLabel.textContent = v.exportLabel;
-      const song = openProject(store.get());
+      exportLabel.textContent = `${v.exportLabel} ${state.exportFormat.toUpperCase()}`;
+      formatSelect.value = state.exportFormat;
+      const song = openProject(state);
+      loopBtn.hidden = !song;
+      loopBtn.setAttribute('aria-pressed', String(!!song?.loop?.on));
       stemsBtn.hidden = !song;
       stemsBtn.disabled = !v.exportEnabled;
       renderStatus.textContent = v.status;
@@ -86,7 +95,7 @@ export function mountTransport(store: AppStore, session: Session, roll: PianoRol
         processedOn: s.listenProcessed && available,
         label: 'Processed',
         exportEnabled: s.duration > 0,
-        exportLabel: 'Mix WAV',
+        exportLabel: 'Mix',
         status: busy ? 'Processing…' : notes.join(' · '),
       };
     }
@@ -97,7 +106,7 @@ export function mountTransport(store: AppStore, session: Session, roll: PianoRol
       processedOn: wantsProcessed(s),
       label,
       exportEnabled: available && s.render.ready,
-      exportLabel: `${label} WAV`,
+      exportLabel: label,
       status: !available ? 'Auto-tune and noise reduction are off' : s.render.busy ? 'Processing…' : s.render.notes.join(' · '),
     };
   }

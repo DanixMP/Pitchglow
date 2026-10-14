@@ -2,9 +2,11 @@
 // Drag a clip to move it (snaps to 1/16 notes with a tempo, 10 ms without; Alt = free), click empty
 // space to seek. The drag is previewed locally and committed once on release (one undo step).
 // Keyboard: with the canvas focused, ←/→ nudge the selected clip by one grid step (Shift: ×4).
+// The ruler on top holds the loop region (Phase 12): drag along it to draw a loop (snaps to beats),
+// drag its edges to resize it or its middle to move it; a plain click on the ruler seeks.
 
 import { PEAKS_PER_SECOND } from '../audio/peaks';
-import { snapOffset } from '../project/model';
+import { normalizeLoop, snapOffset, type LoopRegion } from '../project/model';
 import { formatTime } from './format';
 
 export interface TimelineClip {
@@ -22,9 +24,23 @@ export interface TimelineHandlers {
   onSeek(time: number): void;
   onMove(id: string, offset: number): void;
   onSelect(id: string): void;
+  /** A loop region was drawn, resized or moved on the ruler. */
+  onLoop(start: number, end: number): void;
 }
 
-const AXIS_H = 14;
+const AXIS_H = 16;
+/** Grab distance for the loop's edges, CSS px. */
+const EDGE_PX = 6;
+
+type LoopDrag = {
+  pointerId: number;
+  mode: 'draw' | 'start' | 'end' | 'move';
+  anchor: number;
+  startX: number;
+  orig: { start: number; end: number };
+  moved: boolean;
+  preview: { start: number; end: number } | null;
+};
 const LANE_H = 16;
 const LANE_GAP = 4;
 
@@ -39,6 +55,8 @@ export class Timeline {
   private dpr = 1;
   private dirty = true;
   private drag: { pointerId: number; id: string; startX: number; startOffset: number; moved: boolean; preview: number } | null = null;
+  private loop: LoopRegion | null = null;
+  private loopDrag: LoopDrag | null = null;
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -60,6 +78,11 @@ export class Timeline {
     this.dirty = true;
   }
 
+  setLoop(loop: LoopRegion | null): void {
+    this.loop = loop;
+    this.dirty = true;
+  }
+
   setTime(time: number): void {
     if (Math.abs(time - this.time) > 1e-3) {
       this.time = time;
@@ -76,18 +99,37 @@ export class Timeline {
     const view = this.view();
     const x = (t: number) => ((t - view.start) / (view.end - view.start)) * w;
 
+    const span = view.end - view.start;
+
+    // Loop region: a bar on the ruler, and a tint over the lanes while looping is on.
+    const loop = this.loopDrag?.preview ? { ...this.loopDrag.preview, on: true } : this.loop;
+    if (loop) {
+      const lx0 = x(loop.start);
+      const lx1 = x(loop.end);
+      if (loop.on) {
+        ctx.fillStyle = 'rgba(246,196,83,0.07)';
+        ctx.fillRect(lx0, AXIS_H, lx1 - lx0, h - AXIS_H);
+      }
+      ctx.fillStyle = loop.on ? 'rgba(246,196,83,0.55)' : 'rgba(255,255,255,0.16)';
+      ctx.beginPath();
+      ctx.roundRect(lx0, 1, Math.max(2, lx1 - lx0), AXIS_H - 3, 3);
+      ctx.fill();
+      ctx.fillStyle = loop.on ? '#f6c453' : 'rgba(255,255,255,0.4)';
+      ctx.fillRect(Math.round(lx0), 0, 1.5, AXIS_H - 1);
+      ctx.fillRect(Math.round(lx1) - 1.5, 0, 1.5, AXIS_H - 1);
+    }
+
     // Bars (with a tempo) or seconds grid + labels.
     ctx.font = `600 9px ui-sans-serif, system-ui, sans-serif`;
     ctx.textBaseline = 'top';
-    const span = view.end - view.start;
     const step = this.bpm ? (60 / this.bpm) * 4 * Math.max(1, Math.ceil(span / 24 / ((60 / this.bpm) * 4))) : niceStep(span);
     for (let t = Math.ceil(view.start / step) * step; t <= view.end; t += step) {
       const gx = Math.round(x(t)) + 0.5;
       ctx.fillStyle = 'rgba(255,255,255,0.06)';
       ctx.fillRect(gx, AXIS_H, 1, h - AXIS_H);
-      ctx.fillStyle = '#6a6a70';
+      ctx.fillStyle = loop?.on && t >= loop.start && t < loop.end ? '#2a2208' : '#6a6a70';
       const label = this.bpm ? `${Math.round(t / ((60 / this.bpm) * 4)) + 1}` : formatTime(t);
-      ctx.fillText(label, gx + 3, 2);
+      ctx.fillText(label, gx + 3, 3);
     }
     // Song start marker (clips can start before it, e.g. a count-in).
     if (view.start < 0) {
@@ -151,6 +193,27 @@ export class Timeline {
     return v.start + ((clientX - rect.left) / rect.width) * (v.end - v.start);
   }
 
+  private onRuler(clientY: number): boolean {
+    return clientY - this.canvas.getBoundingClientRect().top < AXIS_H;
+  }
+
+  private nearEdge(clientX: number, time: number): boolean {
+    const rect = this.canvas.getBoundingClientRect();
+    const v = this.view();
+    const ex = rect.left + ((time - v.start) / (v.end - v.start)) * rect.width;
+    return Math.abs(clientX - ex) <= EDGE_PX;
+  }
+
+  /** The loop shifted by `dt`, kept inside the song, snapped, and the same length. */
+  private movedLoop(start: number, end: number, dt: number, free: boolean): { start: number; end: number } {
+    const len = end - start;
+    const grid = free ? 0.001 : this.bpm ? 60 / this.bpm : 0.1;
+    let s0 = Math.round((start + dt) / grid) * grid;
+    s0 = Math.min(Math.max(0, s0), Math.max(0, this.songDuration - len));
+    s0 = Math.round(s0 * 1000) / 1000;
+    return { start: s0, end: Math.round((s0 + len) * 1000) / 1000 };
+  }
+
   private clipAt(clientX: number, clientY: number): TimelineClip | null {
     const rect = this.canvas.getBoundingClientRect();
     const lane = Math.floor((clientY - rect.top - AXIS_H) / (LANE_H + LANE_GAP));
@@ -164,18 +227,52 @@ export class Timeline {
     const c = this.canvas;
     c.tabIndex = 0;
     c.addEventListener('pointerdown', (e) => {
+      if (this.onRuler(e.clientY)) {
+        const t = this.timeAt(e.clientX);
+        const loop = this.loop;
+        const mode = !loop
+          ? 'draw'
+          : this.nearEdge(e.clientX, loop.start)
+            ? 'start'
+            : this.nearEdge(e.clientX, loop.end)
+              ? 'end'
+              : t > loop.start && t < loop.end
+                ? 'move'
+                : 'draw';
+        this.loopDrag = { pointerId: e.pointerId, mode, anchor: t, startX: e.clientX, orig: loop ?? { start: t, end: t }, moved: false, preview: null };
+        this.drag = null;
+        capture(c, e.pointerId);
+        return;
+      }
       const clip = this.clipAt(e.clientX, e.clientY);
       if (clip) this.handlers.onSelect(clip.id);
       this.drag = clip
         ? { pointerId: e.pointerId, id: clip.id, startX: e.clientX, startOffset: clip.offset, moved: false, preview: clip.offset }
         : null;
       if (!clip) this.handlers.onSeek(Math.max(0, this.timeAt(e.clientX)));
-      c.setPointerCapture(e.pointerId);
+      capture(c, e.pointerId);
     });
     c.addEventListener('pointermove', (e) => {
+      const ld = this.loopDrag;
+      if (ld && e.pointerId === ld.pointerId) {
+        if (Math.abs(e.clientX - ld.startX) > 3) ld.moved = true;
+        if (!ld.moved) return;
+        const t = this.timeAt(e.clientX);
+        const { start, end } = ld.orig;
+        const dur = this.songDuration;
+        if (ld.mode === 'draw') ld.preview = normalizeLoop(ld.anchor, t, this.bpm, dur, e.altKey);
+        else if (ld.mode === 'start') ld.preview = normalizeLoop(t, end, this.bpm, dur, e.altKey);
+        else if (ld.mode === 'end') ld.preview = normalizeLoop(start, t, this.bpm, dur, e.altKey);
+        else ld.preview = this.movedLoop(start, end, t - ld.anchor, e.altKey);
+        this.dirty = true;
+        return;
+      }
       const d = this.drag;
       if (!d || e.pointerId !== d.pointerId) {
-        c.style.cursor = this.clipAt(e.clientX, e.clientY) ? 'grab' : 'pointer';
+        const loop = this.loop;
+        const onEdge = !!loop && (this.nearEdge(e.clientX, loop.start) || this.nearEdge(e.clientX, loop.end));
+        if (this.onRuler(e.clientY)) c.style.cursor = onEdge ? 'ew-resize' : 'text';
+        else c.style.cursor = this.clipAt(e.clientX, e.clientY) ? 'grab' : 'pointer';
         return;
       }
       const rect = c.getBoundingClientRect();
@@ -187,6 +284,14 @@ export class Timeline {
       this.dirty = true;
     });
     const end = (e: PointerEvent) => {
+      const ld = this.loopDrag;
+      if (ld && e.pointerId === ld.pointerId) {
+        this.loopDrag = null;
+        this.dirty = true;
+        if (!ld.moved) this.handlers.onSeek(Math.max(0, this.timeAt(e.clientX)));
+        else if (ld.preview && e.type === 'pointerup') this.handlers.onLoop(ld.preview.start, ld.preview.end);
+        return;
+      }
       const d = this.drag;
       if (!d || e.pointerId !== d.pointerId) return;
       this.drag = null;
@@ -214,6 +319,15 @@ export class Timeline {
     this.canvas.width = Math.round(rect.width * this.dpr);
     this.canvas.height = Math.round(rect.height * this.dpr);
     this.dirty = true;
+  }
+}
+
+/** Pointer capture, tolerating pointers the browser no longer tracks (e.g. synthetic events). */
+function capture(el: Element, pointerId: number): void {
+  try {
+    el.setPointerCapture(pointerId);
+  } catch {
+    // no active pointer: the drag still works while the pointer stays over the canvas
   }
 }
 

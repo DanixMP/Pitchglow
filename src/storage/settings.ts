@@ -124,3 +124,23 @@ export function saveTuning(prefs: TuningPrefs): void {
     // Storage unavailable (private mode etc.): settings just won't persist.
   }
 }
+
+// --- export format ----------------------------------------------------------------------------
+
+const EXPORT_KEY = 'recorder.exportFormat';
+
+export function loadExportFormat(): 'wav' | 'mp3' {
+  try {
+    return localStorage.getItem(EXPORT_KEY) === 'mp3' ? 'mp3' : 'wav';
+  } catch {
+    return 'wav';
+  }
+}
+
+export function saveExportFormat(format: 'wav' | 'mp3'): void {
+  try {
+    localStorage.setItem(EXPORT_KEY, format);
+  } catch {
+    // Storage unavailable: the choice just won't persist.
+  }
+}

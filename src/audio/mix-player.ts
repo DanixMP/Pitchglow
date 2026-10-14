@@ -2,9 +2,11 @@
 // the shared mix chain (gain -> pan -> master -> limiter, see chain.ts); gain/pan/master changes are
 // live, swapping a track's audio keeps the position and play state. Analysers tap every track and the
 // master (L/R) for the meters. A single clock (with output-latency compensation) drives the visuals.
+// With a loop region, every pass of the loop is scheduled ahead on the audio clock (sample-accurate,
+// with short fades where a clip is cut), so it keeps looping even when timers are throttled.
 
 import { DEFAULT_SONG_FX, type SongFx, type TrackFx } from '../project/fx';
-import { scheduleTrack } from '../project/model';
+import { loopPosition, scheduleTrack } from '../project/model';
 import { applyTrackFx, clampPan, createTrackChain, disconnectChain, FxBuses, MasterChain, type MasterSettings, type TrackChain } from './chain';
 import { sharedContext } from './context';
 
@@ -36,14 +38,24 @@ interface Lane {
   buffer: AudioBuffer;
   chain: TrackChain;
   meter: AnalyserNode;
-  source: AudioBufferSourceNode | null;
 }
+
+interface Voice {
+  source: AudioBufferSourceNode;
+  env: GainNode;
+}
+
+type Region = { start: number; end: number };
 
 const METER_FFT = 1024;
 
 /** Scheduling lead so all tracks start on the same audio frame. */
 const START_LEAD = 0.02;
 const SINGLE = 'take';
+/** How far ahead loop passes are scheduled (covers background-tab timer throttling). */
+const LOOP_LOOKAHEAD = 1.5;
+/** Fade where a loop boundary cuts through a clip, to avoid clicks. */
+const LOOP_FADE = 0.004;
 
 export class MixPlayer {
   private ctx: AudioContext | null = null;
@@ -53,6 +65,14 @@ export class MixPlayer {
   private buses: FxBuses | null = null;
   private songFx: { fx: SongFx; bpm: number | null } = { fx: DEFAULT_SONG_FX, bpm: null };
   private lanes = new Map<string, Lane>();
+  private voices = new Set<Voice>();
+  /** Loop region requested by the song (null = none). */
+  private loop: Region | null = null;
+  /** Loop in effect for the current run of playback (null = playing straight through). */
+  private playLoop: Region | null = null;
+  /** Context time of the next scheduled loop pass. */
+  private nextPass = 0;
+  private loopTimer = 0;
   private scratch = new Float32Array(METER_FFT);
   private startedAt = 0;
   private offset = 0;
@@ -86,8 +106,8 @@ export class MixPlayer {
   get currentTime(): number {
     if (!this._playing || !this.ctx) return this.offset;
     const latency = (this.ctx.outputLatency || 0) + (this.ctx.baseLatency || 0);
-    const t = this.offset + this.ctx.currentTime - this.startedAt - latency;
-    return Math.min(this._duration, Math.max(this.offset, t));
+    const elapsed = Math.max(0, this.ctx.currentTime - this.startedAt - latency);
+    return Math.min(this._duration, loopPosition(this.offset, elapsed, this.playLoop));
   }
 
   // --- content --------------------------------------------------------------------------------
@@ -126,7 +146,7 @@ export class MixPlayer {
       chain.gain.gain.value = spec.gain;
       chain.pan.pan.value = clampPan(spec.pan ?? 0);
       applyTrackFx(chain, spec.fx);
-      next.set(spec.id, { spec, buffer, chain, meter, source: null });
+      next.set(spec.id, { spec, buffer, chain, meter });
     }
     for (const [id, lane] of this.lanes) if (!next.has(id)) disconnectLane(lane);
     this.lanes = next;
@@ -170,6 +190,15 @@ export class MixPlayer {
   setSongFx(fx: SongFx, bpm: number | null): void {
     this.songFx = { fx, bpm };
     this.buses?.apply(fx, bpm, true);
+  }
+
+  /** Sets (or clears) the loop region; restarts playback from the current position if playing. */
+  setLoop(loop: Region | null): void {
+    if (loop?.start === this.loop?.start && loop?.end === this.loop?.end) return;
+    const wasPlaying = this._playing;
+    this.pause();
+    this.loop = loop;
+    if (wasPlaying) void this.play();
   }
 
   /** Live master fader / limiter. */
@@ -219,18 +248,65 @@ export class MixPlayer {
     await this.ctx.resume();
     if (this._playing) return this.startedAt;
     const now = Math.max(at ?? 0, this.ctx.currentTime + START_LEAD);
-    for (const lane of this.lanes.values()) {
-      const s = scheduleTrack(this.offset, lane.spec.offset, lane.buffer.duration);
-      if (!s) continue;
-      const source = new AudioBufferSourceNode(this.ctx, { buffer: lane.buffer });
-      source.connect(lane.chain.input);
-      source.start(now + s.delay, s.from);
-      lane.source = source;
-    }
+    const loop = this.loop && this.offset < this.loop.end && Math.min(this.loop.end, this._duration) - this.loop.start > 0.05 ? this.loop : null;
+    this.playLoop = loop;
     this.startedAt = now;
     this._playing = true;
-    this.armEndTimer();
+    if (loop) {
+      // First pass from the playhead to the loop end, then whole passes back to back.
+      this.scheduleSpan(now, this.offset, loop.end, false);
+      this.nextPass = now + (loop.end - this.offset);
+      this.fillLoop();
+    } else {
+      this.scheduleSpan(now, this.offset, Infinity, false);
+      this.armEndTimer();
+    }
     return now;
+  }
+
+  /** Schedules every track for song time [from, to), starting at context time `at`. */
+  private scheduleSpan(at: number, from: number, to: number, fadeIn: boolean): void {
+    const ctx = this.ctx!;
+    for (const lane of this.lanes.values()) {
+      const s = scheduleTrack(from, lane.spec.offset, lane.buffer.duration);
+      if (!s || from + s.delay >= to) continue;
+      const end = Math.min(lane.buffer.duration, to - lane.spec.offset);
+      const length = end - s.from;
+      if (length <= 0) continue;
+      const source = new AudioBufferSourceNode(ctx, { buffer: lane.buffer });
+      const env = new GainNode(ctx);
+      source.connect(env).connect(lane.chain.input);
+      const start = at + s.delay;
+      if (fadeIn && s.from > 0) {
+        env.gain.setValueAtTime(0, start);
+        env.gain.linearRampToValueAtTime(1, start + LOOP_FADE);
+      }
+      if (end < lane.buffer.duration) {
+        // Cut by the loop end: fade out just before it.
+        env.gain.setValueAtTime(1, Math.max(start + LOOP_FADE, start + length - LOOP_FADE));
+        env.gain.linearRampToValueAtTime(0, start + length);
+        source.start(start, s.from, length);
+      } else {
+        source.start(start, s.from);
+      }
+      const voice = { source, env };
+      this.voices.add(voice);
+      source.onended = () => {
+        this.voices.delete(voice);
+        env.disconnect();
+      };
+    }
+  }
+
+  /** Keeps loop passes scheduled LOOP_LOOKAHEAD seconds ahead. */
+  private fillLoop(): void {
+    const loop = this.playLoop;
+    if (!loop || !this.ctx || !this._playing) return;
+    while (this.nextPass - this.ctx.currentTime < LOOP_LOOKAHEAD) {
+      this.scheduleSpan(this.nextPass, loop.start, loop.end, true);
+      this.nextPass += loop.end - loop.start;
+    }
+    this.loopTimer = window.setTimeout(() => this.fillLoop(), 250);
   }
 
   pause(): void {
@@ -287,19 +363,18 @@ export class MixPlayer {
 
   private stopSources(): void {
     window.clearTimeout(this.endTimer);
-    for (const lane of this.lanes.values()) {
-      const s = lane.source;
-      lane.source = null;
-      if (s) {
-        s.onended = null;
-        try {
-          s.stop();
-        } catch {
-          // never started (scheduled in the future and stopped before) — fine
-        }
-        s.disconnect();
+    window.clearTimeout(this.loopTimer);
+    for (const { source, env } of this.voices) {
+      source.onended = null;
+      try {
+        source.stop();
+      } catch {
+        // never started (scheduled in the future and stopped before) — fine
       }
+      source.disconnect();
+      env.disconnect();
     }
+    this.voices.clear();
   }
 }
 

@@ -46,3 +46,14 @@ export function micFilterText(on: boolean): string {
     ? 'Mic noise filter on: the browser cleans the mic live, and it is baked into new recordings.'
     : 'Mic noise filter off: raw mic.';
 }
+
+/** One-time tips for the studio features (Phase 12), shown as captions the first time each comes up. */
+export const STUDIO_TIPS = {
+  song: ['This is a song: all its tracks play together.', 'Record, and your take becomes a new track.', 'The Controls panel edits the selected track.'],
+  beat: ['Your beat is in. Sing over it with headphones on.', 'Your take lands in time with the beat.'],
+  mixer: ['Drag a clip along the timeline to move it in time.', 'M mutes a track, S plays it alone.'],
+  loop: ['Loop on: drag along the ruler to choose the part that repeats.'],
+  keyShift: ['Key shift moves the whole song, beat and voices, and auto-tune follows.'],
+} as const;
+
+export type StudioTip = keyof typeof STUDIO_TIPS;

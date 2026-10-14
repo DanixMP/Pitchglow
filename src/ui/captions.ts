@@ -18,6 +18,13 @@ export class Captions {
     this.next();
   }
 
+  /** Shows captions after whatever is showing now (instead of replacing it). */
+  enqueue(text: string | readonly string[]): void {
+    const lines = typeof text === 'string' ? [text] : [...text];
+    if (this.el.classList.contains('is-visible')) this.queue.push(...lines);
+    else this.show(lines);
+  }
+
   clear(): void {
     window.clearTimeout(this.timer);
     this.queue = [];

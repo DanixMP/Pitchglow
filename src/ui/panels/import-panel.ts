@@ -1,10 +1,12 @@
-// Importing instrumentals: "Import beat" buttons, dropping audio files anywhere on the app, and the
+// Importing instrumentals and song files: "Import" buttons, dropping files anywhere on the app (a
+// .recsong opens as a new song, audio becomes the beat), and the
 // banner offering the detected key/tempo.
 
 import type { Session } from '../../app/session';
 import { openProject, type AppStore } from '../../app/state';
 import { scaleName } from '../../dsp/scales';
 import { instrumentalOf } from '../../project/model';
+import { isSongFile } from '../../project/package';
 import type { Captions } from '../captions';
 import { $ } from '../dom';
 
@@ -28,7 +30,8 @@ export function mountImportPanel(store: AppStore, session: Session, captions: Ca
   };
 
   const importFile = (file: File, target: 'new' | 'current') => {
-    session.importInstrumental(file, target === 'new');
+    if (isSongFile(file.name)) session.importProjectFile(file);
+    else session.importInstrumental(file, target === 'new');
     store.set({ takesDrawerOpen: false });
   };
 
@@ -72,8 +75,10 @@ export function mountImportPanel(store: AppStore, session: Session, captions: Ca
     overlay.hidden = true;
     const file = e.dataTransfer?.files[0];
     if (!file) return;
-    // With a song open, the beat goes into it; otherwise it starts a new song.
-    if (store.get().projectId) {
+    // A song file opens as a new song. With a song open, a beat goes into it; otherwise it starts one.
+    if (isSongFile(file.name)) {
+      importFile(file, 'new');
+    } else if (store.get().projectId) {
       if (confirmReplace()) importFile(file, 'current');
     } else {
       importFile(file, 'new');
@@ -90,10 +95,9 @@ export function mountImportPanel(store: AppStore, session: Session, captions: Ca
   store.watch(
     (s) => s.importing,
     (importing) => {
-      for (const b of [songImport, trackImport]) {
-        b.disabled = importing;
-        b.querySelector('span')!.textContent = importing ? 'Importing…' : 'Import beat';
-      }
+      songImport.disabled = trackImport.disabled = importing;
+      songImport.querySelector('span')!.textContent = importing ? 'Importing…' : 'Import';
+      trackImport.querySelector('span')!.textContent = importing ? 'Importing…' : 'Import beat';
     },
   );
 

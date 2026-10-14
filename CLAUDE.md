@@ -109,6 +109,24 @@ Look: a near-black background (#0f0f10-ish), muted dark lane fills whose hue cyc
     - Dreamy adds a tail of RMS 0.013 after the soloed vocal, where the dry export is 0.
     - Key shift +2 moved the beat's bass from 110.0 to 123.3 Hz (123.5 expected); undo brings back 110.0.
     - Robot sets 0 ms. Gate and pitch re-render the track; EQ is live.
+- **Polish (Phase 12):**
+  - **Loop region** (`project.loop = { start, end, on }`, saved with the song, not an undo step):
+    - Draw it by dragging along the timeline ruler (snaps to beats with a BPM, else 0.1 s; Alt = free). Drag its edges to resize it, its middle to move it; a plain click on the ruler still seeks.
+    - The Loop button in the transport, or **L**, toggles it. The first time, it makes 2 bars (or 4 s) around the playhead (`defaultLoop`).
+    - `MixPlayer.setLoop`: the first pass runs from the playhead to the loop end, then whole passes are scheduled back to back on the audio clock, 1.5 s ahead (`fillLoop`), so it keeps looping in a throttled background tab. Clips cut by a boundary get 4 ms fades. `currentTime` wraps with `loopPosition()`.
+    - Looping is off while a take is recorded over the song (the take is linear) and comes back afterwards (`Session.syncLoop`). Exports always render the whole song.
+  - **Song files** (`src/project/package.ts`): **`.recsong`** = a stored ZIP containing:
+    - `song.json` (format, version, project, take metas, asset info);
+    - `takes/<id>.wav` (32-bit float, lossless) and `takes/<id>.pitch` (`serializePitch`);
+    - `assets/<id>.<ext>` (the original beat file).
+    - Save: the download icon on a song. Open: the Songs "Import" button or a drop anywhere (a `.recsong` always opens as a new song).
+    - Import gives the song a new id and a free name ("X (2)"). Takes and beats already on this device (same UUID) are reused, not duplicated. `readZip` reads stored entries only and checks CRCs.
+  - **MP3 export:**
+    - A WAV/MP3 format select sits next to the export button (`state.exportFormat`, saved in `localStorage['recorder.exportFormat']`). It applies to take exports, processed takes and the mix; stems stay WAV.
+    - `src/audio/encode.ts` → a short-lived `mp3-worker.ts` running **LAME via `@breezystack/lamejs` (LGPL-3.0)**, unmodified, in its own build chunk, loaded only when exporting MP3. See `THIRD_PARTY_NOTICES.md`.
+    - Bitrates: 192 kbps stereo, 128 kbps mono. Rates MP3 can't carry are resampled to 48 kHz.
+    - Verified: a 15.1 s mix → a valid 354 KB MPEG-1 L3 file.
+  - **Onboarding** (`ui/panels/onboarding.ts`, texts in `STUDIO_TIPS`): one-time captions when a song first opens, a beat is in, the song has 2+ tracks, the loop goes on, or the key is shifted. They are shown only in playback mode and queued with `Captions.enqueue`, so they never cut each other off. Seen tips are kept in `localStorage['recorder.tipsSeen']` (delete it to see them again).
 - **Modes** (`AppState.mode`, driven by `Session`): `idle`, `listening` (live line, nothing saved), `recording` (live line + saving), `playback` (a saved recording is open and the roll follows `Player.currentTime`).
 
 ## Architecture
@@ -153,18 +171,23 @@ src/
     metronome.ts          scheduled click sounds
     render-worker.ts      Web Worker: processRecording off the main thread, caches the cleaned audio
     tuned-renderer.ts     main-thread client for the worker (per-channel latest-wins, returns notes)
-    wav.ts                16-bit PCM WAV encoder (mono or interleaved multi-channel)
+    wav.ts                16-bit PCM WAV encoder (mono or interleaved multi-channel); float WAV encode + WAV decode (song files)
+    encode.ts             export encoding: WAV, or MP3 via mp3-worker.ts (LAME, LGPL, own chunk)
+    mp3-worker.ts         Web Worker: lamejs MP3 encoder
+    zip.ts                stored ZIP writer + reader (stems, song files)
   project/
     model.ts              Project/Track types + pure helpers (create, duplicate, update, effective gain, scheduling, transpose)
     fx.ts                 TrackFx / SongFx, presets, echo timing
     history.ts            undo/redo snapshots with drag coalescing
+    package.ts            .recsong song files: pack/unpack (project + takes + beat), import id/name handling
   storage/
     recording-store.ts    IndexedDB: takes + projects; self-healing open/upgrade
-    pitch-track.ts        pack/unpack PitchFrame[] <-> typed-array columns
+    pitch-track.ts        pack/unpack PitchFrame[] <-> typed-array columns; columns <-> bytes
     settings.ts           tuning + clean-up prefs in localStorage
   ui/
     dom.ts                $ / $$ helpers
     piano-roll.ts         canvas renderer: keyboard, lanes, glowing line; live + playback modes, drag to scrub
+    timeline.ts           clip lanes with waveforms, drag/nudge clips, seek; loop region on the ruler
     recordings-list.ts    takes list items (play, rename, export, delete; + / drag into the open song)
     icons.ts              shared SVG icons, icon buttons, inline name inputs, take drag MIME type
     knob.ts               rotary knob (drag, wheel, arrows, double-click to reset)
@@ -185,6 +208,7 @@ src/
       tuning-panel.ts     Auto-tune + Harmony sections
       cleanup-panel.ts    Noise reduction section
       fx-panel.ts         Effects (track) and Song FX (key shift, reverb, echo) sections
+      onboarding.ts       one-time studio tips (captions) when features first come up
 public/                   manifest, icon.svg, icons/*.png (generated)
 scripts/make-icons.mjs    procedural icon renderer (no deps)
 vite.config.ts            base './', LAN HTTPS mode, build-time service worker
@@ -202,7 +226,7 @@ tests/                    vitest unit tests (dsp, tracker, wav, packing, storage
 Data flow: mic → AudioWorklet → main thread `PitchTracker` (downsample, YIN, median filter) → `PitchFrame { time, freq, midi, clarity, rms }` → `PianoRoll.push()` → canvas drawn on each `requestAnimationFrame`.
 While recording, the same blocks and frames are also collected into a take. On Stop the take is saved to IndexedDB and opened in playback mode.
 
-Shortcuts: **R** = record/stop, **T** = auto-tune on/off, **Space** = play/pause and **A** = original/tuned (playback mode).
+Shortcuts: **R** = record/stop, **T** = auto-tune on/off, **Space** = play/pause and **A** = original/tuned (playback mode), **L** = loop on/off (song open), **Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y** = undo/redo (song open).
 
 ## Commands
 
@@ -371,7 +395,8 @@ The user asked for pitch and reverb effects, a remix-studio style mixer, importi
 - [ ] Listening test on real material (user): preset voicings, reverb levels, gate/de-ess amounts
 
 ### Phase 12 — Polish
-- [ ] Clip/timeline view: waveforms per track, playhead, loop region
-- [ ] Project export/import (a single file with takes + instrumental)
-- [ ] MP3 export (lamejs; check the license) alongside WAV
-- [ ] Onboarding captions for the studio features (same caption system)
+- [x] Clip/timeline view: waveforms per track, playhead (Phase 10), **loop region** (draw/resize/move on the ruler, L / Loop button, sample-accurate passes); browser-verified: 1.25–6.25 s loop at 96 BPM wraps 4.62 → 1.63 s with audio on every pass, L off plays through to the end
+- [x] Song export/import as one `.recsong` file (takes lossless + pitch + original beat); round trip verified in the app (same-device import reuses the take; a "foreign" file adds 1 take + beat and renders the same mix)
+- [x] MP3 export (LAME via `@breezystack/lamejs`, **LGPL-3.0**: used unmodified in its own worker chunk, notice in `THIRD_PARTY_NOTICES.md`) alongside WAV; format remembered
+- [x] Onboarding captions for the studio features (song, beat, mixer, loop, key shift), once each, queued
+- [ ] Real-world check (user): loop while practising, save a song on one device and open it on another, MP3 in other players

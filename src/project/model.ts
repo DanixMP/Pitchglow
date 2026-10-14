@@ -53,6 +53,14 @@ export interface Project {
   bpm?: number | null;
   /** Reverb/echo buses (Phase 11; missing = defaults). */
   fx?: SongFx;
+  /** Loop region (Phase 12): set by dragging along the timeline ruler, toggled with Loop / L. */
+  loop?: LoopRegion | null;
+}
+
+export interface LoopRegion {
+  start: number;
+  end: number;
+  on: boolean;
 }
 
 /** Track colours: spread around the wheel, starting with the app's accent-ish yellow. */
@@ -244,4 +252,54 @@ export function scheduleTrack(songTime: number, offset: number, duration: number
   const local = songTime - offset;
   if (local >= duration) return null;
   return local < 0 ? { delay: -local, from: 0 } : { delay: 0, from: local };
+}
+
+// --- loop region (Phase 12) ----------------------------------------------------------------
+
+/** Shortest loop the timeline accepts, seconds. */
+export const MIN_LOOP_SECONDS = 0.25;
+
+/**
+ * Song position after `elapsed` seconds of playback that started at `from`. Inside a loop, playback
+ * wraps from its end back to its start. A start at or after the loop's end plays straight on.
+ */
+export function loopPosition(from: number, elapsed: number, loop: { start: number; end: number } | null): number {
+  const t = from + elapsed;
+  if (!loop || from >= loop.end || t < loop.end) return t;
+  const len = loop.end - loop.start;
+  return loop.start + ((t - loop.end) % len);
+}
+
+/**
+ * A loop from two points in either order: snapped to beats (with a tempo) or 0.1 s (`free`: 1 ms),
+ * clamped to the song. Null when it would be shorter than MIN_LOOP_SECONDS.
+ */
+export function normalizeLoop(
+  a: number,
+  b: number,
+  bpm: number | null | undefined,
+  duration: number,
+  free = false,
+): { start: number; end: number } | null {
+  const grid = free ? 0.001 : bpm ? 60 / bpm : 0.1;
+  const snap = (t: number) => Math.round(Math.round(t / grid) * grid * 1000) / 1000 || 0;
+  const start = Math.max(0, snap(Math.min(a, b)));
+  const end = Math.min(duration, snap(Math.max(a, b)));
+  return end - start >= MIN_LOOP_SECONDS ? { start, end } : null;
+}
+
+/** A first loop around the playhead: the bar it's in plus the next one (with a tempo), else 4 s. */
+export function defaultLoop(time: number, bpm: number | null | undefined, duration: number): { start: number; end: number } | null {
+  const len = bpm ? (60 / bpm) * 8 : 4;
+  let start = bpm ? Math.floor(time / ((60 / bpm) * 4)) * ((60 / bpm) * 4) : Math.floor(time);
+  if (start + len > duration) start = Math.max(0, duration - len);
+  return normalizeLoop(start, start + len, bpm, duration, true);
+}
+
+/** The loop playback should follow (on, and still inside the song), or null. */
+export function activeLoop(p: Project, duration: number): { start: number; end: number } | null {
+  const loop = p.loop;
+  if (!loop?.on) return null;
+  const end = Math.min(loop.end, duration);
+  return end - loop.start >= MIN_LOOP_SECONDS ? { start: loop.start, end } : null;
 }

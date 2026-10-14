@@ -5,7 +5,7 @@ import { processSettingsOf, wantsProcessed } from './app/processing';
 import { Session } from './app/session';
 import { createAppStore } from './app/state';
 import { setupPwa } from './pwa';
-import { saveCleanup, saveInput, saveTuning } from './storage/settings';
+import { saveCleanup, saveExportFormat, saveInput, saveTuning } from './storage/settings';
 import { Captions } from './ui/captions';
 import { $ } from './ui/dom';
 import { mountCleanupPanel } from './ui/panels/cleanup-panel';
@@ -15,6 +15,7 @@ import { mountImportPanel } from './ui/panels/import-panel';
 import { mountInputPanel } from './ui/panels/input-panel';
 import { mountLayout } from './ui/panels/layout';
 import { mountLiveControls } from './ui/panels/live-controls';
+import { mountOnboarding } from './ui/panels/onboarding';
 import { mountReadout } from './ui/panels/readout';
 import { mountSongsPanel } from './ui/panels/songs-panel';
 import { mountTakesPanel } from './ui/panels/takes-panel';
@@ -41,6 +42,7 @@ mountCleanupPanel(store, captions);
 mountFxPanel(store, session);
 const transport = mountTransport(store, session, roll, captions);
 const readout = mountReadout(store, roll, session.player);
+mountOnboarding(store, captions);
 
 // Inspector settings changed: apply them (to the take, or the selected track of the open song),
 // then persist the *global* defaults (a track's own settings are saved with its song).
@@ -59,8 +61,13 @@ store.watch(
   (s) => s.input,
   (input) => saveInput(input),
 );
+store.watch(
+  (s) => s.exportFormat,
+  (format) => saveExportFormat(format),
+);
 
-// Keyboard shortcuts: R record/stop, T auto-tune on/off, Space play/pause, A original/processed.
+// Keyboard shortcuts: R record/stop, T auto-tune on/off, Space play/pause, A original/processed,
+// L loop on/off (songs).
 document.addEventListener('keydown', (e) => {
   if (e.target instanceof HTMLSelectElement) return;
   if (e.target instanceof HTMLInputElement && e.target.type !== 'range' && e.target.type !== 'checkbox') return;
@@ -79,6 +86,8 @@ document.addEventListener('keydown', (e) => {
     $('record').click();
   } else if (e.key === 't') {
     $('tune-on').click();
+  } else if (e.key === 'l' && s.projectId && s.mode === 'playback') {
+    session.toggleLoop();
   } else if (e.key === 'a' && s.mode === 'playback' && processSettingsOf(s.tuning, s.cleanup)) {
     session.setListenProcessed(!s.listenProcessed);
     const next = store.get();

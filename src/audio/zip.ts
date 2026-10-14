@@ -85,3 +85,43 @@ export function createZip(entries: readonly ZipEntry[], date = new Date()): Uint
   }
   return out;
 }
+
+/**
+ * Reads a .zip with stored (uncompressed) entries, such as the ones createZip writes, via the central
+ * directory. Throws on compressed entries or a damaged file.
+ */
+export function readZip(data: Uint8Array): Map<string, Uint8Array> {
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  let eocd = -1;
+  for (let i = data.length - 22; i >= Math.max(0, data.length - 22 - 0xffff); i--) {
+    if (view.getUint32(i, true) === 0x06054b50) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) throw new Error('Not a zip file.');
+  const count = view.getUint16(eocd + 10, true);
+  let p = view.getUint32(eocd + 16, true);
+  const dec = new TextDecoder();
+  const out = new Map<string, Uint8Array>();
+  for (let n = 0; n < count; n++) {
+    if (p + 46 > data.length || view.getUint32(p, true) !== 0x02014b50) throw new Error('The zip file is damaged.');
+    const method = view.getUint16(p + 10, true);
+    const crc = view.getUint32(p + 16, true);
+    const size = view.getUint32(p + 20, true);
+    const nameLen = view.getUint16(p + 28, true);
+    const extraLen = view.getUint16(p + 30, true);
+    const commentLen = view.getUint16(p + 32, true);
+    const local = view.getUint32(p + 42, true);
+    const name = dec.decode(data.subarray(p + 46, p + 46 + nameLen));
+    p += 46 + nameLen + extraLen + commentLen;
+    if (name.endsWith('/')) continue; // directory
+    if (method !== 0) throw new Error('This zip is compressed; only files saved by this app can be opened.');
+    if (view.getUint32(local, true) !== 0x04034b50) throw new Error('The zip file is damaged.');
+    const start = local + 30 + view.getUint16(local + 26, true) + view.getUint16(local + 28, true);
+    const entry = data.subarray(start, start + size);
+    if (entry.length !== size || crc32(entry) !== crc) throw new Error('The zip file is damaged.');
+    out.set(name, entry);
+  }
+  return out;
+}

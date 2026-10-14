@@ -1,4 +1,4 @@
-// Left column: songs (projects) — new, open, rename, duplicate, delete.
+// Left column: songs (projects) — new, open, rename, save as a file, duplicate, delete.
 
 import type { Session } from '../../app/session';
 import type { AppStore } from '../../app/state';
@@ -41,6 +41,8 @@ export function mountSongsPanel(store: AppStore, session: Session): void {
     meta.textContent = `${n} ${n === 1 ? 'track' : 'tracks'} · ${dateFormat.format(p.updatedAt)}`;
     info.append(name, meta);
 
+    const save = iconButton('download', `Save ${p.name} as a file (.recsong: takes and beat included)`);
+    save.addEventListener('click', () => session.exportProjectFile(p.id));
     const dup = iconButton('copy', `Duplicate ${p.name}`);
     dup.addEventListener('click', () => session.duplicateProject(p.id));
     const del = iconButton('trash', `Delete ${p.name}`);
@@ -48,7 +50,7 @@ export function mountSongsPanel(store: AppStore, session: Session): void {
       if (confirm(`Delete the song “${p.name}”? Its takes stay in your library.`)) session.deleteProject(p.id);
     });
 
-    li.append(dot, info, dup, del);
+    li.append(dot, info, save, dup, del);
     li.addEventListener('click', (e) => {
       if ((e.target as HTMLElement).closest('button, input')) return;
       session.openProject(p.id);

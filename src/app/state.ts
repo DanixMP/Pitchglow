@@ -4,7 +4,7 @@ import type { InputKind } from '../audio/audio-input';
 import type { Scale } from '../dsp/scales';
 import type { Project, Track } from '../project/model';
 import type { RecordingMeta } from '../storage/recording-store';
-import { loadCleanup, loadInput, loadTuning, type CleanupPrefs, type InputPrefs, type TuningPrefs } from '../storage/settings';
+import { loadCleanup, loadExportFormat, loadInput, loadTuning, type CleanupPrefs, type InputPrefs, type TuningPrefs } from '../storage/settings';
 import { Store } from './store';
 
 /** idle → listening/recording (live input) or playback (a take or a song is open). */
@@ -31,6 +31,8 @@ export interface AppState {
   source: InputKind;
   /** Count-in, sync nudge, calibration. */
   input: InputPrefs;
+  /** File format for exports (takes, processed takes, mixes); stems are always WAV. */
+  exportFormat: 'wav' | 'mp3';
   /** An instrumental is being imported/decoded. */
   importing: boolean;
   detection: Detection | null;
@@ -77,6 +79,7 @@ export function createAppStore(): AppStore {
     mode: 'idle',
     source: 'mic',
     input: loadInput(),
+    exportFormat: loadExportFormat(),
     importing: false,
     detection: null,
     calibrating: false,

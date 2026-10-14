@@ -24,17 +24,22 @@ import { History } from '../project/history';
 import { PitchTracker, type PitchFrame } from '../audio/pitch-tracker';
 import { SampleBuffer } from '../audio/sample-buffer';
 import { TunedRenderer } from '../audio/tuned-renderer';
-import { encodeWavChannels, wavBlob, wavBlobChannels } from '../audio/wav';
+import { encodeWavChannels } from '../audio/wav';
+import { encodeAudio } from '../audio/encode';
+import { packSong, prepareImport, unpackSong, SONG_FILE_EXT } from '../project/package';
 import {
+  activeLoop,
   addTrack,
   applyKey,
   createInstrumentalTrack,
   createProject,
   createVocalTrack,
+  defaultLoop,
   duplicateProject as duplicateProjectModel,
   effectiveGain,
   masterOf,
   newId,
+  normalizeLoop,
   trackSemitones,
   transposeScale,
   nextProjectName,
@@ -165,6 +170,7 @@ export class Session {
   private async playAlong(song: Project): Promise<void> {
     const ctx = this.player.context;
     const { input } = this.store.get();
+    this.player.setLoop(null); // the take is recorded straight through
     const end = this.player.duration;
     const position = this.player.currentTime >= end - 0.05 ? 0 : this.player.currentTime;
     this.player.seek(position);
@@ -194,6 +200,7 @@ export class Session {
     this.sync = null;
     this.tracker = null;
     if (sync) this.player.pause();
+    this.syncLoop();
     await this.input.stop();
     this.roll.stop();
     this.store.set({ mode: this.store.get().projectId ? 'playback' : 'idle' });
@@ -376,7 +383,7 @@ export class Session {
   exportRecording(id: string): void {
     this.run(async () => {
       const take = this.takes.get(id) ?? (this.preview?.meta.id === id ? this.preview : await this.loadTake(id));
-      downloadBlob(wavBlob(take.samples, take.meta.sampleRate), take.meta.name);
+      await this.download([take.samples], take.meta.sampleRate, take.meta.name);
     });
   }
 
@@ -391,11 +398,23 @@ export class Session {
         const rate = Math.max(...specs.map((s) => s.sampleRate));
         const song = { fx: songFxOf(project), bpm: project.bpm ?? null };
         const mix = await renderMix(specs, rate, masterOf(project), exportLength(specs, song), song);
-        downloadBlob(wavBlobChannels(mix.channels, mix.sampleRate), `${project.name} (mix)`);
+        await this.download(mix.channels, mix.sampleRate, `${project.name} (mix)`);
       });
     } else if (this.preview?.processed) {
       const label = processedLabelOf(state.tuning, state.cleanup).toLowerCase();
-      downloadBlob(wavBlob(this.preview.processed, this.preview.meta.sampleRate), `${this.preview.meta.name} (${label})`);
+      const { processed, meta } = this.preview;
+      this.run(() => this.download([processed], meta.sampleRate, `${meta.name} (${label})`));
+    }
+  }
+
+  /** Encodes in the chosen export format (WAV or MP3) and downloads. */
+  private async download(channels: readonly Float32Array[], sampleRate: number, name: string): Promise<void> {
+    const format = this.store.get().exportFormat;
+    if (format === 'mp3') this.store.set({ status: 'Encoding MP3…' });
+    try {
+      downloadBlob(await encodeAudio(channels, sampleRate, format), name, format);
+    } finally {
+      if (format === 'mp3') this.store.set((st) => (st.status === 'Encoding MP3…' ? { status: '' } : {}));
     }
   }
 
@@ -501,6 +520,7 @@ export class Session {
     for (const t of this.renderTimers.values()) window.clearTimeout(t);
     this.renderTimers.clear();
     this.trackAudio.clear();
+    this.player.setLoop(null);
     this.player.unload();
     this.roll.clear();
     this.roll.setScaleHint(null);
@@ -539,6 +559,58 @@ export class Session {
       this.saveTimers.delete(id);
       await (await this.getDb()).deleteProject(id);
       this.store.set((s) => ({ projects: s.projects.filter((p) => p.id !== id) }));
+    });
+  }
+
+  /** Saves a whole song (takes + instrumental file) as one .recsong file. */
+  exportProjectFile(id: string): void {
+    this.run(async () => {
+      const project = this.store.get().projects.find((p) => p.id === id);
+      if (!project) return;
+      const db = await this.getDb();
+      const takeIds = [...new Set(project.tracks.map((t) => t.takeId).filter((x): x is string => !!x))];
+      const takes = [];
+      for (const takeId of takeIds) {
+        const take = await this.loadTake(takeId);
+        takes.push({ meta: take.meta, samples: take.samples, pitch: packFrames(take.frames) });
+      }
+      const assets = [];
+      for (const assetId of new Set(project.tracks.map((t) => t.assetId).filter((x): x is string => !!x))) {
+        const asset = await db.getAsset(assetId);
+        if (!asset) throw new Error('The instrumental file is missing.');
+        assets.push(asset);
+      }
+      const file = packSong({ project, takes, assets });
+      downloadBlob(new Blob([file], { type: 'application/zip' }), project.name, SONG_FILE_EXT);
+    });
+  }
+
+  /** Imports a .recsong file as a new song (adding its takes to the library) and opens it. */
+  importProjectFile(file: File): void {
+    this.run(async () => {
+      if (this.isLive) await this.stopLive();
+      this.store.set({ importing: true, status: '' });
+      try {
+        const pkg = unpackSong(new Uint8Array(await file.arrayBuffer()));
+        const db = await this.getDb();
+        const state = this.store.get();
+        const add = prepareImport(pkg, {
+          projectNames: state.projects.map((p) => p.name),
+          takeIds: new Set(state.recordings.map((r) => r.id)),
+          assetIds: new Set(await db.listAssetIds()),
+        });
+        for (const t of add.takes) await db.save(t.meta, { id: t.meta.id, samples: t.samples, pitch: t.pitch });
+        for (const a of add.assets) await db.putAsset(a);
+        await db.putProjects([add.project]);
+        void navigator.storage?.persist?.();
+        this.store.set((st) => ({ projects: [add.project, ...st.projects] }));
+        await this.refreshList();
+        await this.openProjectNow(add.project.id);
+        const n = add.takes.length;
+        this.store.set({ status: `Imported “${add.project.name}”${n ? ` with ${n} new ${n === 1 ? 'take' : 'takes'}` : ''}.` });
+      } finally {
+        this.store.set({ importing: false });
+      }
     });
   }
 
@@ -616,6 +688,36 @@ export class Session {
     if (!project) return;
     this.mutateProject(project.id, (p) => ({ ...p, ...patch, updatedAt: Date.now() }), 'masterGainDb' in patch ? 'master' : null);
     this.player.setMaster(masterOf(openProject(this.store.get())!));
+  }
+
+  /** Sets the loop region (drawn on the timeline ruler) and switches looping on. Not an undo step. */
+  setLoopRegion(start: number, end: number): void {
+    const project = openProject(this.store.get());
+    if (!project) return;
+    const region = normalizeLoop(start, end, project.bpm, this.player.duration, true);
+    if (!region) return;
+    this.mutateProject(project.id, (p) => ({ ...p, loop: { ...region, on: true }, updatedAt: Date.now() }), false);
+    this.syncLoop();
+  }
+
+  /** Loop on/off (L). The first time, a loop of two bars (or 4 s) around the playhead is made. */
+  toggleLoop(): void {
+    const project = openProject(this.store.get());
+    if (!project || this.player.duration <= 0) return;
+    let loop = project.loop ? { ...project.loop, on: !project.loop.on } : null;
+    if (!loop) {
+      const region = defaultLoop(this.player.currentTime, project.bpm, this.player.duration);
+      if (!region) return;
+      loop = { ...region, on: true };
+    }
+    this.mutateProject(project.id, (p) => ({ ...p, loop, updatedAt: Date.now() }), false);
+    this.syncLoop();
+  }
+
+  /** Points the player at the open song's loop (none while a take is being recorded over it). */
+  private syncLoop(): void {
+    const project = openProject(this.store.get());
+    this.player.setLoop(project && !this.take ? activeLoop(project, this.player.duration) : null);
   }
 
   /** The inspector's tuning as the roll should draw it: moved by the selected track's transpose. */
@@ -1113,6 +1215,7 @@ export class Session {
     this.player.setMaster(masterOf(project));
     this.player.setSongFx(songFxOf(project), project.bpm ?? null);
     this.player.setTracks(this.mixSpecs(project));
+    this.syncLoop();
     this.store.set({ duration: this.player.duration });
     this.refreshSongView();
   }

@@ -1552,3 +1552,17 @@ body {
   padding-bottom: 8px;
   font-size: 12px;
 }
+
+/* --- Phase 12: loop button, export format ------------------------------------------------------ */
+
+.loop-btn[aria-pressed='true'] {
+  color: var(--accent);
+  background: rgba(246, 196, 83, 0.14);
+}
+
+.select-small {
+  width: auto;
+  padding: 5px 26px 5px 10px;
+  font-size: 12px;
+  background-size: 16px;
+}
