@@ -2,9 +2,10 @@
 // a fixed number of *scale steps*, so harmonies stay in key (diatonic thirds, fifths, octaves).
 
 import type { PitchFrame } from '../audio/pitch-tracker';
-import { correctTrack, type Correction, type TuneSettings } from './autotune';
+import type { Correction, TuneSettings } from './autotune';
 import { limit } from './limiter';
-import { renderTuned } from './psola';
+import { analyzePsola, renderGrains } from './psola';
+import { planVoices } from './voice-engine';
 import { nearestInScale, scaleMask, type Scale } from './scales';
 import { pitchClass } from './notes';
 
@@ -54,7 +55,7 @@ export function harmonyCorrections(lead: readonly Correction[], voice: HarmonyVo
   });
 }
 
-/** Lead (auto-tuned) plus harmony voices, mixed and peak-limited so it never clips. */
+/** Lead (auto-tuned) plus harmony voices, mixed and peak-limited so it never clips (offline reference). */
 export function renderWithHarmony(
   samples: Float32Array,
   sampleRate: number,
@@ -62,20 +63,18 @@ export function renderWithHarmony(
   settings: TuneSettings | null,
   semitones = 0,
 ): Float32Array {
-  // Auto-tune in the sung key (or no tuning: the sung pitch), then transpose the whole curve, so
-  // harmonies derived from it move along and land in the shifted key.
-  let lead: Correction[] = settings ? correctTrack(frames, settings) : frames.map((f) => ({ target: null, corrected: f.midi }));
-  if (semitones) lead = lead.map((c) => (c.corrected === null ? c : { ...c, corrected: c.corrected + semitones }));
-  const out = renderTuned(samples, sampleRate, frames, lead);
-  if (!settings) return out;
-  const voices = settings.harmony?.voices ?? [];
-  if (voices.length === 0) return out;
-
-  // Equal-power-ish: more voices -> each a bit quieter, so the stack doesn't swamp the lead.
-  const gain = (settings.harmony!.mix ?? 0.6) / Math.sqrt(voices.length);
-  for (const voice of voices) {
-    const v = renderTuned(samples, sampleRate, frames, harmonyCorrections(lead, voice, settings.scale));
-    for (let i = 0; i < out.length; i++) out[i] += gain * v[i];
+  const analysis = analyzePsola(samples, sampleRate, frames);
+  const plans = planVoices(analysis, frames, settings, semitones);
+  if (!plans) return samples.slice();
+  const n = samples.length;
+  const out = new Float32Array(n);
+  const voice = new Float32Array(n);
+  const weight = new Float32Array(n);
+  renderGrains(samples, plans.lead, 0, n, out, weight);
+  if (plans.harmonies.length === 0) return out;
+  for (const h of plans.harmonies) {
+    renderGrains(samples, h, 0, n, voice, weight);
+    for (let i = 0; i < n; i++) out[i] += plans.harmonyGain * voice[i];
   }
   // Only the loudest moments are turned down; the rest of the take keeps its level.
   return limit(out, sampleRate, { ceiling: 0.98 });

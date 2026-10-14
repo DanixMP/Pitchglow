@@ -4,11 +4,22 @@
 // master (L/R) for the meters. A single clock (with output-latency compensation) drives the visuals.
 // With a loop region, every pass of the loop is scheduled ahead on the audio clock (sample-accurate,
 // with short fades where a clip is cut), so it keeps looping even when timers are throttled.
+//
+// Two kinds of lanes (Phase 13):
+// - buffer lanes (instrumentals): AudioBufferSourceNodes scheduled per pass, as above;
+// - engine lanes (vocals): a voice-engine AudioWorkletNode that holds the take and its grain plans and
+//   follows transport messages (start frame, position, loop). New plans (a knob turned) apply on the
+//   next 128-sample block without interrupting playback.
 
+import type { VoicePlans } from '../dsp/voice-engine';
+import { resample } from '../dsp/vocoder';
 import { DEFAULT_SONG_FX, type SongFx, type TrackFx } from '../project/fx';
 import { loopPosition, scheduleTrack } from '../project/model';
 import { applyTrackFx, clampPan, createTrackChain, disconnectChain, FxBuses, MasterChain, type MasterSettings, type TrackChain } from './chain';
 import { sharedContext } from './context';
+import { ENGINE_PROCESSOR, type EngineMessage, type EngineOptions } from './engine/protocol';
+import type { EngineTransport } from './engine/transport';
+import engineWorkletUrl from './engine/engine-worklet.ts?worker&url';
 
 export interface Level {
   /** Linear peak and RMS over the analyser window (~21 ms). */
@@ -29,15 +40,55 @@ export interface MixTrackSpec {
   pan?: number;
   /** Vocal chain + sends (live parts). */
   fx?: TrackFx;
+  /** Voice-engine grain plans for `samples` (auto-tune, harmony, transpose); null = play as is. */
+  plans?: VoicePlans | null;
   /** Start position in the song, seconds. */
   offset: number;
 }
 
 interface Lane {
   spec: MixTrackSpec;
-  buffer: AudioBuffer;
+  /** Buffer lanes (instrumentals). */
+  buffer: AudioBuffer | null;
+  /** Engine lanes (vocals). */
+  engine: AudioWorkletNode | null;
+  /** Length in seconds. */
+  duration: number;
   chain: TrackChain;
   meter: AnalyserNode;
+}
+
+/** Contexts with the voice-engine module loaded. */
+const engineLoaded = new WeakSet<BaseAudioContext>();
+
+/** Loads the voice-engine worklet module into a context (once). */
+export async function loadEngine(ctx: BaseAudioContext): Promise<void> {
+  if (engineLoaded.has(ctx)) return;
+  await ctx.audioWorklet.addModule(engineWorkletUrl);
+  engineLoaded.add(ctx);
+}
+
+/** Take audio at the context's rate (resampled copies are cached per array). */
+const resampled = new WeakMap<Float32Array, { rate: number; samples: Float32Array }>();
+export function atRate(samples: Float32Array, from: number, to: number): Float32Array {
+  if (from === to) return samples;
+  const hit = resampled.get(samples);
+  if (hit?.rate === to) return hit.samples;
+  const out = resample(samples, from / to, Math.floor((samples.length * to) / from));
+  resampled.set(samples, { rate: to, samples: out });
+  return out;
+}
+
+/** An engine node for a vocal lane; plans only apply to audio already at the context rate. */
+export function createEngine(ctx: BaseAudioContext, spec: MixTrackSpec, transport: EngineTransport | null): AudioWorkletNode {
+  const rate = ctx.sampleRate;
+  const processorOptions: EngineOptions = {
+    samples: atRate(spec.samples, spec.sampleRate, rate),
+    plans: spec.sampleRate === rate ? (spec.plans ?? null) : null,
+    offset: Math.round(spec.offset * rate),
+    transport,
+  };
+  return new AudioWorkletNode(ctx, ENGINE_PROCESSOR, { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [1], processorOptions });
 }
 
 interface Voice {
@@ -66,6 +117,8 @@ export class MixPlayer {
   private songFx: { fx: SongFx; bpm: number | null } = { fx: DEFAULT_SONG_FX, bpm: null };
   private lanes = new Map<string, Lane>();
   private voices = new Set<Voice>();
+  /** "Hear myself": the live voice through its own track chain (effects + sends) into the master. */
+  private monitor: { node: AudioNode; chain: TrackChain } | null = null;
   /** Loop region requested by the song (null = none). */
   private loop: Region | null = null;
   /** Loop in effect for the current run of playback (null = playing straight through). */
@@ -96,6 +149,11 @@ export class MixPlayer {
     return this.ensureContext();
   }
 
+  /** Loads the voice engine into the shared context; call before any take or song is played. */
+  async loadEngine(): Promise<void> {
+    await loadEngine(this.ensureContext());
+  }
+
   /** Decodes an audio file (mp3/wav/m4a/ogg/flac…) at the context's sample rate. */
   decode(data: ArrayBuffer): Promise<AudioBuffer> {
     // decodeAudioData detaches its argument, so give it a copy and keep the caller's bytes intact.
@@ -114,13 +172,28 @@ export class MixPlayer {
 
   /** Single-take preview: one track at offset 0, full gain. Resets the position. */
   load(samples: Float32Array, sampleRate: number): void {
-    this.setTracks([{ id: SINGLE, samples, sampleRate, gain: 1, offset: 0 }]);
+    this.setTracks([{ id: SINGLE, samples, sampleRate, gain: 1, offset: 0, plans: null }]);
     this.offset = 0;
   }
 
-  /** Single-take preview: replace the audio (A/B), keeping position and play state. */
-  swap(samples: Float32Array, sampleRate: number): void {
-    this.swapTrack(SINGLE, samples, sampleRate);
+  /** Single-take preview: replace the audio and plans (A/B, new clean-up), keeping position and play state. */
+  swap(samples: Float32Array, sampleRate: number, plans: VoicePlans | null = null): void {
+    const lane = this.lanes.get(SINGLE);
+    if (lane && lane.spec.samples === samples && lane.spec.sampleRate === sampleRate) return this.setPlans(SINGLE, plans);
+    this.swapTrack(SINGLE, samples, sampleRate, plans);
+  }
+
+  /** Single-take preview: new plans only (a knob turned), seamlessly. */
+  setPreviewPlans(plans: VoicePlans | null): void {
+    this.setPlans(SINGLE, plans);
+  }
+
+  /** New voice-engine plans for a vocal lane; applied from the next block, without a gap. */
+  setPlans(id: string, plans: VoicePlans | null): void {
+    const lane = this.lanes.get(id);
+    if (!lane?.engine || !this.ctx || lane.spec.plans === plans) return;
+    lane.spec = { ...lane.spec, plans };
+    this.post(lane, { type: 'plans', plans: lane.spec.sampleRate === this.ctx.sampleRate ? plans : null });
   }
 
   /** Replaces the set of tracks. Unchanged audio is reused; position and play state are kept. */
@@ -131,11 +204,10 @@ export class MixPlayer {
     this.stopSources();
 
     const next = new Map<string, Lane>();
+    const rate = ctx.sampleRate;
     for (const spec of specs) {
       const prev = this.lanes.get(spec.id);
-      const sameAudio =
-        prev && prev.spec.buffer === spec.buffer && prev.spec.samples === spec.samples && prev.spec.sampleRate === spec.sampleRate;
-      const buffer = sameAudio ? prev.buffer : (spec.buffer ?? makeBuffer(ctx, spec.samples, spec.sampleRate));
+      const wantsEngine = !spec.buffer;
       let chain = prev?.chain;
       let meter = prev?.meter;
       if (!chain || !meter) {
@@ -146,18 +218,43 @@ export class MixPlayer {
       chain.gain.gain.value = spec.gain;
       chain.pan.pan.value = clampPan(spec.pan ?? 0);
       applyTrackFx(chain, spec.fx);
-      next.set(spec.id, { spec, buffer, chain, meter });
+
+      let buffer: AudioBuffer | null = null;
+      let engine: AudioWorkletNode | null = null;
+      if (wantsEngine) {
+        engine = prev?.engine ?? null;
+        if (!engine) {
+          engine = createEngine(ctx, spec, null);
+          engine.connect(chain.input);
+        } else {
+          const plans = spec.sampleRate === rate ? (spec.plans ?? null) : null;
+          if (prev!.spec.samples !== spec.samples || prev!.spec.sampleRate !== spec.sampleRate) {
+            engine.port.postMessage({ type: 'source', samples: atRate(spec.samples, spec.sampleRate, rate), plans } satisfies EngineMessage);
+          } else if (prev!.spec.plans !== spec.plans) {
+            engine.port.postMessage({ type: 'plans', plans } satisfies EngineMessage);
+          }
+          if (prev!.spec.offset !== spec.offset) engine.port.postMessage({ type: 'offset', offset: Math.round(spec.offset * rate) } satisfies EngineMessage);
+        }
+      } else {
+        if (prev?.engine) {
+          prev.engine.disconnect();
+          prev.engine.port.close();
+        }
+        buffer = prev?.buffer && prev.spec.buffer === spec.buffer ? prev.buffer : spec.buffer!;
+      }
+      const duration = buffer ? buffer.duration : spec.samples.length / spec.sampleRate;
+      next.set(spec.id, { spec, buffer, engine, duration, chain, meter });
     }
     for (const [id, lane] of this.lanes) if (!next.has(id)) disconnectLane(lane);
     this.lanes = next;
-    this._duration = [...next.values()].reduce((m, l) => Math.max(m, l.spec.offset + l.buffer.duration), 0);
+    this._duration = [...next.values()].reduce((m, l) => Math.max(m, l.spec.offset + l.duration), 0);
     this.offset = Math.min(time, this._duration);
     if (wasPlaying) void this.play();
   }
 
   /** Replaces one track's audio (e.g. its processed render arrived), keeping position and play state. */
-  swapTrack(id: string, samples: Float32Array, sampleRate: number): void {
-    const specs = [...this.lanes.values()].map((l) => (l.spec.id === id ? { ...l.spec, samples, sampleRate } : l.spec));
+  swapTrack(id: string, samples: Float32Array, sampleRate: number, plans: VoicePlans | null = null): void {
+    const specs = [...this.lanes.values()].map((l) => (l.spec.id === id ? { ...l.spec, samples, sampleRate, plans } : l.spec));
     if (!this.lanes.has(id)) return;
     this.setTracks(specs);
   }
@@ -190,6 +287,24 @@ export class MixPlayer {
   setSongFx(fx: SongFx, bpm: number | null): void {
     this.songFx = { fx, bpm };
     this.buses?.apply(fx, bpm, true);
+  }
+
+  /** Routes the live (monitored) voice through a track chain with `fx` into the master; null = off. */
+  setMonitor(node: AudioNode | null, fx?: TrackFx): void {
+    const ctx = this.ensureContext();
+    if (this.monitor && this.monitor.node !== node) {
+      this.monitor.node.disconnect(this.monitor.chain.input);
+      disconnectChain(this.monitor.chain);
+      this.monitor = null;
+    }
+    if (!node) return;
+    if (!this.monitor) {
+      const chain = createTrackChain(ctx, 1, 0, this.master!.input, fx, this.buses!);
+      node.connect(chain.input);
+      this.monitor = { node, chain };
+    } else {
+      applyTrackFx(this.monitor.chain, fx, ctx);
+    }
   }
 
   /** Sets (or clears) the loop region; restarts playback from the current position if playing. */
@@ -252,6 +367,14 @@ export class MixPlayer {
     this.playLoop = loop;
     this.startedAt = now;
     this._playing = true;
+    // Engine lanes follow the transport themselves (positions in samples at the context rate).
+    const rate = this.ctx.sampleRate;
+    const transport: EngineTransport = {
+      startFrame: Math.round(now * rate),
+      from: Math.round(this.offset * rate),
+      loop: loop ? { start: Math.round(loop.start * rate), end: Math.round(loop.end * rate) } : null,
+    };
+    for (const lane of this.lanes.values()) if (lane.engine) this.post(lane, { type: 'play', transport });
     if (loop) {
       // First pass from the playhead to the loop end, then whole passes back to back.
       this.scheduleSpan(now, this.offset, loop.end, false);
@@ -268,6 +391,7 @@ export class MixPlayer {
   private scheduleSpan(at: number, from: number, to: number, fadeIn: boolean): void {
     const ctx = this.ctx!;
     for (const lane of this.lanes.values()) {
+      if (!lane.buffer) continue; // engine lanes schedule themselves
       const s = scheduleTrack(from, lane.spec.offset, lane.buffer.duration);
       if (!s || from + s.delay >= to) continue;
       const end = Math.min(lane.buffer.duration, to - lane.spec.offset);
@@ -325,6 +449,10 @@ export class MixPlayer {
 
   // --- internals ------------------------------------------------------------------------------
 
+  private post(lane: Lane, message: EngineMessage): void {
+    lane.engine?.port.postMessage(message);
+  }
+
   private ensureContext(): AudioContext {
     const ctx = sharedContext();
     if (this.ctx !== ctx) {
@@ -364,6 +492,7 @@ export class MixPlayer {
   private stopSources(): void {
     window.clearTimeout(this.endTimer);
     window.clearTimeout(this.loopTimer);
+    for (const lane of this.lanes.values()) if (lane.engine) this.post(lane, { type: 'stop' });
     for (const { source, env } of this.voices) {
       source.onended = null;
       try {
@@ -379,12 +508,11 @@ export class MixPlayer {
 }
 
 function disconnectLane(lane: Lane): void {
+  if (lane.engine) {
+    lane.engine.port.postMessage({ type: 'stop' } satisfies EngineMessage);
+    lane.engine.disconnect();
+    lane.engine.port.close();
+  }
   disconnectChain(lane.chain);
   lane.meter.disconnect();
-}
-
-function makeBuffer(ctx: AudioContext, samples: Float32Array, sampleRate: number): AudioBuffer {
-  const buffer = ctx.createBuffer(1, Math.max(1, samples.length), sampleRate);
-  buffer.copyToChannel(samples as Float32Array<ArrayBuffer>, 0);
-  return buffer;
 }

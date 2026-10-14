@@ -62,6 +62,10 @@ store.watch(
   (input) => saveInput(input),
 );
 store.watch(
+  (s) => s.input.monitor,
+  () => session.syncMonitor(),
+);
+store.watch(
   (s) => s.exportFormat,
   (format) => saveExportFormat(format),
 );
@@ -111,6 +115,9 @@ function frame(t: number): void {
   mixer.tick(dt);
   requestAnimationFrame(frame);
 }
+
+// Dev builds only: a handle for poking at the engine from the console / automated checks.
+if (import.meta.env.DEV) Object.assign(window, { recorder: { store, session } });
 
 setupPwa($<HTMLButtonElement>('install'));
 session.run(() => session.init());

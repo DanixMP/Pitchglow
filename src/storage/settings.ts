@@ -89,9 +89,11 @@ export interface InputPrefs {
   nudgeMs: number;
   /** Measured round-trip latency from loopback calibration, ms (null = use the browser's estimate). */
   calibratedMs: number | null;
+  /** "Hear myself": monitor the processed voice live (headphones). */
+  monitor: boolean;
 }
 
-export const DEFAULT_INPUT: InputPrefs = { countIn: true, nudgeMs: 0, calibratedMs: null };
+export const DEFAULT_INPUT: InputPrefs = { countIn: true, nudgeMs: 0, calibratedMs: null, monitor: false };
 
 const INPUT_KEY = 'recorder.input';
 
@@ -103,6 +105,7 @@ export function loadInput(): InputPrefs {
       countIn: typeof raw.countIn === 'boolean' ? raw.countIn : DEFAULT_INPUT.countIn,
       nudgeMs: typeof raw.nudgeMs === 'number' && Math.abs(raw.nudgeMs) <= 300 ? raw.nudgeMs : 0,
       calibratedMs: typeof raw.calibratedMs === 'number' && raw.calibratedMs >= 0 && raw.calibratedMs < 1000 ? raw.calibratedMs : null,
+      monitor: raw.monitor === true,
     };
   } catch {
     return { ...DEFAULT_INPUT };

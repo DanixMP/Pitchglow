@@ -38,6 +38,8 @@ export interface AppState {
   detection: Detection | null;
   /** Loopback latency calibration in progress. */
   calibrating: boolean;
+  /** Live path while listening/recording: CPU load, harmony voices dropped, monitor latency (ms). */
+  live: { load: number; degraded: boolean; latencyMs: number | null };
   /** Undo/redo availability for the open song. */
   history: { canUndo: boolean; canRedo: boolean };
   /**
@@ -83,6 +85,7 @@ export function createAppStore(): AppStore {
     importing: false,
     detection: null,
     calibrating: false,
+    live: { load: 0, degraded: false, latencyMs: null },
     history: { canUndo: false, canRedo: false },
     tuning: loadTuning(),
     cleanup: loadCleanup(),

@@ -1,6 +1,7 @@
-// Input section: Mic / Demo tone and the browser's live mic noise filter.
+// Input section: Mic / Demo tone, "Hear myself" (live monitoring) with its latency/CPU readout, the
+// browser's live mic noise filter, count-in, sync nudge and latency calibration.
 
-import { micFilterText } from '../../app/explain';
+import { micFilterText, monitorText } from '../../app/explain';
 import type { Session } from '../../app/session';
 import type { AppStore } from '../../app/state';
 import type { InputKind } from '../../audio/audio-input';
@@ -10,6 +11,27 @@ import { $, $$ } from '../dom';
 export function mountInputPanel(store: AppStore, session: Session, captions: Captions): void {
   const chips = $$<HTMLButtonElement>('.source .chip');
   const micFilter = $<HTMLInputElement>('mic-filter');
+  const monitor = $<HTMLInputElement>('monitor');
+  const monitorStats = $('monitor-stats');
+
+  monitor.addEventListener('change', () => {
+    store.set((s) => ({ input: { ...s.input, monitor: monitor.checked } }));
+    captions.show(monitorText(monitor.checked));
+  });
+  store.watch(
+    (s) => [s.input.monitor, s.live, s.mode] as const,
+    ([on, live, mode]) => {
+      monitor.checked = on;
+      const running = on && (mode === 'listening' || mode === 'recording') && live.latencyMs !== null;
+      monitorStats.hidden = !running;
+      if (!running) return;
+      const parts = [`≈ ${live.latencyMs} ms mic to ears`, `CPU ${Math.round(live.load * 100)}%`];
+      if (live.degraded) parts.push('fewer harmonies (CPU)');
+      monitorStats.textContent = parts.join(' · ');
+      monitorStats.classList.toggle('is-warn', live.degraded || live.load > 0.5);
+    },
+    { shallow: true },
+  );
   const countIn = $<HTMLInputElement>('count-in');
   const nudge = $<HTMLInputElement>('sync-nudge');
   const nudgeValue = $('sync-nudge-value');
