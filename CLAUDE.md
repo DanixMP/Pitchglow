@@ -400,3 +400,75 @@ The user asked for pitch and reverb effects, a remix-studio style mixer, importi
 - [x] MP3 export (LAME via `@breezystack/lamejs`, **LGPL-3.0**: used unmodified in its own worker chunk, notice in `THIRD_PARTY_NOTICES.md`) alongside WAV; format remembered
 - [x] Onboarding captions for the studio features (song, beat, mixer, loop, key shift), once each, queued
 - [ ] Real-world check (user): loop while practising, save a song on one device and open it on another, MP3 in other players
+
+---
+
+## Roadmap v3 — "Real-time & Neon studio" (planned 2026-10-14)
+
+The user asked for every setting to work in real time: hearing your voice processed live while singing, and every change taking effect immediately while listening. They also asked for a UX overhaul (custom sliders with snapping, custom cursors, …) and more features.
+
+### Decisions (from the user)
+- **Real-time:** **live everywhere**. One real-time engine processes the mic while singing (monitoring) *and* the tracks during playback, so every control is instant. **Export runs the same engine** (offline), so the file sounds exactly like what was heard.
+- **Look:** **Neon studio**. Keep Goal.mp4's near-black background and glowing lane colours. Custom glowing sliders and knobs, LED-style meters, smooth motion.
+- **Cursor:** **context cursors**. Custom cursors only where they help: a crosshair plus note name on the roll, grab/move on clips, resize on loop edges and sliders. The system arrow elsewhere; none on touch devices.
+- **Extra features:** note editing, voice character, play-the-keys harmony, metronome & grid. All four.
+- **Order (proposed):** engine first, because it changes how every control behaves, so the new controls are designed around it. Then the UX overhaul, then the features.
+
+### Technical decisions
+- **Voice engine = an AudioWorklet** (`src/audio/engine/`), one instance per vocal track plus one for the mic.
+  - **Playback path:** the take's analysis (pitch track + PSOLA analysis marks + noise profile) is computed once, offline in the worker, and cached. The worklet gets it via its port, and then per 128-sample block it runs: correction curve (PitchCorrector) → transpose/harmony → streaming TD-PSOLA → gate/de-ess.
+    - Knob changes are port messages, applied on the next block.
+    - The engine has a small fixed **look-ahead** (≈ one grain + one max period, ~30–50 ms). The player starts each processed lane earlier by that amount, so tracks stay aligned.
+  - **Live path (monitoring):** streaming YIN on decimated audio in the worklet (window ≈ 2 × the longest period, ~25 ms), the same corrector + streaming PSOLA in a low-latency mode, then the same FX chain. Target: ≤ 30 ms of extra latency.
+    - Monitoring is a toggle ("Hear myself — headphones"). Speakers would feed back, and Bluetooth is too slow; the UI says so.
+    - Takes are still stored **dry**; all processing stays non-destructive.
+  - **Export:** the same graph, worklet included, rendered in an `OfflineAudioContext`, so it is identical to playback. The current offline `processRecording` stays as the reference implementation for tests: the streaming output must match it within tolerance (pitch within ~5¢, level within 1 dB).
+  - **Noise reduction:** the noise profile is learned offline per take, as today. The Wiener gain runs streaming (43 ms frames, compensated by the look-ahead). Live monitoring uses the browser's noise filter or a shorter-frame variant.
+  - **Instrumental key shift:** the phase vocoder made streaming and ~2× faster (L/R packed into one complex FFT). If the CPU can't keep up, it falls back to the cached offline render.
+  - **CPU:** analysis is precomputed so the worklet only synthesises; there are no allocations in `process()`. A CPU/underrun indicator is shown; harmony voices or quality are reduced automatically under load.
+- **Voice character:** formant shift by resampling PSOLA grains (independent of pitch). Presets: Deeper, Younger, Chipmunk, Monster, Robot, Whisper (noise-excited).
+- **Controls:** one custom `Slider` component used everywhere:
+  - pointer + touch + wheel + keyboard;
+  - **detents** with a magnetic snap zone (0 dB, centre pan, 0 ms, preset values), Alt = no snap, Shift = fine;
+  - a value bubble while dragging, double-click to reset, full ARIA slider semantics.
+  - Knobs, toggles, segmented controls and meters get the same neon treatment. Design tokens live in CSS variables; `prefers-reduced-motion` is respected.
+
+### Phase 13 — Real-time engine (playback)
+- [ ] Engine worklet + main-thread client; per-take analysis (pitch track, PSOLA marks) computed once and cached
+- [ ] Streaming PSOLA + corrector + transpose + harmony in the worklet; parity tests vs offline `renderWithHarmony`
+- [ ] MixPlayer lanes run through the engine with look-ahead compensation; tuning/harmony/pitch/key-shift changes are instant (no re-render)
+- [ ] Export through `OfflineAudioContext` with the same worklet (file = what you hear); stems too
+- [ ] CPU budget measured (N tracks × harmony voices); no allocations in `process()`
+
+### Phase 14 — Live monitoring (hear yourself)
+- [ ] Mic → engine (streaming YIN, low-latency PSOLA) → track FX chain → headphones; "Hear myself" toggle with a headphones warning
+- [ ] Live auto-tune, harmony, pitch and voice FX while listening/recording; the pitch line comes from the engine (one detector)
+- [ ] Latency measured and shown (target ≤ 30 ms extra); recorded takes stay dry
+- [ ] Underrun/CPU indicator and automatic quality fallback
+
+### Phase 15 — Everything live + voice character
+- [ ] Streaming noise reduction (profile from offline analysis), gate and de-esser in the engine; no re-render left for vocals
+- [ ] Streaming phase vocoder for instrumental key shift (stereo-packed FFT, ~2×), with fallback to the cached render
+- [ ] Voice character: formant shift + presets (Deeper, Younger, Chipmunk, Monster, Robot, Whisper)
+
+### Phase 16 — UX overhaul ("Neon studio")
+- [ ] Design tokens (colour, glow, radius, motion) + reduced-motion support
+- [ ] `Slider` component: detents/snap, Alt free, Shift fine, value bubble, wheel, keys, double-click reset, ARIA; replaces every range input
+- [ ] Neon knobs, toggles, segmented controls, LED meters; consistent hover/active/focus states
+- [ ] Context cursors: roll crosshair + note label, clip grab/grabbing, loop/slider resize; none on touch
+- [ ] Inspector/mixer/transport polish, touch targets ≥ 40 px on phones; checked at 1440/900/390 px
+
+### Phase 17 — Metronome & grid
+- [ ] Click track (playback and recording, accent, volume), tap tempo / set BPM
+- [ ] Bar/beat grid on the roll and timeline; snap clips and loop to the grid
+- [ ] Quantize a take's start to the nearest beat
+
+### Phase 18 — Note editing
+- [ ] Segment the pitch track into notes (stable pitch regions); draw note blobs on the roll
+- [ ] Drag a note's pitch (semitone snap, Alt = cents) and timing/length (PSOLA time-stretch); per-note correction amount
+- [ ] Edits stored per track (non-destructive), undoable, live in the engine and in export
+
+### Phase 19 — Play-the-keys harmony
+- [ ] Clickable on-screen piano + Web MIDI keyboard input
+- [ ] Harmony voices follow held keys live (engine), voiced from the sung note
+- [ ] Record key events into the track so playback/export reproduce them
