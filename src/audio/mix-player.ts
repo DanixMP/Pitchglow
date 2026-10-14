@@ -117,6 +117,8 @@ export class MixPlayer {
   private songFx: { fx: SongFx; bpm: number | null } = { fx: DEFAULT_SONG_FX, bpm: null };
   private lanes = new Map<string, Lane>();
   private voices = new Set<Voice>();
+  /** "Hear myself": the live voice through its own track chain (effects + sends) into the master. */
+  private monitor: { node: AudioNode; chain: TrackChain } | null = null;
   /** Loop region requested by the song (null = none). */
   private loop: Region | null = null;
   /** Loop in effect for the current run of playback (null = playing straight through). */
@@ -285,6 +287,24 @@ export class MixPlayer {
   setSongFx(fx: SongFx, bpm: number | null): void {
     this.songFx = { fx, bpm };
     this.buses?.apply(fx, bpm, true);
+  }
+
+  /** Routes the live (monitored) voice through a track chain with `fx` into the master; null = off. */
+  setMonitor(node: AudioNode | null, fx?: TrackFx): void {
+    const ctx = this.ensureContext();
+    if (this.monitor && this.monitor.node !== node) {
+      this.monitor.node.disconnect(this.monitor.chain.input);
+      disconnectChain(this.monitor.chain);
+      this.monitor = null;
+    }
+    if (!node) return;
+    if (!this.monitor) {
+      const chain = createTrackChain(ctx, 1, 0, this.master!.input, fx, this.buses!);
+      node.connect(chain.input);
+      this.monitor = { node, chain };
+    } else {
+      applyTrackFx(this.monitor.chain, fx, ctx);
+    }
   }
 
   /** Sets (or clears) the loop region; restarts playback from the current position if playing. */

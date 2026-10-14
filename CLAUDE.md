@@ -156,6 +156,27 @@ Look: a near-black background (#0f0f10-ish), muted dark lane fills whose hue cyc
     - Verified in the app: the engine export of a take (0 ms auto-tune + a harmony + limiter) is **identical** (max difference 0) to the offline reference `processRecording`.
   - **CPU** (OfflineAudioContext, 8 tracks): the mix chain alone is 31% of a core. Engine lanes add ~0.6% per track for the lead and ~0.4% per harmony voice, so 8 tracks × lead + 3 harmonies ≈ 46% in total.
   - **Dev hook:** `window.recorder = { store, session }` in `npm run dev` only, for console checks.
+- **Hear yourself live (Phase 14):**
+  - **`LiveVoice`** (`src/dsp/live-voice.ts`, pure, tested) is the causal PSOLA for the mic:
+    - The PitchTracker runs inside it; each frame goes through the PitchCorrector and gives the period and pitch ratio for the lead and each harmony (short interpolated history).
+    - Analysis marks are placed as soon as a whole cycle has arrived. Synthesis runs **`LIVE_DELAY_SECONDS` = 25 ms** behind the input; grains are capped at half that delay (voices down to ~80 Hz at full quality).
+    - Unvoiced audio passes through the lead; harmonies are voiced-only. With no tuning and no transpose, the input passes straight through, with no delay.
+    - Measured in tests: transposes within 8¢, delay exactly 25 ms, an off-key 150 Hz lands on D3 within 10¢, a harmony third audible.
+  - **One worklet for the mic** (`engine/live-worklet.ts`, `live-protocol.ts`; this replaces `capture-worklet.ts`). It:
+    - forwards raw 512-sample blocks stamped with context frames (takes stay dry);
+    - posts every pitch frame with its context frame. The **pitch line and takes now use this one detector**; the main-thread tracker is gone, and frame times are converted to "since Listen" (roll) or "since the take's first sample" (take);
+    - outputs the processed voice when monitoring.
+  - **CPU estimate:** it sums the Date.now() millisecond ticks that fall inside `process()`, which is unbiased over many blocks. Above 50% load it drops a harmony voice; after a calm stretch below 20% it brings one back (`live.degraded`).
+  - **Routing:** `AudioInput.setProcessing({ monitor, tune, semitones })`. `MixPlayer.setMonitor(node, fx)` sends the live voice through its own track chain (the selected track's EQ/compressor/sends → the song's reverb/echo) into the master.
+    - The demo tone's direct speaker feed mutes while monitoring.
+    - `Session.syncMonitor()` runs on Listen/Record, on settings/selection/key-shift/FX changes, and on the toggle.
+  - **Key-shifted songs** (a fix found while building this): you sing along to the shifted beat, so monitoring auto-tunes to the shifted scale with no transpose. A take recorded into the song gets its tuning root shifted to match, **pitch = −keyShift** (so it plays back as sung; before, it was shifted twice), and the selected track's FX (what was heard).
+  - **UI:** an Input section switch "Hear myself", with a hint "wired headphones only" and captions. While running it shows "≈ N ms mic to ears · CPU n%" (input latency + processing delay + one render quantum + output latency), and "fewer harmonies (CPU)" when degraded. The pref is `input.monitor`.
+  - **Verified in the app (demo tone, C major 0 ms):** every monitored note in C major, median 0¢ (p90 2¢); CPU ~12% (mostly the pitch tracker, now on the audio thread); 3 harmonies audible; monitor off → processed path silent. Total 78 ms here = 50 ms reported by the browser's output + 27.7 ms processing.
+- **PSOLA grain-length fix (Phase 14):**
+  - Grains used to be `max(analysis period, synthesis period)` long and were normalised by the summed window weight. **Exactly an octave down, that rebuilt the input unchanged**, so the "Oct ↓" harmony and track pitch −12 had silently done nothing since they were added.
+  - Grains are now two analysis periods long (classic TD-PSOLA), and the normalisation stops at a weight of 0.5 (`normalizeGrain`), so the envelope that carries the lower pitch survives.
+  - The lead blends towards the source only below a weight of 0.1. There is a regression test for −12/−7 (new fundamental, level 0.5–1.3), and all the older accuracy/level tests still pass.
 - **Modes** (`AppState.mode`, driven by `Session`): `idle`, `listening` (live line, nothing saved), `recording` (live line + saving), `playback` (a saved recording is open and the roll follows `Player.currentTime`).
 
 ## Architecture
@@ -179,6 +200,7 @@ src/
     autotune.ts           PitchCorrector: target note + retune-speed glide
     psola.ts              TD-PSOLA: analysis (marks) -> grain plan -> range render (shared by offline and the engine)
     voice-engine.ts       voice plans (lead + harmonies) + VoiceRenderer: block rendering for the real-time engine
+    live-voice.ts         causal PSOLA for monitoring: tracker + corrector + live marks + 25 ms-delayed synthesis
     harmony.ts            diatonic harmony voices + mixed render (renderWithHarmony)
     limiter.ts            look-ahead peak limiter
     fft.ts                radix-2 complex FFT
@@ -191,8 +213,7 @@ src/
     resample.ts           low-pass + decimate to the analysis rate
   audio/
     context.ts            the shared AudioContext (mic + playback on one clock) + output latency
-    capture-worklet.ts    AudioWorkletProcessor: forwards input blocks stamped with their context frame
-    audio-input.ts        mic / demo-tone sources -> worklet -> callback
+    audio-input.ts        mic / demo-tone sources -> live worklet -> blocks, pitch frames, stats; monitor output
     pitch-tracker.ts      ring buffer + hop scheduling -> PitchFrame stream
     sample-buffer.ts      collects PCM blocks during a take
     mix-player.ts         multi-track playback: buffer lanes (beats) + voice-engine lanes (takes), live plans/gain/pan/fx, loop, clock
@@ -204,6 +225,8 @@ src/
       engine-worklet.ts   AudioWorklet 'voice-engine': renders a take from source + plans, follows the transport
       protocol.ts         engine messages + construction options (shared with the main thread)
       transport.ts        pure: context frame -> song position, loop runs, loop fades
+      live-worklet.ts     AudioWorklet 'live-processor': raw blocks + pitch frames + monitored voice (LiveVoice) + CPU load
+      live-protocol.ts    live worklet messages
     tuned-renderer.ts     main-thread client for the worker (voice: per-channel latest-wins; analyze; shift)
     wav.ts                16-bit PCM WAV encoder (mono or interleaved multi-channel); float WAV encode + WAV decode (song files)
     encode.ts             export encoding: WAV, or MP3 via mp3-worker.ts (LAME, LGPL, own chunk)
@@ -257,7 +280,7 @@ tests/                    vitest unit tests (dsp, tracker, wav, packing, storage
 - <760 px: the center fills the screen, and a bottom tab bar (Takes · Controls) opens a panel under the roll (max 44dvh); tapping the open tab collapses it.
 - The page itself never scrolls; columns scroll independently.
 
-Data flow: mic → AudioWorklet → main thread `PitchTracker` (downsample, YIN, median filter) → `PitchFrame { time, freq, midi, clarity, rms }` → `PianoRoll.push()` → canvas drawn on each `requestAnimationFrame`.
+Data flow: mic → live AudioWorklet (`PitchTracker` inside `LiveVoice`: downsample, YIN, median filter) → `PitchFrame { time, freq, midi, clarity, rms }` posted with its context frame → `Session.onFrame` → `PianoRoll.push()` → canvas drawn on each `requestAnimationFrame`. With "Hear myself" on, the same worklet's output (the processed voice) → monitor track chain → master.
 While recording, the same blocks and frames are also collected into a take. On Stop the take is saved to IndexedDB and opened in playback mode.
 
 Shortcuts: **R** = record/stop, **T** = auto-tune on/off, **Space** = play/pause and **A** = original/tuned (playback mode), **L** = loop on/off (song open), **Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y** = undo/redo (song open).
@@ -475,11 +498,13 @@ The user asked for every setting to work in real time: hearing your voice proces
 - [x] CPU measured (8 tracks × lead + 3 harmonies ≈ 46% of a core incl. the 31% mix chain); no allocations in `process()`
 - [ ] Listening check (user): knob drags while playing, harmonies now voiced-only (no doubled "s" sounds)
 
-### Phase 14 — Live monitoring (hear yourself)
-- [ ] Mic → engine (streaming YIN, low-latency PSOLA) → track FX chain → headphones; "Hear myself" toggle with a headphones warning
-- [ ] Live auto-tune, harmony, pitch and voice FX while listening/recording; the pitch line comes from the engine (one detector)
-- [ ] Latency measured and shown (target ≤ 30 ms extra); recorded takes stay dry
-- [ ] Underrun/CPU indicator and automatic quality fallback
+### Phase 14 — Live monitoring (hear yourself) — branch `realtime-engine`
+- [x] Mic → live worklet (tracker + causal PSOLA, `LiveVoice`) → selected track's FX chain → master; "Hear myself" switch with headphones hint/captions
+- [x] Live auto-tune, harmony and transpose while listening/recording; pitch line and take frames come from the same worklet detector (capture worklet replaced); browser-verified with the demo tone (all notes in key, median 0¢)
+- [x] Latency: 25 ms processing + one quantum (27.7 ms extra, target ≤ 30); total shown in the Input section; takes stay dry (verified: 3 s take, 99 frames/s, first frame at 21 ms)
+- [x] CPU indicator (Date.now tick estimator) and automatic harmony fallback (> 50% load), restored when calm
+- [x] Found and fixed: PSOLA octave-down was a no-op (grain length); recording into a key-shifted song shifted the take twice
+- [ ] Real check (user): wired headphones + real mic: latency feel, feedback-free, harmonies/FX while singing
 
 ### Phase 15 — Everything live + voice character
 - [ ] Streaming noise reduction (profile from offline analysis), gate and de-esser in the engine; no re-render left for vocals

@@ -23,7 +23,7 @@ import { createZip } from '../audio/zip';
 import { peaksOf } from '../audio/peaks';
 import type { TimelineClip } from '../ui/timeline';
 import { History } from '../project/history';
-import { PitchTracker, type PitchFrame } from '../audio/pitch-tracker';
+import type { PitchFrame } from '../audio/pitch-tracker';
 import { SampleBuffer } from '../audio/sample-buffer';
 import { TunedRenderer } from '../audio/tuned-renderer';
 import { encodeWavChannels } from '../audio/wav';
@@ -91,12 +91,17 @@ const newVoice = (): Voice => ({ source: null, version: 0, sentKey: null, plans:
 
 export class Session {
   readonly player = new MixPlayer();
-  private readonly input = new AudioInput((block, time) => this.onBlock(block, time));
+  private readonly input = new AudioInput({
+    onBlock: (block, time) => this.onBlock(block, time),
+    onFrame: (frame, time) => this.onFrame(frame, time),
+    onStats: (stats) => this.onLiveStats(stats),
+  });
   private readonly renderer = new TunedRenderer();
   private db: RecordingStore | null = null;
 
   private sampleRate = 0;
-  private tracker: PitchTracker | null = null;
+  /** Context time the live pitch line counts from (when Listen/Record started). */
+  private liveOrigin = 0;
   private take: { audio: SampleBuffer; frames: PitchFrame[]; firstTime: number | null } | null = null;
   /** Recording over the song: when/where playback started, for aligning the take afterwards. */
   private sync: { playStart: number; songPosition: number; latency: number } | null = null;
@@ -160,10 +165,11 @@ export class Session {
     if (this.input.kind !== source || this.input.noiseSuppression !== micFilter) {
       this.sampleRate = await this.input.start(source, { noiseSuppression: micFilter });
     }
-    this.tracker = new PitchTracker(this.sampleRate, (f) => this.onFrame(f));
+    this.liveOrigin = this.player.context.currentTime;
     this.take = record ? { audio: new SampleBuffer(), frames: [], firstTime: null } : null;
     this.roll.start();
     this.store.set({ mode: record ? 'recording' : 'listening', recordingSeconds: 0, status: '' });
+    this.syncMonitor();
     const song = openProject(this.store.get());
     if (record && song && this.songIsAudible(song)) await this.playAlong(song);
   }
@@ -190,12 +196,11 @@ export class Session {
       scheduleClicks(ctx, count.clicks);
       startAt = count.end;
     }
-    const liveStart = ctx.currentTime;
     const playStart = await this.player.play(startAt);
     const latency = input.calibratedMs !== null ? input.calibratedMs / 1000 : outputLatency(ctx) + this.input.inputLatency;
     this.sync = { playStart, songPosition: position, latency };
     // Other tracks as ghosts on the live roll, lined up with what you hear.
-    const toLive = position - (playStart - liveStart) - outputLatency(ctx);
+    const toLive = position - (playStart - this.liveOrigin) - outputLatency(ctx);
     this.roll.setGhosts(
       song.tracks
         .filter((t) => t.kind === 'vocal' && t.takeId && this.takes.has(t.takeId))
@@ -208,12 +213,12 @@ export class Session {
     const sync = this.sync;
     this.take = null;
     this.sync = null;
-    this.tracker = null;
     if (sync) this.player.pause();
     this.syncLoop();
+    this.player.setMonitor(null);
     await this.input.stop();
     this.roll.stop();
-    this.store.set({ mode: this.store.get().projectId ? 'playback' : 'idle' });
+    this.store.set({ mode: this.store.get().projectId ? 'playback' : 'idle', live: { load: 0, degraded: false, latencyMs: null } });
     if (finished) {
       const offset =
         sync && finished.firstTime !== null
@@ -241,12 +246,43 @@ export class Session {
       if (this.take.firstTime === null) this.take.firstTime = time;
       this.take.audio.push(block);
     }
-    this.tracker?.push(block);
   }
 
-  private onFrame(frame: PitchFrame): void {
-    this.take?.frames.push(frame);
-    this.roll.push(frame);
+  /** A pitch frame from the live worklet (`time` = context time of its window centre). */
+  private onFrame(frame: PitchFrame, time: number): void {
+    if (!this.isLive) return;
+    const sinceStart = time - this.liveOrigin;
+    if (sinceStart >= 0) this.roll.push({ ...frame, time: sinceStart });
+    // Takes count from their first sample, so frames line up with the recorded audio exactly.
+    const take = this.take;
+    if (take && take.firstTime !== null && time >= take.firstTime) take.frames.push({ ...frame, time: time - take.firstTime });
+  }
+
+  // --- hear yourself (live monitoring, Phase 14) ----------------------------------------------
+
+  /**
+   * Points the live path at the current settings: monitoring on/off, the inspector's auto-tune and
+   * harmony, and the selected track's effects. In a key-shifted song you sing in the shifted key, so
+   * auto-tune snaps to the shifted scale and nothing is transposed (as the new track will play back).
+   */
+  syncMonitor(): void {
+    const state = this.store.get();
+    const monitor = state.input.monitor && this.isLive;
+    const song = openProject(state);
+    const tune = tuneSettingsOf(state.tuning);
+    const shift = song?.keyShift ?? 0;
+    this.input.setProcessing({ monitor, tune: tune && shift ? { ...tune, scale: transposeScale(tune.scale, shift) } : tune, semitones: 0 });
+    const track = song?.tracks.find((t) => t.id === state.selectedTrackId && t.kind === 'vocal');
+    this.player.setMonitor(monitor ? this.input.output : null, track ? trackFxOf(track) : undefined);
+    if (!monitor && state.live.latencyMs !== null) this.store.set({ live: { ...state.live, latencyMs: null } });
+  }
+
+  private onLiveStats(stats: { load: number; degraded: boolean; delaySeconds: number }): void {
+    const { input } = this.store.get();
+    const ctx = this.player.context;
+    // Mic -> worklet -> (processing delay) -> one render quantum -> speakers/headphones.
+    const latency = input.monitor && this.isLive ? this.input.inputLatency + stats.delaySeconds + 128 / ctx.sampleRate + outputLatency(ctx) : null;
+    this.store.set({ live: { load: stats.load, degraded: stats.degraded, latencyMs: latency === null ? null : Math.round(latency * 1000) } });
   }
 
   /** Seconds captured in the current take (for the heading timer). */
@@ -278,7 +314,7 @@ export class Session {
       // Recording inside a song: the take becomes a new vocal track, with the settings it was sung with.
       this.takes.set(meta.id, loaded);
       const { tuning, cleanup } = this.store.get();
-      this.addTrackFromTake(meta, tuning, cleanup, offset);
+      this.addTrackFromTake(meta, tuning, cleanup, offset, true);
     } else {
       this.showPreview(loaded, false);
     }
@@ -635,10 +671,24 @@ export class Session {
     });
   }
 
-  private addTrackFromTake(meta: RecordingMeta, tuning: TuningPrefs, cleanup: CleanupPrefs, offset = 0): void {
+  /**
+   * `sung`: the take was just recorded over this song. It then gets the selected track's effects
+   * (what was heard while monitoring), and in a key-shifted song it was sung in the shifted key: its
+   * auto-tune scale is shifted to match and its pitch offset cancels the key shift, so it plays back
+   * as sung.
+   */
+  private addTrackFromTake(meta: RecordingMeta, tuning: TuningPrefs, cleanup: CleanupPrefs, offset = 0, sung = false): void {
     const project = openProject(this.store.get());
     if (!project) return;
-    const track = { ...createVocalTrack(meta, tuning, cleanup, project.tracks.filter((t) => t.kind === 'vocal')), offset };
+    const shift = sung ? project.keyShift : 0;
+    const sungTuning = shift ? { ...tuning, root: transposeScale({ root: tuning.root, type: tuning.type }, shift).root } : tuning;
+    const selected = project.tracks.find((t) => t.id === this.store.get().selectedTrackId && t.kind === 'vocal');
+    const track: Track = {
+      ...createVocalTrack(meta, sungTuning, cleanup, project.tracks.filter((t) => t.kind === 'vocal')),
+      offset,
+      pitch: -shift,
+      ...(sung && selected?.fx ? { fx: structuredClone(selected.fx) } : {}),
+    };
     this.mutateProject(project.id, (p) => addTrack(p, track));
     this.selectTrack(track.id);
     this.rebuildMix();
@@ -748,6 +798,7 @@ export class Session {
     const fx: TrackFx = { ...trackFxOf(track), ...patch, eq: { ...trackFxOf(track).eq, ...patch.eq }, preset: null };
     this.mutateProject(project.id, (p) => updateTrackModel(p, trackId, { fx }), `fx:${trackId}:${Object.keys(patch).join(',')}`);
     this.player.setTrackFx(trackId, fx);
+    if (this.isLive) this.syncMonitor();
     if ('gate' in patch || 'deess' in patch) this.updateTrackVoice(trackId);
   }
 
@@ -778,6 +829,7 @@ export class Session {
     const project = openProject(this.store.get());
     if (!project) return;
     this.mutateProject(project.id, (p) => ({ ...p, keyShift: semitones, updatedAt: Date.now() }), 'keyShift');
+    if (this.isLive) this.syncMonitor();
     const updated = openProject(this.store.get())!;
     for (const t of updated.tracks) {
       if (t.kind === 'vocal') this.updateTrackVoice(t.id);
@@ -1072,6 +1124,7 @@ export class Session {
   settingsChanged(): void {
     const state = this.store.get();
     this.roll.setTuning(this.rollTuning());
+    if (this.isLive) this.syncMonitor();
     if (!state.projectId) {
       this.schedulePreviewRender();
       return;

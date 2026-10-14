@@ -91,6 +91,29 @@ describe('renderTuned (TD-PSOLA)', () => {
     expect(maxErr).toBeLessThan(1e-5);
   });
 
+  it('shifts down by a whole octave (grains two analysis periods long)', () => {
+    // Regression: with grains as long as the synthesis period, -12 reassembled the input unchanged.
+    const x = sawtooth(150, SR, 1.5, 0.4);
+    const frames = track(x);
+    const tone = (y: Float32Array, f: number) => {
+      let re = 0;
+      let im = 0;
+      for (let i = SR / 2; i < SR * 1.3; i++) {
+        re += y[i] * Math.cos((2 * Math.PI * f * i) / SR);
+        im += y[i] * Math.sin((2 * Math.PI * f * i) / SR);
+      }
+      return Math.hypot(re, im) / (SR * 0.8);
+    };
+    for (const st of [-12, -7]) {
+      const y = renderTuned(x, SR, frames, shiftBy(frames, st));
+      const f = 150 * Math.pow(2, st / 12);
+      expect(tone(y, f)).toBeGreaterThan(20 * tone(x, f));
+      const level = rms(y.subarray(SR / 2, SR * 1.3)) / rms(x.subarray(SR / 2, SR * 1.3));
+      expect(level).toBeGreaterThan(0.5);
+      expect(level).toBeLessThan(1.3);
+    }
+  });
+
   it('renders a minute of audio quickly', () => {
     // Tile one second of a 140 Hz tone (a whole number of cycles) and describe it with synthetic frames.
     const second = sawtooth(140, SR, 1);

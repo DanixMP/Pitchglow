@@ -168,6 +168,12 @@
               <button class="chip is-on" type="button" role="radio" aria-checked="true" data-source="mic">Mic</button>
               <button class="chip" type="button" role="radio" aria-checked="false" data-source="demo">Demo tone</button>
             </div>
+            <label class="switch">
+              <input id="monitor" type="checkbox" role="switch" aria-describedby="monitor-hint" />
+              <span class="switch-track" aria-hidden="true"></span>
+              <span class="switch-label">Hear myself <span id="monitor-hint" class="switch-hint">auto-tune and effects live · wired headphones only</span></span>
+            </label>
+            <p id="monitor-stats" class="monitor-stats" aria-live="polite" hidden></p>
             <label class="switch switch-quiet">
               <input id="mic-filter" type="checkbox" role="switch" />
               <span class="switch-track" aria-hidden="true"></span>

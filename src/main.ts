@@ -62,6 +62,10 @@ store.watch(
   (input) => saveInput(input),
 );
 store.watch(
+  (s) => s.input.monitor,
+  () => session.syncMonitor(),
+);
+store.watch(
   (s) => s.exportFormat,
   (format) => saveExportFormat(format),
 );

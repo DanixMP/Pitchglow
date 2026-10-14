@@ -1,31 +1,61 @@
-// Audio sources (microphone or a synthetic demo voice) -> capture worklet -> onBlock callback.
-// Uses the app's shared AudioContext, so captured blocks carry times on the same clock as playback.
+// Audio sources (microphone or a synthetic demo voice) -> the live worklet, which forwards raw blocks
+// (for recording), pitch frames (for the line) and, when monitoring, the voice processed live.
+// Uses the app's shared AudioContext, so blocks and frames carry times on the same clock as playback.
 
-import captureWorkletUrl from './capture-worklet.ts?worker&url';
-import type { CaptureMessage } from './capture-worklet';
-import { sharedContext } from './context';
+import type { TuneSettings } from '../dsp/autotune';
 import { midiToFreq } from '../dsp/notes';
+import { sharedContext } from './context';
+import { LIVE_PROCESSOR, type LiveMessage, type LiveSettingsMessage } from './engine/live-protocol';
+import liveWorkletUrl from './engine/live-worklet.ts?worker&url';
+import type { PitchFrame } from './pitch-tracker';
 
 export type InputKind = 'mic' | 'demo';
 
-/** Contexts that already have the capture worklet module loaded. */
+/** Contexts that already have the live worklet module loaded. */
 const workletLoaded = new WeakSet<BaseAudioContext>();
 /** Fallback mic latency when the browser doesn't report one. */
 const DEFAULT_MIC_LATENCY = 0.01;
 
+export interface InputHandlers {
+  /** Each raw block and the context time of its first sample. */
+  onBlock(block: Float32Array, time: number): void;
+  /** Each pitch frame and the context time of its analysis-window centre. */
+  onFrame(frame: PitchFrame, time: number): void;
+  /** Live-path stats, about twice a second. */
+  onStats?(stats: { load: number; degraded: boolean; delaySeconds: number }): void;
+}
+
+export interface LiveProcessing {
+  monitor: boolean;
+  tune: TuneSettings | null;
+  semitones: number;
+}
+
 export class AudioInput {
   private stream: MediaStream | null = null;
   private nodes: AudioNode[] = [];
-  private capture: AudioWorkletNode | null = null;
-  private stopDemo: (() => void) | null = null;
+  private live: AudioWorkletNode | null = null;
+  private demo: { stop(): void; direct: GainNode } | null = null;
+  private processing: LiveProcessing = { monitor: false, tune: null, semitones: 0 };
   private _kind: InputKind | null = null;
   private _noiseSuppression = false;
   private _inputLatency = 0;
 
-  /**
-   * @param onBlock receives each captured block and the context time of its first sample.
-   */
-  constructor(private readonly onBlock: (block: Float32Array, time: number) => void) {}
+  constructor(private readonly handlers: InputHandlers) {}
+
+  /** The live worklet's output (the monitored voice), while the input runs. */
+  get output(): AudioNode | null {
+    return this.live;
+  }
+
+  /** What the live path does: monitor on/off, auto-tune, transpose. Applies immediately. */
+  setProcessing(p: LiveProcessing): void {
+    this.processing = p;
+    const msg: LiveSettingsMessage = p;
+    this.live?.port.postMessage(msg);
+    // The demo voice plays itself quietly to the speakers; while monitoring, you hear it processed instead.
+    if (this.demo) this.demo.direct.gain.value = p.monitor ? 0 : DEMO_DIRECT;
+  }
 
   /** Whether the running mic uses the browser's built-in noise suppression. */
   get noiseSuppression(): boolean {
@@ -55,33 +85,42 @@ export class AudioInput {
     const ctx = sharedContext();
     try {
       if (!workletLoaded.has(ctx)) {
-        await ctx.audioWorklet.addModule(captureWorkletUrl);
+        await ctx.audioWorklet.addModule(liveWorkletUrl);
         workletLoaded.add(ctx);
       }
-      const capture = new AudioWorkletNode(ctx, 'capture-processor', {
+      const live = new AudioWorkletNode(ctx, LIVE_PROCESSOR, {
         numberOfInputs: 1,
         numberOfOutputs: 1,
+        outputChannelCount: [1],
         channelCount: 1,
         channelCountMode: 'explicit',
       });
-      capture.port.onmessage = (e: MessageEvent<CaptureMessage>) => this.onBlock(e.data.samples, e.data.frame / ctx.sampleRate);
-      // Keep the node pulled by the graph without making any sound.
+      const rate = ctx.sampleRate;
+      live.port.onmessage = (e: MessageEvent<LiveMessage>) => {
+        const m = e.data;
+        if (m.type === 'block') this.handlers.onBlock(m.samples, m.frame / rate);
+        else if (m.type === 'frame') this.handlers.onFrame(m.frame, m.at / rate);
+        else this.handlers.onStats?.({ load: m.load, degraded: m.degraded, delaySeconds: m.delay / rate });
+      };
+      live.port.postMessage(this.processing satisfies LiveSettingsMessage);
+      // Keep the node pulled by the graph without making any sound (the monitor is routed separately).
       const mute = new GainNode(ctx, { gain: 0 });
-      capture.connect(mute).connect(ctx.destination);
-      this.capture = capture;
-      this.nodes.push(capture, mute);
+      live.connect(mute).connect(ctx.destination);
+      this.live = live;
+      this.nodes.push(live, mute);
 
       if (kind === 'mic') {
         this.stream = await navigator.mediaDevices.getUserMedia({
           audio: { channelCount: 1, echoCancellation: false, noiseSuppression: !!opts.noiseSuppression, autoGainControl: false },
         });
         const src = ctx.createMediaStreamSource(this.stream);
-        src.connect(capture);
+        src.connect(live);
         this.nodes.push(src);
         const reported = (this.stream.getAudioTracks()[0]?.getSettings() as { latency?: number } | undefined)?.latency;
         this._inputLatency = typeof reported === 'number' && reported >= 0 ? reported : DEFAULT_MIC_LATENCY;
       } else {
-        this.stopDemo = startDemoVoice(ctx, capture);
+        this.demo = startDemoVoice(ctx, live);
+        this.demo.direct.gain.value = this.processing.monitor ? 0 : DEMO_DIRECT;
         this._inputLatency = 0;
       }
       this._kind = kind;
@@ -95,12 +134,12 @@ export class AudioInput {
   }
 
   async stop(): Promise<void> {
-    this.stopDemo?.();
-    this.stopDemo = null;
+    this.demo?.stop();
+    this.demo = null;
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
-    if (this.capture) this.capture.port.onmessage = null;
-    this.capture = null;
+    if (this.live) this.live.port.onmessage = null;
+    this.live = null;
     for (const n of this.nodes) n.disconnect();
     this.nodes = [];
     this._kind = null;
@@ -120,8 +159,10 @@ const DEMO_PHRASE: [number | null, number][] = [
   [45, 0.3], [47, 0.3], [48, 0.3], [50, 0.8], [null, 0.6],
 ];
 const DEMO_GLIDE = 0.06;
+/** Level of the demo voice played straight to the speakers (when not monitoring). */
+const DEMO_DIRECT = 0.15;
 
-function startDemoVoice(ctx: AudioContext, capture: AudioNode): () => void {
+function startDemoVoice(ctx: AudioContext, capture: AudioNode): { stop(): void; direct: GainNode } {
   const osc = new OscillatorNode(ctx, { type: 'sawtooth', frequency: midiToFreq(50) });
   const formant = new BiquadFilterNode(ctx, { type: 'lowpass', frequency: 1400, Q: 4 });
   const amp = new GainNode(ctx, { gain: 0 });
@@ -139,7 +180,8 @@ function startDemoVoice(ctx: AudioContext, capture: AudioNode): () => void {
   const hiss = new AudioBufferSourceNode(ctx, { buffer: hissBuffer, loop: true });
   hiss.connect(new BiquadFilterNode(ctx, { type: 'lowpass', frequency: 6000 })).connect(new GainNode(ctx, { gain: 0.03 })).connect(capture);
   hiss.start();
-  amp.connect(new GainNode(ctx, { gain: 0.15 })).connect(ctx.destination);
+  const direct = new GainNode(ctx, { gain: DEMO_DIRECT });
+  amp.connect(direct).connect(ctx.destination);
 
   const phraseLength = DEMO_PHRASE.reduce((s, [, d]) => s + d, 0);
   let nextPhraseAt = ctx.currentTime + 0.1;
@@ -169,11 +211,15 @@ function startDemoVoice(ctx: AudioContext, capture: AudioNode): () => void {
   osc.start();
   vibrato.start();
 
-  return () => {
-    hiss.stop();
-    window.clearInterval(timer);
-    osc.stop();
-    vibrato.stop();
-    amp.disconnect();
+  return {
+    direct,
+    stop: () => {
+      hiss.stop();
+      window.clearInterval(timer);
+      osc.stop();
+      vibrato.stop();
+      amp.disconnect();
+      direct.disconnect();
+    },
   };
 }

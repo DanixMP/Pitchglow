@@ -19,8 +19,28 @@ const HANN = Float64Array.from({ length: HANN_SIZE + 2 }, (_, j) => 0.5 + 0.5 * 
 
 /** Grain spacing for unvoiced audio (identity, so any value works; ~5 ms keeps it light). */
 const UNVOICED_PERIOD_SECONDS = 0.005;
-/** Where windows barely overlap, blend towards the original instead of dividing by ~0. */
-const MIN_WEIGHT = 0.25;
+/**
+ * Summed window weight below which the output isn't divided any further: shifting down spreads the
+ * grains out, and the envelope that leaves is what carries the lower pitch. (Dividing it away
+ * reassembles the original: an octave down then sounded exactly like the input.)
+ */
+const NORM_FLOOR = 0.5;
+/** Below this weight the lead fades towards the source (the edges of voiced stretches). */
+const BLEND_WEIGHT = 0.1;
+
+/** One output sample from the overlap-added grains (`acc`), their summed weight and the source. */
+export function normalizeGrain(acc: number, w: number, x: number, passthrough: boolean): number {
+  if (w >= NORM_FLOOR) return acc / w;
+  const y = acc / NORM_FLOOR;
+  return passthrough && w < BLEND_WEIGHT ? y + (1 - w / BLEND_WEIGHT) * x : y;
+}
+
+/** Hann weight 0.5 + 0.5·cos(πk/half) from the table (no Math.cos per sample). */
+export function hann(k: number, half: number): number {
+  const x = ((k < 0 ? -k : k) * HANN_SIZE) / half;
+  const i = x | 0;
+  return HANN[i] + (HANN[i + 1] - HANN[i]) * (x - i);
+}
 /** Peak search window around the predicted next cycle, as a fraction of the period. */
 const MARK_SEARCH = 0.3;
 
@@ -136,7 +156,8 @@ export function planGrains(analysis: PsolaAnalysis, corrections: readonly Correc
       while (idx + 1 < marks.length && Math.abs(marks[idx + 1] - t) <= Math.abs(marks[idx] - t)) idx++;
       const a = marks[idx];
       const synthPeriod = periodAt(t) / ratioAt(t);
-      plan.push(a, Math.round(t), Math.round(Math.max(periodAt(a), synthPeriod)));
+      // Grains are two analysis periods long (classic TD-PSOLA), whatever the shift.
+      plan.push(a, Math.round(t), Math.round(periodAt(a)));
       t += synthPeriod;
     }
     cursor = r.end;
@@ -174,25 +195,15 @@ export function renderGrains(src: Float32Array, plan: GrainPlan, start: number, 
     const kMax = Math.min(half - 1, n - 1 - f, n - 1 - t, end - 1 - t);
     // Hann window 0.5 + 0.5·cos(πk/half) from a table (no Math.cos per sample). A pure function of
     // (k, half), so any block split gives the same samples.
-    const scale = HANN_SIZE / half;
     for (let k = kMin; k <= kMax; k++) {
-      const x = (k < 0 ? -k : k) * scale;
-      const i = x | 0;
-      const w = HANN[i] + (HANN[i + 1] - HANN[i]) * (x - i);
+      const w = hann(k, half);
       out[t + k - start] += w * src[f + k];
       weight[t + k - start] += w;
     }
   }
-  if (plan.passthrough) {
-    for (let i = 0; i < len; i++) {
-      const w = weight[i];
-      const x = start + i < src.length ? src[start + i] : 0;
-      out[i] = w >= MIN_WEIGHT ? out[i] / w : (out[i] + (MIN_WEIGHT - w) * x) / MIN_WEIGHT;
-    }
-  } else {
-    // Fades to silence where the grains thin out (the edges of each sung note).
-    for (let i = 0; i < len; i++) out[i] /= Math.max(weight[i], MIN_WEIGHT);
-  }
+  // Harmony voices (no passthrough) fade to silence where the grains thin out.
+  const pass = plan.passthrough;
+  for (let i = 0; i < len; i++) out[i] = normalizeGrain(out[i], weight[i], start + i < src.length ? src[start + i] : 0, pass);
 }
 
 class PlanBuilder {

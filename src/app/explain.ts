@@ -41,6 +41,12 @@ export function denoiseAmountText(db: number): string {
   return `${db} dB: aggressive. Listen for a watery sound.`;
 }
 
+export function monitorText(on: boolean): string[] {
+  return on
+    ? ['Hear myself: your voice, tuned and with effects, in your headphones as you sing.', 'Wired headphones only: speakers would feed back, and Bluetooth lags.']
+    : ['Hear myself off: the voice is processed after you record.'];
+}
+
 export function micFilterText(on: boolean): string {
   return on
     ? 'Mic noise filter on: the browser cleans the mic live, and it is baked into new recordings.'
