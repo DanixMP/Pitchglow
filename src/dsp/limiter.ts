@@ -15,31 +15,40 @@ export interface LimiterOptions {
 }
 
 export function limit(x: Float32Array, sampleRate: number, opts: LimiterOptions = {}): Float32Array {
+  return limitLinked([x], sampleRate, opts)[0];
+}
+
+/**
+ * Multi-channel version with one gain curve for all channels (driven by the loudest), so a stereo
+ * mix is turned down evenly and its image doesn't shift.
+ */
+export function limitLinked(channels: readonly Float32Array[], sampleRate: number, opts: LimiterOptions = {}): Float32Array[] {
   const { ceiling = 0.98, windowSeconds = 0.005, releaseSeconds = 0.08 } = opts;
-  const n = x.length;
+  const n = channels[0]?.length ?? 0;
   const half = Math.max(1, Math.round((windowSeconds * sampleRate) / 2));
 
   const required = new Float32Array(n);
   let needed = false;
   for (let i = 0; i < n; i++) {
-    const a = Math.abs(x[i]);
+    let a = 0;
+    for (const ch of channels) a = Math.max(a, Math.abs(ch[i]));
     required[i] = a > ceiling ? ceiling / a : 1;
     if (a > ceiling) needed = true;
   }
-  if (!needed) return x.slice();
+  if (!needed) return channels.map((ch) => ch.slice());
 
   const minimum = slidingMin(required, half);
   const averaged = movingAverage(minimum, half);
 
-  const out = new Float32Array(n);
+  const gain = new Float32Array(n);
   const release = 1 - Math.exp(-1 / (releaseSeconds * sampleRate));
   let g = 1;
   for (let i = 0; i < n; i++) {
     const target = averaged[i];
     g = target < g ? target : g + (target - g) * release;
-    out[i] = x[i] * g;
+    gain[i] = g;
   }
-  return out;
+  return channels.map((ch) => ch.map((v, i) => v * gain[i]));
 }
 
 /** min(x[i-half .. i+half]) for every i, in O(n) with a monotonic deque. */

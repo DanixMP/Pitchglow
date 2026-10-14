@@ -327,14 +327,15 @@ The user asked for pitch and reverb effects, a remix-studio style mixer, importi
 - [x] Piano roll shows the song key's lanes while recording (scale hint, even with auto-tune off)
 - [ ] Real-world check (user): record over a real beat with headphones; calibrate with speakers; tune the nudge if takes sit early/late
 
-### Phase 10 — Mixer (remix studio) — code done, NOT yet browser-verified
+### Phase 10 — Mixer (remix studio)
 - [x] Shared mix chain (`src/audio/chain.ts`: gain → StereoPanner → master gain → limiter) used by MixPlayer *and* mixdown
 - [x] Channel strips: fader, **pan**, mute, solo, peak **meter** (hold-and-fall, −48…0 dBFS), name, colour
 - [x] Master strip: volume, limiter toggle (default on), L/R meter
 - [x] Timeline (`src/ui/timeline.ts`): waveform clips per track, drag to move (snap 1/16 with BPM, 10 ms without, Alt = free), click to seek, ←/→ nudge
 - [x] Export mixdown through the master; **stems** = each audible track post-fader/pan, same length, zipped (`src/audio/zip.ts`)
 - [x] Undo/redo (`src/project/history.ts`, coalesces drags): buttons + Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y; replaced instrumentals are kept until next start (asset GC in `Session.init`) so undo can restore them
-- [ ] NEXT SESSION: browser check — meters move while playing, pan audible, clip drag + undo, stems zip opens, master limiter, narrow/phone strip layout (two-row grid)
+- [x] Browser-verified: meters move while playing; pan hard L → master R = 0; clip drag snapped to 13 × 1/16 at 96 BPM, one undo restores, redo re-applies; stems zip = 2 numbered 12 s stereo WAVs; strips fit at 1440 px (one row) and 398 px (two rows), no overlaps
+- [x] **Limiter fix** (found by the check): `DynamicsCompressorNode` alone let +6 dB mixes clip (no look-ahead, make-up gain). Now export = master gain → **look-ahead `limitLinked`** (linked L/R, ceiling 0.98): +6 dB export peak 0.980 with 0 clipped samples (vs 5,719 off). Live = compressor (−3 dB, 1 ms) → soft-clip `WaveShaper` whose curve ends at 0.98, so live output can't exceed the ceiling either
 
 ### Phase 11 — Effects (pitch, reverb & more)
 - [ ] Phase vocoder (identity phase locking) for instrumental pitch shift; tests for pitch accuracy and level at ±1–4 semitones

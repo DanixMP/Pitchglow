@@ -4,7 +4,8 @@
 // - renderStems: each track alone, post-fader and post-pan, no master processing, all the same
 //   length (song start to song end) so they line up in any DAW.
 
-import { createTrackChain, MasterChain, type MasterSettings } from './chain';
+import { limitLinked } from '../dsp/limiter';
+import { createTrackChain, LIMIT_CEILING, MasterChain, type MasterSettings } from './chain';
 import type { MixTrackSpec } from './mix-player';
 
 export interface Rendered {
@@ -26,7 +27,9 @@ export async function renderMix(
 ): Promise<Rendered> {
   const length = Math.max(1, Math.ceil(duration * sampleRate));
   const ctx = new OfflineAudioContext({ numberOfChannels: 2, length, sampleRate });
-  const chain = new MasterChain(ctx, master);
+  // Master fader only; limiting (when on) is done afterwards by the look-ahead limiter, which is
+  // cleaner than the live compressor + soft clipper.
+  const chain = new MasterChain(ctx, { gain: master.gain, limiter: false });
   chain.output.connect(ctx.destination);
 
   for (const spec of specs) {
@@ -43,7 +46,9 @@ export async function renderMix(
     source.start(Math.max(0, spec.offset), Math.max(0, -spec.offset));
   }
   const rendered = await ctx.startRendering();
-  return { channels: [rendered.getChannelData(0), rendered.getChannelData(1)], sampleRate };
+  const channels = [rendered.getChannelData(0), rendered.getChannelData(1)];
+  // Exports get a true look-ahead limiter on top (linked L/R): a guaranteed ceiling, cleanly.
+  return { channels: master.limiter ? limitLinked(channels, sampleRate, { ceiling: LIMIT_CEILING }) : channels, sampleRate };
 }
 
 /** One stereo render per audible track, each as long as the song. */

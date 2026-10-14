@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { limit } from '../src/dsp/limiter';
+import { limit, limitLinked } from '../src/dsp/limiter';
 import { rms, sine } from './signals';
 
 const SR = 48000;
@@ -34,5 +34,14 @@ describe('limit', () => {
     let maxStep = 0;
     for (let i = 1; i < y.length; i++) if (x[i] === x[i - 1]) maxStep = Math.max(maxStep, Math.abs(y[i] - y[i - 1]));
     expect(maxStep).toBeLessThan(0.01);
+  });
+
+  it('links the gain across channels (stereo image stays put)', () => {
+    const left = sine(220, SR, 0.5, 1.5); // loud
+    const right = sine(220, SR, 0.5, 0.5); // quiet, same phase
+    const [l, r] = limitLinked([left, right], SR, { ceiling: 0.98 });
+    expect(Math.max(...l.map(Math.abs))).toBeLessThanOrEqual(0.98 + 1e-6);
+    // Same gain on both: the L/R ratio is preserved sample by sample (where the signal isn't ~0).
+    for (let i = 1000; i < l.length; i += 997) if (Math.abs(right[i]) > 0.05) expect(l[i] / r[i]).toBeCloseTo(3, 4);
   });
 });
