@@ -58,6 +58,26 @@ Look: a near-black background (#0f0f10-ish), muted dark lane fills whose hue cyc
 - **Processing chain** (`src/dsp/process.ts`): denoise, then `renderWithHarmony`, all in the worker. The worker caches the last denoise output (keyed by recording id and amount), so re-tuning doesn't re-denoise. `ProcessSettings = { denoise, tune }`. The A/B switch and export are labelled Tuned, Cleaned or Clean + tuned.
 - **Mic noise filter:** `AudioInput.start(kind, { noiseSuppression })` uses the browser's live WebRTC filter. It's baked into new recordings, so it's locked during a take. Toggling it while listening restarts the mic.
 - **Demo source** adds faint room hiss (~−35 dBFS, to the recording only), so noise reduction can be tried without a mic.
+- **Songs (projects) & tracks** (`src/project/model.ts`, pure + tested):
+  - A `Project` has `tracks: Track[]`. A vocal track points at a library take (`takeId`) and carries its own `gainDb`, `pan`, `mute`, `solo`, `offset`, `pitch`, `tuning`, `cleanup` and `hue`.
+  - Songs are small JSON documents in the IndexedDB store `projects`, saved 400 ms after the last change.
+  - Deleting a take removes its tracks from every song (the confirm dialog says which).
+- **Inspector binding:**
+  - With no song open, the inspector edits the global defaults (localStorage).
+  - With a song open, `Session` stashes the global defaults and loads the **selected track's** settings into `store.tuning`/`cleanup`. `settingsChanged()` writes edits back to that track; it compares with JSON first, so selecting a track doesn't count as an edit.
+  - With a song open but no track selected, the inspector edits the stashed defaults used for new tracks.
+  - Closing the song restores the globals. The mic noise filter stays global.
+- **Song playback:**
+  - `MixPlayer` (which replaced `Player`) runs one `AudioBufferSource → Gain` lane per track into a master gain, started on the same audio frame (20 ms lead), with each track at its `offset`. `scheduleTrack()` in the model does the alignment math.
+  - Gain, mute and solo changes are live (`setGain`). A track's processed render arriving calls `setTracks` again, which keeps position and play state.
+  - Each track renders on its own worker **channel** (latest-wins per track). The worker keeps an LRU of 8 cleaned takes.
+  - Recording while a song is open adds the take as a new vocal track. The mix exports through `OfflineAudioContext` (`src/audio/mixdown.ts`) as a stereo WAV with a safety limiter; Phase 10 replaces this with the full master strip.
+- **Roll in a song:** the selected track is drawn normally (frames shifted by its offset), and the other vocal tracks are drawn as **ghost lines** in their track colour (`PianoRoll.setGhosts`).
+- **IndexedDB (`recorder`):**
+  - Stores: `meta` + `data` (takes), `projects`, `assets` (Phase 9).
+  - `RecordingStore.open()` first opens at the current version. If it's below `DB_VERSION` or any required store is missing (an interrupted upgrade), it re-opens at version + 1, which runs the additive, idempotent upgrade.
+  - Connections close on `versionchange`, so another tab can't block an upgrade.
+  - (This healed a real dev DB that was stuck at "v2 without projects" after a hot reload landed between two edits.)
 - **Modes** (`AppState.mode`, driven by `Session`): `idle`, `listening` (live line, nothing saved), `recording` (live line + saving), `playback` (a saved recording is open and the roll follows `Player.currentTime`).
 
 ## Architecture
@@ -70,8 +90,8 @@ src/
   app/
     store.ts              tiny typed store: get / set(patch) / subscribe / watch(selector, cb, {shallow})
     state.ts              AppState (mode, source, tuning, cleanup, takes, openId, A/B, render, layout) + createAppStore
-    session.ts            engine: live input + tracker, takes (record/save/open/rename/delete/export), player,
-                          worker renders; owns buffers/nodes, publishes plain state to the store
+    session.ts            engine: live input + tracker, takes, songs/tracks (open, select, mix, record into),
+                          MixPlayer, per-track worker renders, mix export; owns buffers/nodes, publishes state
     processing.ts         pure: prefs -> TuneSettings/ProcessSettings, processed label, title cards
     explain.ts            pure: caption texts
   dsp/
@@ -91,18 +111,22 @@ src/
     audio-input.ts        mic / demo-tone sources -> worklet -> callback
     pitch-tracker.ts      ring buffer + hop scheduling -> PitchFrame stream
     sample-buffer.ts      collects PCM blocks during a take
-    player.ts             AudioBuffer playback: play/pause/seek/swap + latency-compensated clock
+    mix-player.ts         multi-track playback (per-track gain lanes, offsets, live gain, swap) + latency-compensated clock
+    mixdown.ts            OfflineAudioContext stereo mixdown of the same track specs
     render-worker.ts      Web Worker: processRecording off the main thread, caches the cleaned audio
-    tuned-renderer.ts     main-thread client for the worker (latest request wins, returns notes)
-    wav.ts                16-bit PCM WAV encoder
+    tuned-renderer.ts     main-thread client for the worker (per-channel latest-wins, returns notes)
+    wav.ts                16-bit PCM WAV encoder (mono or interleaved multi-channel)
+  project/
+    model.ts              Project/Track types + pure helpers (create, duplicate, update, effective gain, scheduling)
   storage/
-    recording-store.ts    IndexedDB: list/save/load/rename/delete takes
+    recording-store.ts    IndexedDB: takes + projects; self-healing open/upgrade
     pitch-track.ts        pack/unpack PitchFrame[] <-> typed-array columns
     settings.ts           tuning + clean-up prefs in localStorage
   ui/
     dom.ts                $ / $$ helpers
     piano-roll.ts         canvas renderer: keyboard, lanes, glowing line; live + playback modes, drag to scrub
-    recordings-list.ts    takes list items (play, rename inline, WAV export, delete)
+    recordings-list.ts    takes list items (play, rename, export, delete; + / drag into the open song)
+    icons.ts              shared SVG icons, icon buttons, inline name inputs, take drag MIME type
     knob.ts               rotary knob (drag, wheel, arrows, double-click to reset)
     captions.ts           word-by-word explainer captions over the roll
     colors.ts             lane/key color palette
@@ -114,7 +138,9 @@ src/
       input-panel.ts      Mic / Demo tone, mic noise filter
       transport.ts        play/seek/time, Original vs processed A/B, processed export
       readout.ts          note under the playhead
-      takes-panel.ts      takes library + search
+      songs-panel.ts      songs list: new, open, rename, duplicate, delete
+      takes-panel.ts      takes library + search, add-to-song
+      tracks-panel.ts     track rows (keyed, updated in place): select, rename, M/S, fader, remove; drop zone
       tuning-panel.ts     Auto-tune + Harmony sections
       cleanup-panel.ts    Noise reduction section
 public/                   manifest, icon.svg, icons/*.png (generated)
@@ -263,12 +289,14 @@ The user asked for pitch and reverb effects, a remix-studio style mixer, importi
 - [ ] Look at it on a real desktop, tablet and phone (user); the Claude browser pane is too small for full-size screenshots
 
 ### Phase 8 — Projects & tracks
-- [ ] IndexedDB v2: `projects`, `assets`; migration keeps all existing takes
-- [ ] Project list (new/rename/delete/duplicate) in the left column; open a project → its tracks in the center
-- [ ] Track model: kind (vocal/instrumental), source (take/asset), name, gain dB, pan, mute, solo, offset s, pitch offset, tuning, clean-up, FX
-- [ ] Add a take to a project as a vocal track (button + drag from the takes list)
-- [ ] Inspector edits the **selected track** (tuning, clean-up, FX are now per track)
-- [ ] Piano roll shows the selected vocal track's pitch line; other vocal tracks faded
+- [x] IndexedDB v2+: `projects`, `assets`; migration keeps all existing takes (tested: v1 → v2, partial "v2" healed, fresh DB)
+- [x] Songs list (new/rename/duplicate/delete) in the left column; opening a song shows its tracks in the center
+- [x] Track model: kind (vocal/instrumental), source (take/asset), name, gain dB, pan, mute, solo, offset s, pitch offset, tuning, clean-up, hue
+- [x] Add a take to a song as a vocal track (+ button, or drag from the takes list onto the tracks); recording while a song is open adds a track
+- [x] The inspector edits the **selected track** (tuning, harmony, clean-up per track); globals stashed and restored on close
+- [x] Piano roll shows the selected vocal track; other vocal tracks are faded ghost lines in their colours
+- [x] Multi-track playback in sync (MixPlayer) with live mute/solo/volume; basic stereo mix export (Mix WAV)
+- [ ] Try it on real recordings (user): several takes in one song, solo/mute, per-track auto-tune
 
 ### Phase 9 — Instrumental import & singing over the beat
 - [ ] Import instrumental: file picker + drag & drop (mp3/wav/m4a/ogg/flac), size/length limits, store the original blob

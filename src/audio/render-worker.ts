@@ -20,12 +20,21 @@ export interface RenderResponse {
   error?: string;
 }
 
-// One cached denoise result is enough: it's reused while the user tweaks tuning on the same take.
-let cached: DenoiseCache | undefined;
+// A few cleaned takes are kept (LRU), so re-tuning any track of a project skips noise reduction.
+const CACHE_SIZE = 8;
+const entries = new Map<string, DenoiseCache>();
 const cache = {
-  get: (key: string) => (cached?.key === key ? cached : undefined),
-  set: (entry: DenoiseCache) => {
-    cached = entry;
+  get(key: string) {
+    const hit = entries.get(key);
+    if (hit) {
+      entries.delete(key); // refresh recency
+      entries.set(key, hit);
+    }
+    return hit;
+  },
+  set(entry: DenoiseCache) {
+    entries.set(entry.key, entry);
+    while (entries.size > CACHE_SIZE) entries.delete(entries.keys().next().value!);
   },
 };
 

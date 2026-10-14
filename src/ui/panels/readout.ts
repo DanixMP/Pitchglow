@@ -1,12 +1,12 @@
 // Note readout under the roll: the note under the playhead and how far off it is.
 
 import type { AppStore } from '../../app/state';
-import type { Player } from '../../audio/player';
+import type { MixPlayer } from '../../audio/mix-player';
 import { nearestNote, noteName } from '../../dsp/notes';
 import { $ } from '../dom';
 import type { PianoRoll } from '../piano-roll';
 
-export function mountReadout(store: AppStore, roll: PianoRoll, player: Player): { tick(): void } {
+export function mountReadout(store: AppStore, roll: PianoRoll, player: MixPlayer): { tick(): void } {
   const noteEl = $('note');
   const detailEl = $('detail');
 

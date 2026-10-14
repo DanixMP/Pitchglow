@@ -1,5 +1,6 @@
 // Main-thread side of the render worker (noise reduction + auto-tune + harmony).
-// Latest request wins: older pending renders resolve to null.
+// Requests are grouped into channels (one per track): within a channel the latest request wins and
+// older pending ones resolve to null; different channels don't affect each other.
 
 import type { PitchFrame } from './pitch-tracker';
 import type { ProcessSettings } from '../dsp/process';
@@ -15,10 +16,14 @@ export interface RenderOutput {
 export class TunedRenderer {
   private worker: Worker | null = null;
   private nextId = 1;
-  private pending = new Map<number, { resolve: (out: RenderOutput | null) => void; reject: (err: Error) => void }>();
+  private pending = new Map<
+    number,
+    { channel: string; resolve: (out: RenderOutput | null) => void; reject: (err: Error) => void }
+  >();
 
-  /** Renders the processed version. Resolves to null if a newer render was requested meanwhile. */
+  /** Renders the processed version. Resolves to null if a newer render was requested on the same channel. */
   render(
+    channel: string,
     recordingId: string,
     samples: Float32Array,
     sampleRate: number,
@@ -28,11 +33,12 @@ export class TunedRenderer {
     const worker = this.ensureWorker();
     const id = this.nextId++;
     for (const [oldId, p] of this.pending) {
+      if (p.channel !== channel) continue;
       p.resolve(null);
       this.pending.delete(oldId);
     }
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      this.pending.set(id, { channel, resolve, reject });
       // Copy so the caller keeps its samples (the copy is transferred, not cloned again).
       const copy = samples.slice();
       const req: RenderRequest = { id, recordingId, samples: copy, sampleRate, pitch: packFrames(frames), settings };
@@ -40,14 +46,19 @@ export class TunedRenderer {
     });
   }
 
-  /** Drops any pending render (e.g. when the recording is closed). */
-  cancel(): void {
-    for (const p of this.pending.values()) p.resolve(null);
-    this.pending.clear();
+  /** Drops pending renders: one channel, or all of them (e.g. when the recording is closed). */
+  cancel(channel?: string): void {
+    for (const [id, p] of this.pending) {
+      if (channel !== undefined && p.channel !== channel) continue;
+      p.resolve(null);
+      this.pending.delete(id);
+    }
   }
 
-  get busy(): boolean {
-    return this.pending.size > 0;
+  /** Whether anything (or one channel) is still rendering. */
+  busy(channel?: string): boolean {
+    for (const p of this.pending.values()) if (channel === undefined || p.channel === channel) return true;
+    return false;
   }
 
   private ensureWorker(): Worker {

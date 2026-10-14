@@ -1057,3 +1057,259 @@ body {
   border: 1px dashed var(--border);
   border-radius: 12px;
 }
+
+/* --- songs (left column) ---------------------------------------------------------------------- */
+
+.side-section + .side-section {
+  margin-top: 22px;
+}
+
+.col-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.song-dots {
+  flex: none;
+  display: grid;
+  grid-template-columns: repeat(2, 8px);
+  gap: 3px;
+  width: 28px;
+  padding: 0 4px;
+}
+
+.song-dots i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #3a3a42;
+}
+
+.rec-badge {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(246, 196, 83, 0.15);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  vertical-align: 1px;
+}
+
+.icon-btn-accent {
+  color: var(--accent);
+}
+
+.rec[draggable='true'] {
+  cursor: grab;
+}
+
+.rec.is-dragging {
+  opacity: 0.5;
+}
+
+.btn-ghost {
+  background: transparent;
+}
+
+/* --- tracks (center, song open) -------------------------------------------------------------- */
+
+.tracks {
+  margin: 12px 16px 0;
+  padding: 10px 10px 8px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.tracks.is-drop-target {
+  border-color: var(--accent);
+  background: rgba(246, 196, 83, 0.06);
+}
+
+.tracks-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px 8px;
+}
+
+.track-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  max-height: 210px;
+  overflow-y: auto;
+}
+
+.track {
+  display: grid;
+  grid-template-columns: 10px minmax(70px, 1fr) 10px 30px 30px minmax(80px, 140px) 56px 32px;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px 5px 8px;
+  border-radius: 10px;
+  background: var(--surface);
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+
+.track:hover {
+  background: var(--surface-2);
+}
+
+.track.is-selected {
+  border-color: rgba(246, 196, 83, 0.6);
+  background: var(--surface-2);
+}
+
+.track:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.track.is-muted .track-name,
+.track.is-muted .track-fader,
+.track.is-muted .track-db {
+  opacity: 0.45;
+}
+
+.track-color {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.track-name {
+  font-size: 14px;
+}
+
+.track-busy {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  visibility: hidden;
+}
+
+.track-busy.is-on {
+  visibility: visible;
+  animation: pulse 1s ease-in-out infinite;
+}
+
+.track-btn {
+  width: 30px;
+  height: 26px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  font: 700 12px var(--font);
+  cursor: pointer;
+}
+
+.track-btn:hover {
+  color: var(--fg);
+}
+
+.track-mute[aria-pressed='true'] {
+  background: #ff8a8a;
+  border-color: #ff8a8a;
+  color: #1a0a0a;
+}
+
+.track-solo[aria-pressed='true'] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #1a1408;
+}
+
+.track-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.track-fader {
+  width: 100%;
+  accent-color: var(--fg);
+}
+
+.track-db {
+  font-size: 12px;
+  color: var(--muted);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.tracks-empty {
+  margin: 4px;
+  padding: 14px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* Narrow center column (tablet/phone): fader under the name. */
+@media (max-width: 1299px) and (min-width: 1100px), (max-width: 899px) {
+  .track {
+    grid-template-columns: 10px minmax(0, 1fr) 10px 30px 30px 32px;
+    grid-template-areas:
+      'c n b m s x'
+      '. f f f d d';
+  }
+
+  .track-color {
+    grid-area: c;
+  }
+
+  .track-name {
+    grid-area: n;
+  }
+
+  .track-busy {
+    grid-area: b;
+  }
+
+  .track-mute {
+    grid-area: m;
+  }
+
+  .track-solo {
+    grid-area: s;
+  }
+
+  .track .icon-close {
+    grid-area: x;
+  }
+
+  .track-fader {
+    grid-area: f;
+  }
+
+  .track-db {
+    grid-area: d;
+  }
+}
+
+@media (max-width: 759px) {
+  .tracks {
+    margin: 8px 10px 0;
+  }
+
+  .track-list {
+    max-height: 22dvh;
+  }
+
+  /* With a panel open, the tracks strip yields its space to the roll too. */
+  .studio[data-tab='takes'] .tracks,
+  .studio[data-tab='controls'] .tracks {
+    display: none;
+  }
+}

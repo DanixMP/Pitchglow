@@ -14,7 +14,9 @@ import { mountInputPanel } from './ui/panels/input-panel';
 import { mountLayout } from './ui/panels/layout';
 import { mountLiveControls } from './ui/panels/live-controls';
 import { mountReadout } from './ui/panels/readout';
+import { mountSongsPanel } from './ui/panels/songs-panel';
 import { mountTakesPanel } from './ui/panels/takes-panel';
+import { mountTracksPanel } from './ui/panels/tracks-panel';
 import { mountTransport } from './ui/panels/transport';
 import { mountTuningPanel } from './ui/panels/tuning-panel';
 import { PianoRoll } from './ui/piano-roll';
@@ -28,19 +30,23 @@ mountLayout(store);
 mountHeader(store);
 mountLiveControls(store, session, captions);
 mountInputPanel(store, session, captions);
+mountSongsPanel(store, session);
 mountTakesPanel(store, session);
+mountTracksPanel(store, session);
 mountTuningPanel(store, captions);
 mountCleanupPanel(store, captions);
 const transport = mountTransport(store, session, roll, captions);
 const readout = mountReadout(store, roll, session.player);
 
-// Prefs: persist, and re-tune / re-render whenever they change.
+// Inspector settings changed: apply them (to the take, or the selected track of the open song),
+// then persist the *global* defaults (a track's own settings are saved with its song).
 store.watch(
   (s) => [s.tuning, s.cleanup] as const,
-  ([tuning, cleanup]) => {
-    saveTuning(tuning);
-    saveCleanup(cleanup);
+  () => {
     session.settingsChanged();
+    const global = session.globalSettings();
+    saveTuning(global.tuning);
+    saveCleanup(global.cleanup);
   },
   { shallow: true },
 );
@@ -80,5 +86,5 @@ function frame(t: number): void {
 }
 
 setupPwa($<HTMLButtonElement>('install'));
-session.run(() => session.refreshList());
+session.run(() => session.init());
 requestAnimationFrame(frame);

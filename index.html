@@ -16,16 +16,31 @@
   </head>
   <body>
     <div id="studio" class="studio">
-      <!-- Left column: takes library (desktop), drawer (tablet), tab panel (phone) -->
-      <aside id="takes-col" class="col col-left" aria-label="Takes">
-        <div class="col-head">
-          <h2 class="col-title">Takes <span id="takes-count" class="col-count"></span></h2>
-          <button id="takes-close" class="icon-btn drawer-close" type="button" aria-label="Close takes">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19l5.6-5.6 5.6 5.6 1.4-1.4-5.6-5.6L19 6.4 17.6 5 12 10.6z"/></svg>
-          </button>
-        </div>
-        <input id="takes-search" class="search" type="search" placeholder="Search takes" aria-label="Search takes" />
-        <ul id="recordings" class="rec-list"></ul>
+      <!-- Left column: songs + takes library (desktop), drawer (tablet), tab panel (phone) -->
+      <aside id="takes-col" class="col col-left" aria-label="Songs and takes">
+        <section class="side-section" aria-labelledby="songs-title">
+          <div class="col-head">
+            <h2 id="songs-title" class="col-title">Songs <span id="songs-count" class="col-count"></span></h2>
+            <div class="col-head-actions">
+              <button id="song-new" class="btn btn-small" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></svg>
+                <span>New song</span>
+              </button>
+              <button id="takes-close" class="icon-btn drawer-close" type="button" aria-label="Close panel">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19l5.6-5.6 5.6 5.6 1.4-1.4-5.6-5.6L19 6.4 17.6 5 12 10.6z"/></svg>
+              </button>
+            </div>
+          </div>
+          <ul id="songs" class="rec-list"></ul>
+        </section>
+
+        <section class="side-section" aria-labelledby="takes-title">
+          <div class="col-head">
+            <h2 id="takes-title" class="col-title">Takes <span id="takes-count" class="col-count"></span></h2>
+          </div>
+          <input id="takes-search" class="search" type="search" placeholder="Search takes" aria-label="Search takes" />
+          <ul id="recordings" class="rec-list"></ul>
+        </section>
       </aside>
 
       <!-- Center column: heading, piano roll, transport, record controls -->
@@ -69,6 +84,15 @@
               <span>Tuned WAV</span>
             </button>
           </div>
+        </section>
+
+        <section id="tracks" class="tracks" aria-label="Tracks" hidden>
+          <div class="tracks-head">
+            <span class="field-label">Tracks</span>
+            <button id="song-close" class="btn btn-small btn-ghost" type="button">Close song</button>
+          </div>
+          <ul id="track-list" class="track-list"></ul>
+          <p id="tracks-empty" class="tracks-empty">Drop a take here, or press <b>+</b> on a take, or just Record.</p>
         </section>
 
         <section class="readout" aria-live="polite">

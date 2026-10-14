@@ -1,29 +1,49 @@
 // Application state shape. Heavy, non-serialisable things (audio buffers, nodes) live in Session.
 
 import type { InputKind } from '../audio/audio-input';
+import type { Project, Track } from '../project/model';
 import type { RecordingMeta } from '../storage/recording-store';
 import { loadCleanup, loadTuning, type CleanupPrefs, type TuningPrefs } from '../storage/settings';
 import { Store } from './store';
 
-/** idle → listening/recording (live input) or playback (a saved recording is open). */
+/** idle → listening/recording (live input) or playback (a take or a song is open). */
 export type Mode = 'idle' | 'listening' | 'recording' | 'playback';
 
 /** Phone layout: which panel the bottom tab bar shows under the roll (null = collapsed). */
 export type MobileTab = 'takes' | 'controls' | null;
 
+export interface RenderState {
+  busy: boolean;
+  ready: boolean;
+  notes: string[];
+}
+
 export interface AppState {
   mode: Mode;
   source: InputKind;
+  /**
+   * The settings the inspector edits: the global defaults, or the selected track's settings while a
+   * song is open (Session loads them in and writes edits back to the track).
+   */
   tuning: TuningPrefs;
   cleanup: CleanupPrefs;
   /** Saved takes, newest first. */
   recordings: RecordingMeta[];
-  /** The take open in playback, if any. */
+  /** The take open for preview (no song open), if any. */
   openId: string | null;
+  /** Songs, most recently edited first. */
+  projects: Project[];
+  /** The song open in the studio, if any. */
+  projectId: string | null;
+  selectedTrackId: string | null;
+  /** Worker renders per track of the open song. */
+  trackRender: Record<string, RenderState>;
+  /** Length of whatever is open (take or song), seconds. */
+  duration: number;
   /** A/B: listen to the processed render (when anything is switched on) or the original. */
   listenProcessed: boolean;
-  /** Worker render of the open take. */
-  render: { busy: boolean; ready: boolean; notes: string[] };
+  /** Worker render of the open take (preview mode). */
+  render: RenderState;
   /** Seconds captured so far while recording. */
   recordingSeconds: number;
   /** Error / info line under the controls. */
@@ -43,6 +63,11 @@ export function createAppStore(): AppStore {
     cleanup: loadCleanup(),
     recordings: [],
     openId: null,
+    projects: [],
+    projectId: null,
+    selectedTrackId: null,
+    trackRender: {},
+    duration: 0,
     listenProcessed: true,
     render: { busy: false, ready: false, notes: [] },
     recordingSeconds: 0,
@@ -54,4 +79,12 @@ export function createAppStore(): AppStore {
 
 export function openMeta(state: AppState): RecordingMeta | null {
   return state.recordings.find((r) => r.id === state.openId) ?? null;
+}
+
+export function openProject(state: AppState): Project | null {
+  return state.projects.find((p) => p.id === state.projectId) ?? null;
+}
+
+export function selectedTrack(state: AppState): Track | null {
+  return openProject(state)?.tracks.find((t) => t.id === state.selectedTrackId) ?? null;
 }

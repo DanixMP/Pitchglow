@@ -1,7 +1,7 @@
 // Center-column heading: title cards in the style of Goal.mp4, take name in playback, recording timer.
 
 import { headingCardOf, processedLabelOf, processSettingsOf, wantsProcessed } from '../../app/processing';
-import { openMeta, type AppStore } from '../../app/state';
+import { openMeta, openProject, selectedTrack, type AppStore } from '../../app/state';
 import { $ } from '../dom';
 import { formatTime } from '../format';
 
@@ -16,8 +16,15 @@ export function mountHeader(store: AppStore): void {
     const s = store.get();
     let { eyebrow, title, tone } = headingCardOf(s.tuning);
     const meta = openMeta(s);
+    const song = openProject(s);
     if (s.mode === 'recording') {
-      eyebrow = `● Recording ${formatTime(s.recordingSeconds)}`;
+      eyebrow = `● Recording ${formatTime(s.recordingSeconds)}${song ? ` · new track in ${song.name}` : ''}`;
+    } else if (song) {
+      const track = selectedTrack(s);
+      const n = song.tracks.length;
+      eyebrow = track ? `Editing · ${track.name}` : `Song · ${n} ${n === 1 ? 'track' : 'tracks'}`;
+      title = song.name;
+      tone = null;
     } else if (s.mode === 'playback' && meta) {
       eyebrow = processSettingsOf(s.tuning, s.cleanup)
         ? `Playback · ${wantsProcessed(s) ? processedLabelOf(s.tuning, s.cleanup) : 'Original'}`

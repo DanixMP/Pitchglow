@@ -3,7 +3,7 @@
 import { listenModeText } from '../../app/explain';
 import { processedLabelOf, processSettingsOf, wantsProcessed } from '../../app/processing';
 import type { Session } from '../../app/session';
-import { openMeta, type AppStore } from '../../app/state';
+import { openProject, type AppState, type AppStore } from '../../app/state';
 import type { Captions } from '../captions';
 import { $, $$ } from '../dom';
 import { formatTime } from '../format';
@@ -39,9 +39,9 @@ export function mountTransport(store: AppStore, session: Session, roll: PianoRol
   exportBtn.addEventListener('click', () => session.exportProcessed());
 
   store.watch(
-    (s) => [s.mode, openMeta(s)?.duration ?? 0] as const,
+    (s) => [s.mode, s.duration] as const,
     ([mode, duration]) => {
-      root.hidden = mode !== 'playback';
+      root.hidden = mode !== 'playback' || duration <= 0;
       seek.max = String(duration);
       timeTotal.textContent = formatTime(duration);
     },
@@ -49,32 +49,53 @@ export function mountTransport(store: AppStore, session: Session, roll: PianoRol
   );
 
   store.watch(
-    (s) => [s.tuning, s.cleanup, s.listenProcessed, s.render] as const,
+    (s) => [s.tuning, s.cleanup, s.listenProcessed, s.render, s.projectId, s.trackRender, s.duration] as const,
     () => {
-      const s = store.get();
-      const available = processSettingsOf(s.tuning, s.cleanup) !== null;
-      const label = processedLabelOf(s.tuning, s.cleanup);
-      const processed = wantsProcessed(s);
+      const v = viewOf(store.get());
       for (const btn of abButtons) {
         const isProcessed = btn.dataset.ab === 'tuned';
-        const on = isProcessed === processed;
+        const on = isProcessed === v.processedOn;
         btn.classList.toggle('is-on', on);
         btn.setAttribute('aria-checked', String(on));
         if (isProcessed) {
-          btn.disabled = !available;
-          btn.textContent = label;
+          btn.disabled = !v.available;
+          btn.textContent = v.label;
         }
       }
-      exportBtn.disabled = !(available && s.render.ready);
-      exportLabel.textContent = `${label} WAV`;
-      renderStatus.textContent = !available
-        ? 'Auto-tune and noise reduction are off'
-        : s.render.busy
-          ? 'Processing…'
-          : s.render.notes.join(' · ');
+      exportBtn.disabled = !v.exportEnabled;
+      exportLabel.textContent = v.exportLabel;
+      renderStatus.textContent = v.status;
     },
     { shallow: true },
   );
+
+  /** What the A/B switch, export button and status show, for a take or a whole song. */
+  function viewOf(s: AppState) {
+    const song = openProject(s);
+    if (song) {
+      const available = song.tracks.some((t) => processSettingsOf(t.tuning, { ...t.cleanup, micFilter: false }) !== null);
+      const busy = song.tracks.some((t) => s.trackRender[t.id]?.busy);
+      const notes = [...new Set(song.tracks.flatMap((t) => s.trackRender[t.id]?.notes ?? []))];
+      return {
+        available,
+        processedOn: s.listenProcessed && available,
+        label: 'Processed',
+        exportEnabled: s.duration > 0,
+        exportLabel: 'Mix WAV',
+        status: busy ? 'Processing…' : notes.join(' · '),
+      };
+    }
+    const available = processSettingsOf(s.tuning, s.cleanup) !== null;
+    const label = processedLabelOf(s.tuning, s.cleanup);
+    return {
+      available,
+      processedOn: wantsProcessed(s),
+      label,
+      exportEnabled: available && s.render.ready,
+      exportLabel: `${label} WAV`,
+      status: !available ? 'Auto-tune and noise reduction are off' : s.render.busy ? 'Processing…' : s.render.notes.join(' · '),
+    };
+  }
 
   return {
     tick() {

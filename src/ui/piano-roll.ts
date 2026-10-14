@@ -52,6 +52,7 @@ export class PianoRoll {
   private renderedAt = 0;
 
   private tuning: TuneSettings | null = null;
+  private ghosts: { frames: readonly PitchFrame[]; hue: number }[] = [];
   private corrector: PitchCorrector | null = null;
   private mask = ALL_NOTES;
 
@@ -122,10 +123,19 @@ export class PianoRoll {
     this.viewTarget = this.medianMidi() ?? this.viewTarget;
   }
 
+  /**
+   * Other tracks of the song, drawn as faint lines in their track colour behind the main line.
+   * Frame times are song time (already shifted by each track's offset).
+   */
+  setGhosts(ghosts: readonly { frames: readonly PitchFrame[]; hue: number }[]): void {
+    this.ghosts = ghosts.map((g) => ({ frames: g.frames, hue: g.hue }));
+  }
+
   /** Empties the roll (e.g. after the shown recording was deleted). */
   clear(): void {
     this.live = false;
     this.frames = [];
+    this.ghosts = [];
     this.duration = 0;
     this.cursor = 0;
     this.latestTime = 0;
@@ -222,12 +232,12 @@ export class PianoRoll {
   // --- state ---------------------------------------------------------------------------------
 
   /** Index of the first frame at or after `time` (binary search; frames are time-ordered). */
-  private indexAt(time: number): number {
+  private indexAt(time: number, frames: readonly PitchFrame[] = this.frames): number {
     let lo = 0;
-    let hi = this.frames.length;
+    let hi = frames.length;
     while (lo < hi) {
       const mid = (lo + hi) >> 1;
-      if (this.frames[mid].time < time) lo = mid + 1;
+      if (frames[mid].time < time) lo = mid + 1;
       else hi = mid;
     }
     return lo;
@@ -375,6 +385,27 @@ export class PianoRoll {
     const xOf = (t: number) => L.playheadX - (now - t) * L.pxPerSec;
     const from = this.indexAt(now - this.secondsVisible - 0.1);
     const to = this.indexAt(now + 1e-6);
+
+    // Other tracks of the song: faint lines in their track colours.
+    for (const ghost of this.ghosts) {
+      g.strokeStyle = `hsl(${ghost.hue} 70% 70% / 0.32)`;
+      g.lineWidth = 1.5;
+      g.beginPath();
+      let prev: PitchFrame | null = null;
+      const end = this.indexAt(now + 1e-6, ghost.frames);
+      for (let i = this.indexAt(now - this.secondsVisible - 0.1, ghost.frames); i < end; i++) {
+        const f = ghost.frames[i];
+        if (f.midi === null) {
+          prev = null;
+          continue;
+        }
+        const joined = prev?.midi != null && f.time - prev.time <= MAX_GAP_SECONDS && Math.abs(f.midi - prev.midi) <= MAX_JUMP_SEMITONES;
+        if (joined) g.lineTo(xOf(f.time), L.yOf(f.midi));
+        else g.moveTo(xOf(f.time), L.yOf(f.midi));
+        prev = f;
+      }
+      g.stroke();
+    }
 
     if (this.tuning) {
       // What was actually sung, faded underneath the corrected line.
