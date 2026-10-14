@@ -1,8 +1,12 @@
 // Canvas piano roll: keyboard on the left, one coloured lane per semitone, and a glowing pitch line
 // that scrolls left into a fixed "now" playhead (Goal.mp4, 0:00-0:20).
+// With tuning on, the corrected line is drawn in the target note's colour over a faded original
+// (0:04 "On auto-tune"), and lanes/keys outside the chosen scale are greyed out (1:12 "Only C major").
 
 import type { PitchFrame } from '../audio/pitch-tracker';
-import { isBlackKey, octaveOf, pitchClass } from '../dsp/notes';
+import { PitchCorrector, correctTrack, type Correction, type TuneSettings } from '../dsp/autotune';
+import { isBlackKey, octaveOf, pitchClass, pitchClassName } from '../dsp/notes';
+import { scaleMask, scaleName } from '../dsp/scales';
 import { laneFill, litColor, theme } from './colors';
 
 export interface PianoRollOptions {
@@ -12,26 +16,40 @@ export interface PianoRollOptions {
   playheadRatio?: number;
 }
 
+/** A pitch frame plus its auto-tune correction (null fields when tuning is off or unvoiced). */
+export type RollFrame = PitchFrame & Correction;
+
 const LOWEST_NOTE = 24; // C1
 const HIGHEST_NOTE = 96; // C7
 /** Frames further apart than this are drawn as separate strokes. */
 const MAX_GAP_SECONDS = 0.04;
 /** Jumps bigger than this between consecutive frames are treated as a break, not a glide. */
 const MAX_JUMP_SEMITONES = 10;
+const ALL_NOTES = new Array<boolean>(12).fill(true);
+const FONT = 'ui-sans-serif, system-ui, sans-serif';
+
+type Layout = ReturnType<PianoRoll['layout']>;
 
 export class PianoRoll {
   private readonly ctx: CanvasRenderingContext2D;
+  /** Offscreen layer for the lines, so the left-edge fade works for any line colour. */
+  private readonly layer = document.createElement('canvas');
+  private readonly layerCtx: CanvasRenderingContext2D;
   private readonly secondsVisible: number;
   private readonly playheadRatio: number;
 
   /** Live: frames stream in and old ones are dropped. Otherwise the picture follows `cursor`. */
-  private frames: PitchFrame[] = [];
+  private frames: RollFrame[] = [];
   private latestTime = 0;
   private lastPushAt = 0;
   private live = false;
   private cursor = 0;
   private duration = 0;
   private renderedAt = 0;
+
+  private tuning: TuneSettings | null = null;
+  private corrector: PitchCorrector | null = null;
+  private mask = ALL_NOTES;
 
   private width = 0;
   private height = 0;
@@ -51,8 +69,10 @@ export class PianoRoll {
     opts: PianoRollOptions = {},
   ) {
     const ctx = canvas.getContext('2d');
-    if (!ctx) throw new Error('Canvas 2D not supported');
+    const layerCtx = this.layer.getContext('2d');
+    if (!ctx || !layerCtx) throw new Error('Canvas 2D not supported');
     this.ctx = ctx;
+    this.layerCtx = layerCtx;
     this.secondsVisible = opts.secondsVisible ?? 4;
     this.playheadRatio = opts.playheadRatio ?? 0.72;
     new ResizeObserver(() => this.resize()).observe(canvas);
@@ -67,6 +87,7 @@ export class PianoRoll {
     this.lastPushAt = performance.now();
     this.live = true;
     this.duration = 0;
+    this.corrector?.reset();
   }
 
   /** Freezes the picture where it is. */
@@ -76,7 +97,7 @@ export class PianoRoll {
   }
 
   push(frame: PitchFrame): void {
-    this.frames.push(frame);
+    this.frames.push({ ...frame, ...this.correct(frame) });
     this.latestTime = frame.time;
     this.lastPushAt = performance.now();
     const keepFrom = frame.time - this.secondsVisible - 1;
@@ -86,9 +107,10 @@ export class PianoRoll {
   }
 
   /** Shows a whole recorded pitch track; move through it with `setTime`. */
-  showRecording(frames: PitchFrame[], duration: number, time = duration): void {
+  showRecording(frames: readonly PitchFrame[], duration: number, time = duration): void {
     this.live = false;
-    this.frames = frames;
+    this.frames = frames.map((f) => ({ ...f, target: null, corrected: null }));
+    this.retune();
     this.duration = duration;
     this.latestTime = frames.length ? frames[frames.length - 1].time : 0;
     this.cursor = time;
@@ -104,12 +126,20 @@ export class PianoRoll {
     this.latestTime = 0;
   }
 
+  /** Turns auto-tune display on (with these settings) or off (null). Re-corrects what is shown. */
+  setTuning(settings: TuneSettings | null): void {
+    this.tuning = settings;
+    this.mask = settings ? scaleMask(settings.scale) : ALL_NOTES;
+    this.corrector = settings ? new PitchCorrector(settings) : null;
+    this.retune();
+  }
+
   setTime(time: number): void {
     this.cursor = time;
   }
 
   /** The frame under the playhead in the last rendered picture. */
-  currentFrame(): PitchFrame | null {
+  currentFrame(): RollFrame | null {
     return this.frameAt(this.renderedAt);
   }
 
@@ -124,9 +154,9 @@ export class PianoRoll {
     const now = this.live ? this.latestTime + Math.min(0.05, (nowMs - this.lastPushAt) / 1000) : this.cursor;
     this.renderedAt = now;
 
-    const current = this.currentMidi(now);
-    this.updateView(current, dt);
-    this.updateLit(current, dt);
+    const head = this.frameAt(now);
+    this.updateView(head ? this.displayMidi(head) : null, dt);
+    this.updateLit(head ? this.litNote(head) : null, dt);
 
     const { ctx, width: w, height: h, dpr } = this;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -137,8 +167,38 @@ export class PianoRoll {
     const layout = this.layout();
     this.drawLanes(layout);
     this.drawPlayhead(layout);
-    this.drawLine(layout, now);
+    this.drawLines(layout, now);
     this.drawKeyboard(layout);
+    if (this.tuning) this.drawTuningChip(layout, this.tuning);
+  }
+
+  // --- tuning --------------------------------------------------------------------------------
+
+  private correct(frame: PitchFrame): Correction {
+    return this.corrector?.process(frame) ?? { target: null, corrected: null };
+  }
+
+  private retune(): void {
+    if (!this.tuning) {
+      for (const f of this.frames) f.target = f.corrected = null;
+      return;
+    }
+    const corrections = correctTrack(this.frames, this.tuning);
+    this.frames.forEach((f, i) => Object.assign(f, corrections[i]));
+    // Continue live correction from where the shown history ends.
+    this.corrector = new PitchCorrector(this.tuning);
+    for (const f of this.frames.slice(-3)) this.corrector.process(f);
+  }
+
+  /** The pitch drawn as the main line. */
+  private displayMidi(f: RollFrame): number | null {
+    return this.tuning ? f.corrected : f.midi;
+  }
+
+  /** The note whose key and lane light up. */
+  private litNote(f: RollFrame): number | null {
+    if (this.tuning) return f.target;
+    return f.midi === null ? null : Math.round(f.midi);
   }
 
   // --- state ---------------------------------------------------------------------------------
@@ -156,15 +216,10 @@ export class PianoRoll {
   }
 
   /** The frame sounding at `now`, or null. */
-  private frameAt(now: number): PitchFrame | null {
+  private frameAt(now: number): RollFrame | null {
     const i = this.indexAt(now + 1e-6) - 1;
     const f = i >= 0 ? this.frames[i] : undefined;
     return f && now - f.time <= 0.12 ? f : null;
-  }
-
-  /** MIDI of the frame sounding at `now` if it is voiced. */
-  private currentMidi(now: number): number | null {
-    return this.frameAt(now)?.midi ?? null;
   }
 
   /** Typical pitch of the loaded track, used to frame the view when a recording opens. */
@@ -210,8 +265,7 @@ export class PianoRoll {
     this.viewCenter += (this.viewTarget - this.viewCenter) * (1 - Math.exp(-dt * 4));
   }
 
-  private updateLit(current: number | null, dt: number): void {
-    const note = current === null ? null : Math.round(current);
+  private updateLit(note: number | null, dt: number): void {
     if (note !== null && !this.lit.has(note)) this.lit.set(note, 0);
     const k = 1 - Math.exp(-dt * 14);
     for (const [m, level] of this.lit) {
@@ -228,8 +282,8 @@ export class PianoRoll {
     this.dpr = window.devicePixelRatio || 1;
     this.width = rect.width;
     this.height = rect.height;
-    this.canvas.width = Math.round(rect.width * this.dpr);
-    this.canvas.height = Math.round(rect.height * this.dpr);
+    this.canvas.width = this.layer.width = Math.round(rect.width * this.dpr);
+    this.canvas.height = this.layer.height = Math.round(rect.height * this.dpr);
   }
 
   /** Visible semitones, chosen so lanes stay a comfortable height. */
@@ -259,13 +313,17 @@ export class PianoRoll {
     };
   }
 
+  private inScale(midi: number): boolean {
+    return this.mask[pitchClass(midi)];
+  }
+
   // --- drawing -------------------------------------------------------------------------------
 
-  private drawLanes(L: ReturnType<PianoRoll['layout']>): void {
+  private drawLanes(L: Layout): void {
     const { ctx } = this;
     for (let m = L.lowNote; m <= L.highNote; m++) {
       const top = L.yOf(m + 0.5);
-      ctx.fillStyle = laneFill(m);
+      ctx.fillStyle = this.inScale(m) ? laneFill(m) : theme.offScaleLane;
       ctx.fillRect(L.keyW, top, L.w - L.keyW, L.laneH);
       const level = this.lit.get(m);
       if (level) {
@@ -277,87 +335,148 @@ export class PianoRoll {
     }
   }
 
-  private drawPlayhead(L: ReturnType<PianoRoll['layout']>): void {
+  private drawPlayhead(L: Layout): void {
     this.ctx.fillStyle = theme.playhead;
     this.ctx.fillRect(Math.round(L.playheadX), 0, 1, L.h);
   }
 
-  private drawLine(L: ReturnType<PianoRoll['layout']>, now: number): void {
-    const { ctx } = this;
+  private drawLines(L: Layout, now: number): void {
+    const { layerCtx: g, dpr } = this;
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.clearRect(0, 0, this.layer.width, this.layer.height);
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.save();
+    g.beginPath();
+    g.rect(L.keyW, 0, L.w - L.keyW, L.h);
+    g.clip();
+    g.lineJoin = 'round';
+    g.lineCap = 'round';
+
     const xOf = (t: number) => L.playheadX - (now - t) * L.pxPerSec;
+    const from = this.indexAt(now - this.secondsVisible - 0.1);
+    const to = this.indexAt(now + 1e-6);
 
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(L.keyW, 0, L.w - L.keyW, L.h);
-    ctx.clip();
+    if (this.tuning) {
+      // What was actually sung, faded underneath the corrected line.
+      g.strokeStyle = theme.originalLine;
+      g.lineWidth = 1.75;
+      g.beginPath();
+      this.tracePath(g, L, xOf, from, to, (f) => f.midi);
+      g.stroke();
+    }
 
-    // Older history fades out towards the keyboard.
-    const fade = ctx.createLinearGradient(L.keyW, 0, L.keyW + (L.playheadX - L.keyW) * 0.45, 0);
-    fade.addColorStop(0, 'rgba(255,255,255,0)');
-    fade.addColorStop(1, theme.line);
-    ctx.strokeStyle = fade;
-    ctx.lineWidth = 2.5;
-    ctx.lineJoin = 'round';
-    ctx.lineCap = 'round';
-    ctx.shadowColor = theme.lineGlow;
-    ctx.shadowBlur = 12;
-
-    ctx.beginPath();
-    let prev: PitchFrame | null = null;
-    for (let i = this.indexAt(now - this.secondsVisible - 0.1); i < this.frames.length; i++) {
+    // Main line: white, or the target note's colour when tuned (one stroke per note run).
+    g.lineWidth = 2.5;
+    g.shadowBlur = 12;
+    let prev: RollFrame | null = null;
+    let runColor = '';
+    for (let i = from; i < to; i++) {
       const f = this.frames[i];
-      if (f.time > now) break;
-      if (f.midi === null) {
+      const y = this.displayMidi(f);
+      if (y === null) {
         prev = null;
         continue;
       }
-      const x = xOf(f.time);
-      const y = L.yOf(f.midi);
-      const connected =
-        prev !== null &&
-        prev.midi !== null &&
-        f.time - prev.time <= MAX_GAP_SECONDS &&
-        Math.abs(f.midi - prev.midi) <= MAX_JUMP_SEMITONES;
-      if (connected) ctx.lineTo(x, y);
-      else ctx.moveTo(x, y);
+      const color = this.tuning && f.target !== null ? litColor(f.target) : theme.line;
+      const connected = prev !== null && this.connected(prev, f, this.displayMidi(prev)!, y);
+      if (color !== runColor) {
+        if (runColor) g.stroke();
+        runColor = color;
+        g.strokeStyle = color;
+        g.shadowColor = this.tuning ? color : theme.lineGlow;
+        g.beginPath();
+        // Start the new colour where the previous one ended so the line stays continuous.
+        if (connected) g.moveTo(xOf(prev!.time), L.yOf(this.displayMidi(prev!)!));
+        else g.moveTo(xOf(f.time), L.yOf(y));
+      }
+      if (connected) g.lineTo(xOf(f.time), L.yOf(y));
+      else g.moveTo(xOf(f.time), L.yOf(y));
       prev = f;
     }
-    ctx.stroke();
+    if (runColor) g.stroke();
 
     // Glowing head dot on the playhead while the voice is sounding.
     const head = this.frameAt(now);
-    if (head && head.midi !== null) {
-      const x = xOf(head.time);
-      const y = L.yOf(head.midi);
-      ctx.fillStyle = theme.line;
-      ctx.shadowBlur = 18;
-      ctx.beginPath();
-      ctx.arc(x, y, 4.5, 0, Math.PI * 2);
-      ctx.fill();
+    const headY = head ? this.displayMidi(head) : null;
+    if (head && headY !== null) {
+      const color = this.tuning && head.target !== null ? litColor(head.target) : theme.line;
+      g.fillStyle = color;
+      g.shadowColor = this.tuning ? color : theme.lineGlow;
+      g.shadowBlur = 18;
+      g.beginPath();
+      g.arc(xOf(head.time), L.yOf(headY), 4.5, 0, Math.PI * 2);
+      g.fill();
     }
-    ctx.restore();
+    g.restore();
+
+    // Older history fades out towards the keyboard.
+    g.save();
+    g.globalCompositeOperation = 'destination-out';
+    const fade = g.createLinearGradient(L.keyW, 0, L.keyW + (L.playheadX - L.keyW) * 0.45, 0);
+    fade.addColorStop(0, 'rgba(0,0,0,1)');
+    fade.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = fade;
+    g.fillRect(L.keyW, 0, (L.playheadX - L.keyW) * 0.45, L.h);
+    g.restore();
+
+    this.ctx.save();
+    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    this.ctx.drawImage(this.layer, 0, 0);
+    this.ctx.restore();
   }
 
-  private drawKeyboard(L: ReturnType<PianoRoll['layout']>): void {
+  private connected(a: RollFrame, b: RollFrame, ya: number, yb: number): boolean {
+    return b.time - a.time <= MAX_GAP_SECONDS && Math.abs(yb - ya) <= MAX_JUMP_SEMITONES;
+  }
+
+  /** Adds one polyline per voiced run of frames to the current path. */
+  private tracePath(
+    g: CanvasRenderingContext2D,
+    L: Layout,
+    xOf: (t: number) => number,
+    from: number,
+    to: number,
+    value: (f: RollFrame) => number | null,
+  ): void {
+    let prev: RollFrame | null = null;
+    for (let i = from; i < to; i++) {
+      const f = this.frames[i];
+      const y = value(f);
+      if (y === null) {
+        prev = null;
+        continue;
+      }
+      if (prev && this.connected(prev, f, value(prev)!, y)) g.lineTo(xOf(f.time), L.yOf(y));
+      else g.moveTo(xOf(f.time), L.yOf(y));
+      prev = f;
+    }
+  }
+
+  private drawKeyboard(L: Layout): void {
     const { ctx } = this;
     const radius = Math.min(4, L.laneH / 4);
+    const labelAll = this.tuning !== null && this.tuning.scale.type !== 'chromatic';
+    const fontSize = Math.min(11, L.laneH * 0.62);
+    const showLabels = L.laneH >= 9;
 
     ctx.fillStyle = theme.background;
     ctx.fillRect(0, 0, L.keyW, L.h);
+    ctx.font = `600 ${fontSize}px ${FONT}`;
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
 
     // White keys: extend halfway into neighbouring black-key rows, like a real keyboard.
     for (let m = L.lowNote; m <= L.highNote; m++) {
       if (isBlackKey(m)) continue;
       const top = isBlackKey(m + 1) ? L.yOf(m + 1) : L.yOf(m + 0.5);
       const bottom = isBlackKey(m - 1) ? L.yOf(m - 1) : L.yOf(m - 0.5);
-      this.fillKey(m, 0, top + 1, L.keyW - 3, bottom - top - 2, radius, theme.whiteKey);
+      const allowed = this.inScale(m);
+      this.fillKey(m, 0, top + 1, L.keyW - 3, bottom - top - 2, radius, allowed ? theme.whiteKey : theme.offScaleWhiteKey);
 
-      if (pitchClass(m) === 0 && L.laneH >= 9) {
-        ctx.fillStyle = this.lit.get(m) ? '#1a1a1a' : theme.keyLabel;
-        ctx.font = `600 ${Math.min(11, L.laneH * 0.62)}px ui-sans-serif, system-ui, sans-serif`;
-        ctx.textAlign = 'right';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(`C${octaveOf(m)}`, L.keyW - 9, (top + bottom) / 2 + 1);
+      const isC = pitchClass(m) === 0;
+      if (showLabels && (isC || (labelAll && allowed))) {
+        ctx.fillStyle = this.lit.get(m) ? '#1a1a1a' : allowed ? theme.keyLabel : theme.offScaleLabel;
+        ctx.fillText(isC ? `C${octaveOf(m)}` : pitchClassName(m), L.keyW - 9, L.yOf(m) + 1);
       }
     }
 
@@ -366,7 +485,12 @@ export class PianoRoll {
     for (let m = L.lowNote; m <= L.highNote; m++) {
       if (!isBlackKey(m)) continue;
       const top = L.yOf(m + 0.5) + inset;
-      this.fillKey(m, 0, top, L.keyW * 0.6, L.laneH - inset * 2, radius, theme.blackKey);
+      const allowed = this.inScale(m);
+      this.fillKey(m, 0, top, L.keyW * 0.6, L.laneH - inset * 2, radius, allowed ? theme.blackKey : theme.offScaleBlackKey);
+      if (showLabels && labelAll && allowed) {
+        ctx.fillStyle = this.lit.get(m) ? '#1a1a1a' : '#d8d8dc';
+        ctx.fillText(pitchClassName(m), L.keyW * 0.6 - 5, L.yOf(m) + 1);
+      }
     }
   }
 
@@ -381,5 +505,58 @@ export class PianoRoll {
       ctx.fillStyle = litColor(midi, level);
       ctx.fill();
     }
+  }
+
+  /** "SCALE C MAJOR · RETUNE 66 ms" chip in the top-left of the lanes (Goal.mp4, 0:58 / 1:08). */
+  private drawTuningChip(L: Layout, t: TuneSettings): void {
+    const { ctx } = this;
+    const parts: [string, string][] = [
+      ['SCALE', scaleName(t.scale).toUpperCase()],
+      ['RETUNE', `${Math.round(t.retuneMs)} ms`],
+    ];
+    const labelFont = `600 9px ${FONT}`;
+    const valueFont = `700 11px ${FONT}`;
+    const pad = 9;
+    const gap = 6;
+    const sep = 14;
+
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    let width = pad * 2;
+    const measured = parts.map(([label, value]) => {
+      ctx.font = labelFont;
+      const lw = ctx.measureText(label).width + label.length * 1.2;
+      ctx.font = valueFont;
+      const vw = ctx.measureText(value).width;
+      return { label, value, lw, vw };
+    });
+    measured.forEach((p, i) => (width += p.lw + gap + p.vw + (i ? sep : 0)));
+
+    const x = L.keyW + 10;
+    const y = 10;
+    const h = 24;
+    if (x + width > L.w - 10) return; // too narrow; the controls below show the same info
+    ctx.beginPath();
+    ctx.roundRect(x, y, width, h, 7);
+    ctx.fillStyle = 'rgba(12, 12, 14, 0.82)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    let cx = x + pad;
+    measured.forEach((p, i) => {
+      if (i) cx += sep;
+      ctx.font = labelFont;
+      ctx.fillStyle = theme.keyLabel;
+      ctx.letterSpacing = '1.2px';
+      ctx.fillText(p.label, cx, y + h / 2 + 0.5);
+      ctx.letterSpacing = '0px';
+      cx += p.lw + gap;
+      ctx.font = valueFont;
+      ctx.fillStyle = i === 0 ? theme.chipValue : theme.chipAccent;
+      ctx.fillText(p.value, cx, y + h / 2 + 0.5);
+      cx += p.vw;
+    });
   }
 }

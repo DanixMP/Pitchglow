@@ -30,6 +30,9 @@ Look: a near-black background (#0f0f10-ish), muted dark lane fills whose hue cyc
 - **Audio capture:** an AudioWorklet (`src/audio/capture-worklet.ts`) posts sample blocks to the main thread. It is connected to the destination through a zero-gain node, so there is no feedback.
 - **Storage:** IndexedDB database `recorder` (`src/storage/recording-store.ts`) with two object stores. `meta` holds `RecordingMeta` (id, name, createdAt, duration, sampleRate), so the list loads without reading any audio. `data` holds the raw Float32 PCM at the input rate plus the pitch track packed as typed-array columns (`src/storage/pitch-track.ts`, NaN = unvoiced).
 - **Sync:** a take's audio blocks and pitch frames both start at the moment Record is pressed (a new `PitchTracker` is created then), so frame times line up directly with sample positions.
+- **Auto-tune curve** (`src/dsp/autotune.ts`): for each frame, choose the target note (nearest in-scale note, with 0.15-semitone hysteresis so a voice hovering at the midpoint doesn't flicker). The correction is a **shift** added to the sung pitch and smoothed with time constant `retuneMs / 3`. At 0 ms the result is the exact staircase. At slow speeds the average lands on the note while vibrato passes through, like classic auto-tune. The voice re-glides from its natural pitch after each silence.
+- **Tuning display:** the piano roll keeps raw frames plus `{target, corrected}`. It re-corrects everything it holds whenever settings change, so turning the knob updates a paused recording instantly. Lines are drawn to an offscreen layer, so the left-edge fade works for colored lines.
+- **Tuning prefs** (enabled, key, scale, retune) are saved in localStorage (`src/storage/settings.ts`). They are global for now; Phase 4 may store them per recording.
 - **Modes** (`src/main.ts`): `idle`, `listening` (live line, nothing saved), `recording` (live line + saving), `playback` (a saved recording is open and the roll follows `Player.currentTime`).
 
 ## Architecture
@@ -40,7 +43,9 @@ src/
   style.css
   dsp/
     yin.ts                YIN pitch detector (pure, unit-tested)
-    notes.ts              freq <-> MIDI, note names, scales
+    notes.ts              freq <-> MIDI, note names
+    scales.ts             scale types, masks, nearest in-scale note
+    autotune.ts           PitchCorrector: target note + retune-speed glide
     resample.ts           low-pass + decimate to the analysis rate
   audio/
     capture-worklet.ts    AudioWorkletProcessor: forwards input blocks
@@ -52,9 +57,11 @@ src/
   storage/
     recording-store.ts    IndexedDB: list/save/load/rename/delete recordings
     pitch-track.ts        pack/unpack PitchFrame[] <-> typed-array columns
+    settings.ts           auto-tune prefs in localStorage
   ui/
     piano-roll.ts         canvas renderer: keyboard, lanes, glowing line; live + playback modes, drag to scrub
     recordings-list.ts    recordings list (play, rename inline, WAV export, delete)
+    knob.ts               rotary knob (drag, wheel, arrows, double-click to reset)
     colors.ts             lane/key color palette
     format.ts             time formatting
 tests/                    vitest unit tests (dsp, tracker, wav, packing, storage via fake-indexeddb)
@@ -63,7 +70,7 @@ tests/                    vitest unit tests (dsp, tracker, wav, packing, storage
 Data flow: mic → AudioWorklet → main thread `PitchTracker` (downsample, YIN, median filter) → `PitchFrame { time, freq, midi, clarity, rms }` → `PianoRoll.push()` → canvas drawn on each `requestAnimationFrame`.
 While recording, the same blocks and frames are also collected into a take. On Stop the take is saved to IndexedDB and opened in playback mode.
 
-Shortcuts: **R** = record/stop, **Space** = play/pause (playback mode).
+Shortcuts: **R** = record/stop, **T** = auto-tune on/off, **Space** = play/pause (playback mode).
 
 ## Commands
 
@@ -118,11 +125,13 @@ npm test           # vitest unit tests
 - [ ] Verify recording with a real microphone (user)
 
 ### Phase 3 — Auto-tune visuals
-- [ ] Quantize to the nearest note → staircase line in the lane color
-- [ ] Light up the target key and lane
-- [ ] Scale picker (Chromatic, Major/Minor in any key, …); grey out non-scale keys and drop their lanes; show note letters
-- [ ] Retune-speed knob (0–400 ms) controlling the glide toward the target
-- [ ] Show original (faded) and corrected lines together
+- [x] Quantize to the nearest note → staircase line in the lane color
+- [x] Light up the target key and lane
+- [x] Scale picker (Chromatic, Major/Minor in any key, …); grey out non-scale keys and drop their lanes; show note letters
+- [x] Retune-speed knob (0–400 ms) controlling the glide toward the target
+- [x] Show original (faded) and corrected lines together
+- [x] Readout shows the target note and how far off the singing was; chip on the roll shows scale + retune
+- [x] Tuning prefs saved; applies live and to open recordings
 
 ### Phase 4 — Auto-tune audio
 - [ ] Pitch-mark detection (cycle boundaries) from the pitch track

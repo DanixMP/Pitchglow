@@ -49,6 +49,29 @@
         <button class="chip" type="button" role="radio" aria-checked="false" data-source="demo">Demo tone</button>
       </div>
 
+      <section id="tuning-panel" class="tuning" aria-label="Auto-tune">
+        <label class="switch">
+          <input id="tune-on" type="checkbox" role="switch" />
+          <span class="switch-track" aria-hidden="true"></span>
+          <span class="switch-label">Auto-tune</span>
+        </label>
+        <div class="field">
+          <label class="field-label" for="tune-key">Key</label>
+          <select id="tune-key" class="select"></select>
+        </div>
+        <div class="field">
+          <label class="field-label" for="tune-scale">Scale</label>
+          <select id="tune-scale" class="select"></select>
+        </div>
+        <div class="retune">
+          <div id="retune-knob"></div>
+          <div class="retune-text">
+            <span class="field-label">Retune speed</span>
+            <span id="retune-value" class="retune-value">50 ms</span>
+          </div>
+        </div>
+      </section>
+
       <p id="status" class="status" role="status"></p>
 
       <section class="library">

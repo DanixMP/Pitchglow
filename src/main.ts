@@ -3,10 +3,14 @@ import { Player } from './audio/player';
 import { PitchTracker, type PitchFrame } from './audio/pitch-tracker';
 import { SampleBuffer } from './audio/sample-buffer';
 import { wavBlob } from './audio/wav';
-import { nearestNote, noteName } from './dsp/notes';
+import type { TuneSettings } from './dsp/autotune';
+import { nearestNote, noteName, pitchClassName } from './dsp/notes';
+import { SCALE_TYPES, type ScaleType } from './dsp/scales';
 import { packFrames, unpackFrames } from './storage/pitch-track';
 import { RecordingStore, type RecordingMeta } from './storage/recording-store';
+import { DEFAULT_TUNING, loadTuning, saveTuning } from './storage/settings';
 import { formatTime } from './ui/format';
+import { Knob } from './ui/knob';
 import { PianoRoll } from './ui/piano-roll';
 import { RecordingsList } from './ui/recordings-list';
 
@@ -30,6 +34,11 @@ const ui = {
   timeCurrent: $('time-current'),
   timeTotal: $('time-total'),
   sourceChips: [...document.querySelectorAll<HTMLButtonElement>('.source .chip')],
+  tuning: $('tuning-panel'),
+  tuneOn: $<HTMLInputElement>('tune-on'),
+  tuneKey: $<HTMLSelectElement>('tune-key'),
+  tuneScale: $<HTMLSelectElement>('tune-scale'),
+  retuneValue: $('retune-value'),
 };
 
 /** idle → listening/recording (live input) or playback (a saved recording is open). */
@@ -65,6 +74,7 @@ let tracker: PitchTracker | null = null;
 let take: { audio: SampleBuffer; frames: PitchFrame[] } | null = null;
 /** Serialises button actions so fast double-clicks can't interleave async start/stop. */
 let busy: Promise<void> = Promise.resolve();
+let tuning = loadTuning();
 
 function onBlock(block: Float32Array): void {
   take?.audio.push(block);
@@ -244,23 +254,26 @@ function updateHeading(): void {
   ui.eyebrow.classList.toggle('is-recording', mode === 'recording');
   if (mode === 'recording') {
     ui.eyebrow.textContent = `● Recording ${formatTime((take?.audio.length ?? 0) / sampleRate)}`;
-    ui.title.textContent = 'My voice';
+    ui.title.textContent = tuning.enabled ? 'On auto-tune' : 'My voice';
   } else if (mode === 'playback' && open) {
     ui.eyebrow.textContent = 'Playback';
     ui.title.textContent = open.meta.name;
   } else {
     ui.eyebrow.textContent = 'Live pitch';
-    ui.title.textContent = 'My voice';
+    ui.title.textContent = tuning.enabled ? 'On auto-tune' : 'My voice';
   }
+  ui.title.classList.toggle('is-tuned', tuning.enabled && mode !== 'playback');
 }
 
 function updateReadout(): void {
   const frame = mode === 'idle' ? null : roll.currentFrame();
   if (frame?.midi != null && frame.freq != null) {
-    const { note, cents } = nearestNote(frame.midi);
+    // Tuned: show the note it snaps to and how far off the singing was; otherwise the nearest note.
+    const { note, cents } =
+      frame.target !== null ? { note: frame.target, cents: (frame.midi - frame.target) * 100 } : nearestNote(frame.midi);
     const c = Math.round(cents);
     ui.note.textContent = noteName(note);
-    ui.detail.textContent = `${frame.freq.toFixed(1)} Hz · ${c >= 0 ? '+' : '−'}${Math.abs(c)}¢`;
+    ui.detail.textContent = `${frame.freq.toFixed(1)} Hz · ${c >= 0 ? '+' : '−'}${Math.abs(c)}¢${frame.target !== null ? ' off' : ''}`;
   } else {
     ui.note.textContent = '–';
     ui.detail.textContent =
@@ -285,6 +298,60 @@ function describeError(err: unknown): string {
   if (err instanceof DOMException && err.name === 'NotFoundError') return 'No microphone found.';
   return `Something went wrong: ${err instanceof Error ? err.message : String(err)}`;
 }
+
+// --- auto-tune settings ----------------------------------------------------------------------
+
+function tuneSettings(): TuneSettings | null {
+  return tuning.enabled ? { scale: { root: tuning.root, type: tuning.type }, retuneMs: tuning.retuneMs } : null;
+}
+
+/** Pushes the current tuning to the piano roll, the controls and localStorage. */
+function applyTuning(): void {
+  roll.setTuning(tuneSettings());
+  saveTuning(tuning);
+  ui.tuneOn.checked = tuning.enabled;
+  ui.tuning.classList.toggle('is-off', !tuning.enabled);
+  ui.tuneKey.value = String(tuning.root);
+  ui.tuneKey.disabled = !tuning.enabled || tuning.type === 'chromatic';
+  ui.tuneScale.value = tuning.type;
+  ui.tuneScale.disabled = !tuning.enabled;
+  knob.value = tuning.retuneMs;
+  ui.retuneValue.textContent = `${tuning.retuneMs} ms`;
+  ui.retuneValue.classList.toggle('is-zero', tuning.retuneMs === 0);
+  updateHeading();
+}
+
+for (let pc = 0; pc < 12; pc++) ui.tuneKey.add(new Option(pitchClassName(pc), String(pc)));
+for (const [type, { label }] of Object.entries(SCALE_TYPES)) ui.tuneScale.add(new Option(label, type));
+
+const knob = new Knob({
+  min: 0,
+  max: 400,
+  step: 1,
+  bigStep: 50,
+  value: tuning.retuneMs,
+  defaultValue: DEFAULT_TUNING.retuneMs,
+  label: 'Retune speed',
+  format: (v) => `${v} ms`,
+  onInput: (v) => {
+    tuning = { ...tuning, retuneMs: v };
+    applyTuning();
+  },
+});
+$('retune-knob').replaceWith(knob.element);
+
+ui.tuneOn.addEventListener('change', () => {
+  tuning = { ...tuning, enabled: ui.tuneOn.checked };
+  applyTuning();
+});
+ui.tuneKey.addEventListener('change', () => {
+  tuning = { ...tuning, root: Number(ui.tuneKey.value) };
+  applyTuning();
+});
+ui.tuneScale.addEventListener('change', () => {
+  tuning = { ...tuning, type: ui.tuneScale.value as ScaleType };
+  applyTuning();
+});
 
 // --- events ----------------------------------------------------------------------------------
 
@@ -318,12 +385,17 @@ roll.onScrub = (t) => {
 };
 
 document.addEventListener('keydown', (e) => {
-  if (e.target instanceof HTMLInputElement && e.target.type !== 'range') return;
+  if (e.target instanceof HTMLSelectElement) return;
+  if (e.target instanceof HTMLInputElement && e.target.type !== 'range' && e.target.type !== 'checkbox') return;
   if (e.code === 'Space' && mode === 'playback') {
     e.preventDefault();
     togglePlay();
-  } else if (e.key === 'r' && !e.repeat && !e.ctrlKey && !e.metaKey) {
+  } else if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) {
+    return;
+  } else if (e.key === 'r') {
     ui.record.click();
+  } else if (e.key === 't') {
+    ui.tuneOn.click();
   }
 });
 
@@ -343,6 +415,7 @@ function frame(t: number): void {
   requestAnimationFrame(frame);
 }
 
+applyTuning();
 setMode('idle');
 run(refreshList);
 requestAnimationFrame(frame);
