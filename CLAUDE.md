@@ -28,13 +28,15 @@ Look: a near-black background (#0f0f10-ish), muted dark lane fills whose hue cyc
 - **Pitch detection:** our own **YIN** implementation (`src/dsp/yin.ts`), run on the main thread on audio downsampled to about 24 kHz.
 - **Note math:** MIDI numbers, A4 = 440 Hz, **middle C = C4 = MIDI 60** (so the video's speaking voice sits around C3).
 - **Audio capture:** an AudioWorklet (`src/audio/capture-worklet.ts`) posts sample blocks to the main thread. It is connected to the destination through a zero-gain node, so there is no feedback.
-- **Storage (Phase 2+):** IndexedDB for recordings, pitch tracks and settings.
+- **Storage:** IndexedDB database `recorder` (`src/storage/recording-store.ts`) with two object stores. `meta` holds `RecordingMeta` (id, name, createdAt, duration, sampleRate), so the list loads without reading any audio. `data` holds the raw Float32 PCM at the input rate plus the pitch track packed as typed-array columns (`src/storage/pitch-track.ts`, NaN = unvoiced).
+- **Sync:** a take's audio blocks and pitch frames both start at the moment Record is pressed (a new `PitchTracker` is created then), so frame times line up directly with sample positions.
+- **Modes** (`src/main.ts`): `idle`, `listening` (live line, nothing saved), `recording` (live line + saving), `playback` (a saved recording is open and the roll follows `Player.currentTime`).
 
 ## Architecture
 
 ```
 src/
-  main.ts                 app wiring: buttons, sources, render loop
+  main.ts                 controller: modes, buttons, recording/saving, playback, render loop
   style.css
   dsp/
     yin.ts                YIN pitch detector (pure, unit-tested)
@@ -44,13 +46,24 @@ src/
     capture-worklet.ts    AudioWorkletProcessor: forwards input blocks
     audio-input.ts        mic / demo-tone sources -> worklet -> callback
     pitch-tracker.ts      ring buffer + hop scheduling -> PitchFrame stream
+    sample-buffer.ts      collects PCM blocks during a take
+    player.ts             AudioBuffer playback: play/pause/seek + latency-compensated clock
+    wav.ts                16-bit PCM WAV encoder
+  storage/
+    recording-store.ts    IndexedDB: list/save/load/rename/delete recordings
+    pitch-track.ts        pack/unpack PitchFrame[] <-> typed-array columns
   ui/
-    piano-roll.ts         canvas renderer: keyboard, lanes, glowing line
+    piano-roll.ts         canvas renderer: keyboard, lanes, glowing line; live + playback modes, drag to scrub
+    recordings-list.ts    recordings list (play, rename inline, WAV export, delete)
     colors.ts             lane/key color palette
-tests/                    vitest unit tests for dsp/
+    format.ts             time formatting
+tests/                    vitest unit tests (dsp, tracker, wav, packing, storage via fake-indexeddb)
 ```
 
 Data flow: mic → AudioWorklet → main thread `PitchTracker` (downsample, YIN, median filter) → `PitchFrame { time, freq, midi, clarity, rms }` → `PianoRoll.push()` → canvas drawn on each `requestAnimationFrame`.
+While recording, the same blocks and frames are also collected into a take. On Stop the take is saved to IndexedDB and opened in playback mode.
+
+Shortcuts: **R** = record/stop, **Space** = play/pause (playback mode).
 
 ## Commands
 
@@ -96,11 +109,13 @@ npm test           # vitest unit tests
 - [ ] Verify with a real microphone (user)
 
 ### Phase 2 — Recorder
-- [ ] Record button: capture raw PCM alongside the pitch frames
-- [ ] Stop → save the recording (audio + pitch track) to IndexedDB
-- [ ] Recordings list: name, date, duration, delete
-- [ ] Playback with the pitch line replayed in sync (scrubbing)
-- [ ] Export the original as WAV
+- [x] Record button: capture raw PCM alongside the pitch frames
+- [x] Stop → save the recording (audio + pitch track) to IndexedDB
+- [x] Recordings list: name, date, duration, delete
+- [x] Playback with the pitch line replayed in sync (scrubbing)
+- [x] Export the original as WAV
+- [x] Rename recordings inline; recordings survive reloads
+- [ ] Verify recording with a real microphone (user)
 
 ### Phase 3 — Auto-tune visuals
 - [ ] Quantize to the nearest note → staircase line in the lane color

@@ -9,6 +9,12 @@ export class AudioInput {
   private ctx: AudioContext | null = null;
   private stream: MediaStream | null = null;
   private stopDemo: (() => void) | null = null;
+  private _kind: InputKind | null = null;
+
+  /** The source currently running, or null. */
+  get kind(): InputKind | null {
+    return this._kind;
+  }
 
   constructor(private readonly onBlock: (block: Float32Array) => void) {}
 
@@ -21,6 +27,7 @@ export class AudioInput {
     await this.stop();
     const ctx = new AudioContext({ latencyHint: 'interactive' });
     this.ctx = ctx;
+    this._kind = kind;
     try {
       await ctx.audioWorklet.addModule(captureWorkletUrl);
       const capture = new AudioWorkletNode(ctx, 'capture-processor', {
@@ -57,6 +64,7 @@ export class AudioInput {
     this.stream = null;
     const ctx = this.ctx;
     this.ctx = null;
+    this._kind = null;
     if (ctx && ctx.state !== 'closed') await ctx.close();
   }
 }

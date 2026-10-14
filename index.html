@@ -10,28 +10,51 @@
   <body>
     <main class="app">
       <header class="heading">
-        <p class="eyebrow">Live pitch</p>
-        <h1 class="title">My voice</h1>
+        <p id="eyebrow" class="eyebrow">Live pitch</p>
+        <h1 id="title" class="title">My voice</h1>
       </header>
 
       <section class="stage">
         <canvas id="roll" aria-label="Pitch of your voice drawn over piano-key lanes"></canvas>
       </section>
 
+      <section id="transport" class="transport" hidden>
+        <button id="play" class="icon-btn icon-btn-lg" type="button" aria-label="Play">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path class="i-play" d="M8 5.5v13l11-6.5z"/><path class="i-pause" d="M7 5h4v14H7zm6 0h4v14h-4z"/></svg>
+        </button>
+        <span id="time-current" class="time">0:00</span>
+        <input id="seek" class="seek" type="range" min="0" max="1" step="0.01" value="0" aria-label="Playback position" />
+        <span id="time-total" class="time">0:00</span>
+      </section>
+
       <section class="readout" aria-live="polite">
         <span id="note" class="readout-note">–</span>
-        <span id="detail" class="readout-detail">Press Start mic and say something</span>
+        <span id="detail" class="readout-detail">Press Listen or Record and say something</span>
       </section>
 
       <nav class="controls">
-        <button id="mic" class="btn btn-primary" type="button">
+        <button id="listen" class="btn" type="button">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.93V21h2v-2.07A7 7 0 0 0 19 12h-2Z"/></svg>
-          <span>Start mic</span>
+          <span>Listen</span>
         </button>
-        <button id="demo" class="btn" type="button">Demo tone</button>
+        <button id="record" class="btn btn-record" type="button">
+          <span class="rec-dot" aria-hidden="true"></span>
+          <span class="label">Record</span>
+        </button>
       </nav>
 
+      <div class="source" role="radiogroup" aria-label="Input">
+        <span class="source-label">Input</span>
+        <button class="chip is-on" type="button" role="radio" aria-checked="true" data-source="mic">Mic</button>
+        <button class="chip" type="button" role="radio" aria-checked="false" data-source="demo">Demo tone</button>
+      </div>
+
       <p id="status" class="status" role="status"></p>
+
+      <section class="library">
+        <h2 class="library-title">Recordings</h2>
+        <ul id="recordings" class="rec-list"></ul>
+      </section>
     </main>
     <script type="module" src="/src/main.ts"></script>
   </body>

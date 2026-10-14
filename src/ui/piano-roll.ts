@@ -24,10 +24,14 @@ export class PianoRoll {
   private readonly secondsVisible: number;
   private readonly playheadRatio: number;
 
+  /** Live: frames stream in and old ones are dropped. Otherwise the picture follows `cursor`. */
   private frames: PitchFrame[] = [];
   private latestTime = 0;
   private lastPushAt = 0;
   private live = false;
+  private cursor = 0;
+  private duration = 0;
+  private renderedAt = 0;
 
   private width = 0;
   private height = 0;
@@ -37,6 +41,10 @@ export class PianoRoll {
   private viewTarget = 52;
   private lit = new Map<number, number>();
   private lastRenderAt = 0;
+
+  /** Called with a new time while the user drags a recording left/right. */
+  onScrub: ((time: number) => void) | null = null;
+  private drag: { pointerId: number; startX: number; startTime: number } | null = null;
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -49,6 +57,7 @@ export class PianoRoll {
     this.playheadRatio = opts.playheadRatio ?? 0.72;
     new ResizeObserver(() => this.resize()).observe(canvas);
     this.resize();
+    this.attachScrubbing();
   }
 
   /** Clears the history and starts following a new live stream. */
@@ -57,11 +66,13 @@ export class PianoRoll {
     this.latestTime = 0;
     this.lastPushAt = performance.now();
     this.live = true;
+    this.duration = 0;
   }
 
   /** Freezes the picture where it is. */
   stop(): void {
     this.live = false;
+    this.cursor = this.latestTime;
   }
 
   push(frame: PitchFrame): void {
@@ -74,11 +85,44 @@ export class PianoRoll {
     if (drop > 0) this.frames.splice(0, drop);
   }
 
+  /** Shows a whole recorded pitch track; move through it with `setTime`. */
+  showRecording(frames: PitchFrame[], duration: number, time = duration): void {
+    this.live = false;
+    this.frames = frames;
+    this.duration = duration;
+    this.latestTime = frames.length ? frames[frames.length - 1].time : 0;
+    this.cursor = time;
+    this.viewTarget = this.medianMidi() ?? this.viewTarget;
+  }
+
+  /** Empties the roll (e.g. after the shown recording was deleted). */
+  clear(): void {
+    this.live = false;
+    this.frames = [];
+    this.duration = 0;
+    this.cursor = 0;
+    this.latestTime = 0;
+  }
+
+  setTime(time: number): void {
+    this.cursor = time;
+  }
+
+  /** The frame under the playhead in the last rendered picture. */
+  currentFrame(): PitchFrame | null {
+    return this.frameAt(this.renderedAt);
+  }
+
+  get scrubbable(): boolean {
+    return !this.live && this.duration > 0;
+  }
+
   render(nowMs: number): void {
     const dt = this.lastRenderAt ? Math.min(0.1, (nowMs - this.lastRenderAt) / 1000) : 0;
     this.lastRenderAt = nowMs;
-    // Advance the clock smoothly between frame arrivals, but never run far ahead of the data.
-    const now = this.live ? this.latestTime + Math.min(0.05, (nowMs - this.lastPushAt) / 1000) : this.latestTime;
+    // Live: advance the clock smoothly between frame arrivals, but never run far ahead of the data.
+    const now = this.live ? this.latestTime + Math.min(0.05, (nowMs - this.lastPushAt) / 1000) : this.cursor;
+    this.renderedAt = now;
 
     const current = this.currentMidi(now);
     this.updateView(current, dt);
@@ -99,11 +143,57 @@ export class PianoRoll {
 
   // --- state ---------------------------------------------------------------------------------
 
-  /** MIDI of the most recent frame if it is voiced and fresh. */
+  /** Index of the first frame at or after `time` (binary search; frames are time-ordered). */
+  private indexAt(time: number): number {
+    let lo = 0;
+    let hi = this.frames.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (this.frames[mid].time < time) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  }
+
+  /** The frame sounding at `now`, or null. */
+  private frameAt(now: number): PitchFrame | null {
+    const i = this.indexAt(now + 1e-6) - 1;
+    const f = i >= 0 ? this.frames[i] : undefined;
+    return f && now - f.time <= 0.12 ? f : null;
+  }
+
+  /** MIDI of the frame sounding at `now` if it is voiced. */
   private currentMidi(now: number): number | null {
-    const last = this.frames[this.frames.length - 1];
-    if (!last || last.midi === null || now - last.time > 0.12) return null;
-    return last.midi;
+    return this.frameAt(now)?.midi ?? null;
+  }
+
+  /** Typical pitch of the loaded track, used to frame the view when a recording opens. */
+  private medianMidi(): number | null {
+    const voiced = this.frames.flatMap((f) => (f.midi === null ? [] : [f.midi])).sort((a, b) => a - b);
+    return voiced.length ? voiced[voiced.length >> 1] : null;
+  }
+
+  private attachScrubbing(): void {
+    const c = this.canvas;
+    c.addEventListener('pointerdown', (e) => {
+      if (!this.scrubbable || !this.onScrub) return;
+      this.drag = { pointerId: e.pointerId, startX: e.clientX, startTime: this.cursor };
+      c.setPointerCapture(e.pointerId);
+      c.classList.add('is-scrubbing');
+    });
+    c.addEventListener('pointermove', (e) => {
+      if (!this.drag || e.pointerId !== this.drag.pointerId) return;
+      const { pxPerSec } = this.layout();
+      const t = this.drag.startTime - (e.clientX - this.drag.startX) / pxPerSec;
+      this.onScrub?.(Math.min(this.duration, Math.max(0, t)));
+    });
+    const end = (e: PointerEvent) => {
+      if (!this.drag || e.pointerId !== this.drag.pointerId) return;
+      this.drag = null;
+      c.classList.remove('is-scrubbing');
+    };
+    c.addEventListener('pointerup', end);
+    c.addEventListener('pointercancel', end);
   }
 
   private updateView(current: number | null, dt: number): void {
@@ -214,8 +304,10 @@ export class PianoRoll {
 
     ctx.beginPath();
     let prev: PitchFrame | null = null;
-    for (const f of this.frames) {
-      if (f.midi === null || f.time > now) {
+    for (let i = this.indexAt(now - this.secondsVisible - 0.1); i < this.frames.length; i++) {
+      const f = this.frames[i];
+      if (f.time > now) break;
+      if (f.midi === null) {
         prev = null;
         continue;
       }
@@ -233,10 +325,10 @@ export class PianoRoll {
     ctx.stroke();
 
     // Glowing head dot on the playhead while the voice is sounding.
-    const last = this.frames[this.frames.length - 1];
-    if (last && last.midi !== null && now - last.time < 0.12) {
-      const x = xOf(last.time);
-      const y = L.yOf(last.midi);
+    const head = this.frameAt(now);
+    if (head && head.midi !== null) {
+      const x = xOf(head.time);
+      const y = L.yOf(head.midi);
       ctx.fillStyle = theme.line;
       ctx.shadowBlur = 18;
       ctx.beginPath();
