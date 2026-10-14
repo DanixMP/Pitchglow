@@ -1,0 +1,159 @@
+:root {
+  --bg: #0f0f10;
+  --fg: #f4f2ee;
+  --muted: #8a8a90;
+  --accent: #f6c453;
+  --btn-bg: #1c1c20;
+  --btn-border: #2d2d33;
+  --danger: #ff7a7a;
+  --font: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: max(16px, env(safe-area-inset-top)) 0 max(16px, env(safe-area-inset-bottom));
+}
+
+.heading {
+  text-align: center;
+  padding: 8px 16px 20px;
+}
+
+.eyebrow {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.title {
+  margin: 0;
+  font-size: clamp(28px, 6vw, 44px);
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
+}
+
+.stage {
+  flex: 1;
+  min-height: 260px;
+  position: relative;
+}
+
+#roll {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.readout {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 14px;
+  padding: 18px 16px 6px;
+  min-height: 64px;
+}
+
+.readout-note {
+  font-size: 34px;
+  font-weight: 800;
+  min-width: 2.6ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.readout-detail {
+  font-size: 15px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.controls {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  padding: 10px 16px 0;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 22px;
+  border-radius: 999px;
+  border: 1px solid var(--btn-border);
+  background: var(--btn-bg);
+  color: var(--fg);
+  font: 600 15px var(--font);
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+}
+
+.btn:hover {
+  background: #26262b;
+}
+
+.btn:active {
+  transform: scale(0.97);
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.btn svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+}
+
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #1a1408;
+  box-shadow: 0 0 24px rgba(246, 196, 83, 0.35);
+}
+
+.btn-primary:hover {
+  background: #ffd36b;
+}
+
+.btn.is-active {
+  background: var(--fg);
+  border-color: var(--fg);
+  color: var(--bg);
+  box-shadow: none;
+}
+
+.status {
+  min-height: 20px;
+  margin: 10px 16px 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--danger);
+}
