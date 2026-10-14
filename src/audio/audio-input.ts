@@ -10,6 +10,12 @@ export class AudioInput {
   private stream: MediaStream | null = null;
   private stopDemo: (() => void) | null = null;
   private _kind: InputKind | null = null;
+  private _noiseSuppression = false;
+
+  /** Whether the running mic uses the browser's built-in noise suppression. */
+  get noiseSuppression(): boolean {
+    return this._noiseSuppression;
+  }
 
   /** The source currently running, or null. */
   get kind(): InputKind | null {
@@ -22,12 +28,16 @@ export class AudioInput {
     return this.ctx !== null;
   }
 
-  /** Starts capturing and resolves with the input sample rate. */
-  async start(kind: InputKind): Promise<number> {
+  /**
+   * Starts capturing and resolves with the input sample rate. `noiseSuppression` turns on the
+   * browser's live noise filter for the mic (it shapes what gets recorded, too).
+   */
+  async start(kind: InputKind, opts: { noiseSuppression?: boolean } = {}): Promise<number> {
     await this.stop();
     const ctx = new AudioContext({ latencyHint: 'interactive' });
     this.ctx = ctx;
     this._kind = kind;
+    this._noiseSuppression = kind === 'mic' && !!opts.noiseSuppression;
     try {
       await ctx.audioWorklet.addModule(captureWorkletUrl);
       const capture = new AudioWorkletNode(ctx, 'capture-processor', {
@@ -43,7 +53,7 @@ export class AudioInput {
 
       if (kind === 'mic') {
         this.stream = await navigator.mediaDevices.getUserMedia({
-          audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+          audio: { channelCount: 1, echoCancellation: false, noiseSuppression: !!opts.noiseSuppression, autoGainControl: false },
         });
         ctx.createMediaStreamSource(this.stream).connect(capture);
       } else {
@@ -70,8 +80,9 @@ export class AudioInput {
 }
 
 // --- Demo voice -------------------------------------------------------------------------------
-// A buzzy, vowel-ish tone that speaks a phrase of glides with vibrato and pauses,
-// so the whole pipeline can be tested without a microphone. Also played quietly to the speakers.
+// A buzzy, vowel-ish tone that speaks a phrase of glides with vibrato and pauses, over faint room
+// hiss, so the whole pipeline (incl. noise reduction) can be tested without a microphone.
+// The voice (not the hiss) is also played quietly to the speakers.
 
 /** [MIDI note, seconds]; null = pause. Contour loosely follows speech/singing in the C2-C4 range. */
 const DEMO_PHRASE: [number | null, number][] = [
@@ -92,6 +103,14 @@ function startDemoVoice(ctx: AudioContext, capture: AudioNode): () => void {
 
   osc.connect(formant).connect(amp);
   amp.connect(capture);
+
+  // Faint room hiss (~-35 dBFS) into the recording only, so noise reduction has something to remove.
+  const hissBuffer = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
+  const hissData = hissBuffer.getChannelData(0);
+  for (let i = 0; i < hissData.length; i++) hissData[i] = Math.random() * 2 - 1;
+  const hiss = new AudioBufferSourceNode(ctx, { buffer: hissBuffer, loop: true });
+  hiss.connect(new BiquadFilterNode(ctx, { type: 'lowpass', frequency: 6000 })).connect(new GainNode(ctx, { gain: 0.03 })).connect(capture);
+  hiss.start();
   amp.connect(new GainNode(ctx, { gain: 0.15 })).connect(ctx.destination);
 
   const phraseLength = DEMO_PHRASE.reduce((s, [, d]) => s + d, 0);
@@ -123,6 +142,7 @@ function startDemoVoice(ctx: AudioContext, capture: AudioNode): () => void {
   vibrato.start();
 
   return () => {
+    hiss.stop();
     window.clearInterval(timer);
     osc.stop();
     vibrato.stop();

@@ -5,12 +5,13 @@ import { SampleBuffer } from './audio/sample-buffer';
 import { TunedRenderer } from './audio/tuned-renderer';
 import { wavBlob } from './audio/wav';
 import type { TuneSettings } from './dsp/autotune';
+import type { ProcessSettings } from './dsp/process';
 import { nearestNote, noteName, pitchClassName } from './dsp/notes';
 import { HARMONY_VOICES, type HarmonyVoice } from './dsp/harmony';
 import { SCALE_TYPES, scaleName, type ScaleType } from './dsp/scales';
 import { packFrames, unpackFrames } from './storage/pitch-track';
 import { RecordingStore, type RecordingMeta } from './storage/recording-store';
-import { DEFAULT_TUNING, loadTuning, saveTuning } from './storage/settings';
+import { DEFAULT_TUNING, loadCleanup, loadTuning, saveCleanup, saveTuning } from './storage/settings';
 import { Captions } from './ui/captions';
 import { formatTime } from './ui/format';
 import { Knob } from './ui/knob';
@@ -45,7 +46,13 @@ const ui = {
   retuneValue: $('retune-value'),
   abButtons: [...document.querySelectorAll<HTMLButtonElement>('.segmented .seg')],
   renderStatus: $('render-status'),
-  exportTuned: $<HTMLButtonElement>('export-tuned'),
+  exportProcessed: $<HTMLButtonElement>('export-tuned'),
+  exportProcessedLabel: $('export-tuned').querySelector('span')!,
+  denoiseOn: $<HTMLInputElement>('denoise-on'),
+  denoiseAmount: $<HTMLInputElement>('denoise-amount'),
+  denoiseAmountField: $('denoise-amount-field'),
+  denoiseAmountValue: $('denoise-amount-value'),
+  micFilter: $<HTMLInputElement>('mic-filter'),
   harmonyVoices: $('harmony-voices'),
   harmonyMix: $<HTMLInputElement>('harmony-mix'),
   harmonyMixValue: $('harmony-mix-value'),
@@ -61,9 +68,11 @@ interface LoadedRecording {
 }
 
 interface OpenRecording extends LoadedRecording {
-  /** Auto-tuned render of `samples`, and the settings it was rendered with. */
-  tuned: Float32Array | null;
-  tunedFor: string | null;
+  /** Processed render of `samples` (cleaned and/or tuned), and the settings it was rendered with. */
+  processed: Float32Array | null;
+  processedFor: string | null;
+  /** Notes from the last render (e.g. "Too short to learn the noise"). */
+  notes: string[];
 }
 
 const MIN_RECORDING_SECONDS = 0.3;
@@ -95,10 +104,11 @@ let tuning = loadTuning();
 
 const renderer = new TunedRenderer();
 let renderTimer = 0;
-/** A/B: play the tuned render (when auto-tune is on) or the original. */
-let listenTuned = true;
-/** Start playback once the tuned render arrives (Play pressed on a just-opened recording). */
-let playWhenTuned = false;
+let cleanup = loadCleanup();
+/** A/B: play the processed render (when anything is switched on) or the original. */
+let listenProcessed = true;
+/** Start playback once the processed render arrives (Play pressed on a just-opened recording). */
+let playWhenProcessed = false;
 /** The array the player currently has loaded. */
 let playerSource: Float32Array | null = null;
 
@@ -124,7 +134,10 @@ function run(action: () => Promise<void>): void {
 /** Starts (or restarts) the live pitch line, optionally recording. Keeps a running input if possible. */
 async function startLive(record: boolean): Promise<void> {
   closeRecording();
-  if (input.kind !== source) sampleRate = await input.start(source);
+  const micFilter = source === 'mic' && cleanup.micFilter;
+  if (input.kind !== source || input.noiseSuppression !== micFilter) {
+    sampleRate = await input.start(source, { noiseSuppression: micFilter });
+  }
   tracker = new PitchTracker(sampleRate, onFrame);
   take = record ? { audio: new SampleBuffer(), frames: [] } : null;
   roll.start();
@@ -200,7 +213,7 @@ async function openRecording(id: string, autoplay: boolean): Promise<void> {
 }
 
 function showRecording(rec: LoadedRecording, autoplay: boolean): void {
-  open = { ...rec, tuned: null, tunedFor: null };
+  open = { ...rec, processed: null, processedFor: null, notes: [] };
   player.load(rec.samples, rec.meta.sampleRate);
   playerSource = rec.samples;
   // Start "at the end" so the last few seconds are visible; Play restarts from the beginning.
@@ -210,10 +223,10 @@ function showRecording(rec: LoadedRecording, autoplay: boolean): void {
   ui.timeTotal.textContent = formatTime(rec.meta.duration);
   setMode('playback');
   renderList();
-  // If we're going to listen to the tuned version, wait for it rather than switching mid-play.
-  playWhenTuned = autoplay && wantsTuned();
-  scheduleTunedRender(0);
-  if (autoplay && !playWhenTuned) void player.play();
+  // If we're going to listen to the processed version, wait for it rather than switching mid-play.
+  playWhenProcessed = autoplay && wantsProcessed();
+  scheduleRender(0);
+  if (autoplay && !playWhenProcessed) void player.play();
   updateAbUi();
 }
 
@@ -221,7 +234,7 @@ function closeRecording(): void {
   if (!open) return;
   window.clearTimeout(renderTimer);
   renderer.cancel();
-  playWhenTuned = false;
+  playWhenProcessed = false;
   player.unload();
   playerSource = null;
   open = null;
@@ -256,18 +269,32 @@ function downloadWav(samples: Float32Array, sampleRate: number, name: string): v
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
-// --- tuned audio (Phase 4) -------------------------------------------------------------------
+// --- processed audio: noise reduction + auto-tune + harmony (Phases 4-6) ---------------------
 
-function wantsTuned(): boolean {
-  return listenTuned && tuning.enabled;
+/** What the worker should do to the open recording, or null when nothing is switched on. */
+function processSettings(): ProcessSettings | null {
+  const tune = tuneSettings();
+  const denoise = cleanup.denoise ? { amountDb: cleanup.denoiseDb } : null;
+  return tune || denoise ? { tune, denoise } : null;
 }
 
-/** (Re-)renders the open recording's tuned audio in the worker; debounced while the knob turns. */
-function scheduleTunedRender(delay = 120): void {
+/** Name for the processed version, used on the A/B switch, heading and export. */
+function processedLabel(): string {
+  if (tuning.enabled && cleanup.denoise) return 'Clean + tuned';
+  if (cleanup.denoise) return 'Cleaned';
+  return 'Tuned';
+}
+
+function wantsProcessed(): boolean {
+  return listenProcessed && processSettings() !== null;
+}
+
+/** (Re-)renders the open recording's processed audio in the worker; debounced while controls move. */
+function scheduleRender(delay = 120): void {
   window.clearTimeout(renderTimer);
   const rec = open;
   if (!rec) return;
-  const settings = tuneSettings();
+  const settings = processSettings();
   if (!settings) {
     renderer.cancel();
     updatePlaybackSource();
@@ -275,14 +302,15 @@ function scheduleTunedRender(delay = 120): void {
     return;
   }
   const key = JSON.stringify(settings);
-  if (rec.tunedFor === key) return;
-  ui.renderStatus.textContent = 'Tuning…';
+  if (rec.processedFor === key) return;
+  ui.renderStatus.textContent = 'Processing…';
   renderTimer = window.setTimeout(async () => {
     try {
-      const out = await renderer.render(rec.samples, rec.meta.sampleRate, rec.frames, settings);
+      const out = await renderer.render(rec.meta.id, rec.samples, rec.meta.sampleRate, rec.frames, settings);
       if (!out || open !== rec) return; // superseded or closed
-      rec.tuned = out;
-      rec.tunedFor = key;
+      rec.processed = out.output;
+      rec.processedFor = key;
+      rec.notes = out.notes;
       updatePlaybackSource();
     } catch (err) {
       console.error(err);
@@ -290,8 +318,8 @@ function scheduleTunedRender(delay = 120): void {
     } finally {
       if (open === rec && !renderer.busy) {
         updateAbUi();
-        if (playWhenTuned) {
-          playWhenTuned = false;
+        if (playWhenProcessed) {
+          playWhenProcessed = false;
           void player.play();
         }
       }
@@ -299,30 +327,39 @@ function scheduleTunedRender(delay = 120): void {
   }, delay);
 }
 
-/** Points the player at the tuned or original audio, keeping position and play state. */
+/** Points the player at the processed or original audio, keeping position and play state. */
 function updatePlaybackSource(): void {
   if (!open) return;
-  const next = wantsTuned() && open.tuned ? open.tuned : open.samples;
+  const next = wantsProcessed() && open.processed ? open.processed : open.samples;
   if (next === playerSource) return;
   player.swap(next, open.meta.sampleRate);
   playerSource = next;
 }
 
 function updateAbUi(): void {
-  const tunedReady = !!open?.tuned && tuning.enabled;
+  const available = processSettings() !== null;
+  const label = processedLabel();
   for (const btn of ui.abButtons) {
-    const isTuned = btn.dataset.ab === 'tuned';
-    const on = isTuned === wantsTuned();
+    const isProcessed = btn.dataset.ab === 'tuned';
+    const on = isProcessed === wantsProcessed();
     btn.classList.toggle('is-on', on);
     btn.setAttribute('aria-checked', String(on));
-    if (isTuned) btn.disabled = !tuning.enabled;
+    if (isProcessed) {
+      btn.disabled = !available;
+      btn.textContent = label;
+    }
   }
-  ui.exportTuned.disabled = !tunedReady;
-  ui.renderStatus.textContent = !tuning.enabled ? 'Auto-tune is off' : renderer.busy ? 'Tuning…' : '';
+  ui.exportProcessed.disabled = !(available && open?.processed);
+  ui.exportProcessedLabel.textContent = `${label} WAV`;
+  ui.renderStatus.textContent = !available
+    ? 'Auto-tune and noise reduction are off'
+    : renderer.busy
+      ? 'Processing…'
+      : (open?.notes ?? []).join(' · ');
 }
 
-function setListenTuned(on: boolean): void {
-  listenTuned = on;
+function setListenProcessed(on: boolean): void {
+  listenProcessed = on;
   updatePlaybackSource();
   updateAbUi();
   updateHeading();
@@ -359,6 +396,7 @@ function setMode(next: Mode): void {
     chip.setAttribute('aria-checked', String(on));
     chip.disabled = mode === 'recording';
   }
+  ui.micFilter.disabled = mode === 'recording'; // changing it mid-take would change the recording's sound
   if (live) showStatus('');
   updateHeading();
 }
@@ -377,7 +415,7 @@ function updateHeading(): void {
   if (mode === 'recording') {
     eyebrow = `● Recording ${formatTime((take?.audio.length ?? 0) / sampleRate)}`;
   } else if (mode === 'playback' && open) {
-    eyebrow = tuning.enabled ? `Playback · ${wantsTuned() ? 'Tuned' : 'Original'}` : 'Playback';
+    eyebrow = processSettings() ? `Playback · ${wantsProcessed() ? processedLabel() : 'Original'}` : 'Playback';
     title = open.meta.name;
     tone = null;
   }
@@ -435,7 +473,9 @@ function explainHarmony(): void {
 }
 
 function explainListenMode(): void {
-  captions.show(wantsTuned() ? 'Tuned: your voice, on pitch.' : 'Original: exactly what you sang.');
+  if (!wantsProcessed()) captions.show('Original: exactly what you sang.');
+  else if (tuning.enabled) captions.show(cleanup.denoise ? 'Cleaned and tuned: no hiss, on pitch.' : 'Tuned: your voice, on pitch.');
+  else captions.show('Cleaned: your voice, without the background noise.');
 }
 
 function updateReadout(): void {
@@ -502,7 +542,7 @@ function applyTuning(): void {
   ui.harmonyMix.disabled = !tuning.enabled || tuning.harmony.length === 0;
   ui.harmonyMixValue.textContent = `${Math.round(tuning.harmonyMix * 100)}%`;
   updateHeading();
-  scheduleTunedRender();
+  scheduleRender();
   updateAbUi();
 }
 
@@ -564,6 +604,61 @@ ui.tuneScale.addEventListener('change', () => {
   explainScale();
 });
 
+// --- clean-up settings (Phase 6) ---------------------------------------------------------------
+
+let denoiseCaptionTimer = 0;
+
+/** Pushes clean-up prefs to the controls, re-renders the open recording and saves them. */
+function applyCleanup(): void {
+  saveCleanup(cleanup);
+  ui.denoiseOn.checked = cleanup.denoise;
+  ui.denoiseAmount.value = String(cleanup.denoiseDb);
+  ui.denoiseAmount.disabled = !cleanup.denoise;
+  ui.denoiseAmountField.classList.toggle('is-off', !cleanup.denoise);
+  ui.denoiseAmountValue.textContent = `${cleanup.denoiseDb} dB`;
+  ui.micFilter.checked = cleanup.micFilter;
+  ui.micFilter.disabled = mode === 'recording';
+  scheduleRender();
+  updateAbUi();
+  updateHeading();
+}
+
+ui.denoiseOn.addEventListener('change', () => {
+  cleanup = { ...cleanup, denoise: ui.denoiseOn.checked };
+  applyCleanup();
+  captions.show(
+    cleanup.denoise ? 'Noise reduction: it learns the hiss from your pauses and removes it.' : 'Noise reduction off.',
+  );
+});
+ui.denoiseAmount.addEventListener('input', () => {
+  cleanup = { ...cleanup, denoiseDb: Number(ui.denoiseAmount.value) };
+  applyCleanup();
+  window.clearTimeout(denoiseCaptionTimer);
+  denoiseCaptionTimer = window.setTimeout(() => {
+    const db = cleanup.denoiseDb;
+    captions.show(
+      db <= 9
+        ? `${db} dB: a light touch, the room still breathes.`
+        : db <= 18
+          ? `${db} dB: background noise pushed well back.`
+          : `${db} dB: aggressive. Listen for a watery sound.`,
+    );
+  }, 350);
+});
+ui.micFilter.addEventListener('change', () =>
+  run(async () => {
+    cleanup = { ...cleanup, micFilter: ui.micFilter.checked };
+    applyCleanup();
+    // Restart a running mic so the browser's filter takes effect now.
+    if (mode === 'listening' && source === 'mic') await startLive(false);
+    captions.show(
+      cleanup.micFilter
+        ? 'Mic noise filter on: the browser cleans the mic live, and it is baked into new recordings.'
+        : 'Mic noise filter off: raw mic.',
+    );
+  }),
+);
+
 // --- events ----------------------------------------------------------------------------------
 
 ui.listen.addEventListener('click', () => run(() => (mode === 'listening' ? stopLive() : startLive(false))));
@@ -586,9 +681,9 @@ function togglePlay(): void {
 }
 
 ui.play.addEventListener('click', togglePlay);
-for (const btn of ui.abButtons) btn.addEventListener('click', () => setListenTuned(btn.dataset.ab === 'tuned'));
-ui.exportTuned.addEventListener('click', () => {
-  if (open?.tuned) downloadWav(open.tuned, open.meta.sampleRate, `${open.meta.name} (auto-tuned)`);
+for (const btn of ui.abButtons) btn.addEventListener('click', () => setListenProcessed(btn.dataset.ab === 'tuned'));
+ui.exportProcessed.addEventListener('click', () => {
+  if (open?.processed) downloadWav(open.processed, open.meta.sampleRate, `${open.meta.name} (${processedLabel().toLowerCase()})`);
 });
 ui.seek.addEventListener('input', () => {
   player.seek(Number(ui.seek.value));
@@ -611,8 +706,8 @@ document.addEventListener('keydown', (e) => {
     ui.record.click();
   } else if (e.key === 't') {
     ui.tuneOn.click();
-  } else if (e.key === 'a' && mode === 'playback' && tuning.enabled) {
-    setListenTuned(!listenTuned);
+  } else if (e.key === 'a' && mode === 'playback' && processSettings()) {
+    setListenProcessed(!listenProcessed);
   }
 });
 
@@ -634,6 +729,7 @@ function frame(t: number): void {
 
 setupPwa($<HTMLButtonElement>('install'));
 applyTuning();
+applyCleanup();
 setMode('idle');
 run(refreshList);
 requestAnimationFrame(frame);

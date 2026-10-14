@@ -805,3 +805,47 @@ body {
   height: 14px;
   fill: currentColor;
 }
+
+/* --- clean-up panel ----------------------------------------------------------------------- */
+
+.cleanup {
+  margin-top: 12px;
+}
+
+.slider-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.slider-field input {
+  width: 120px;
+  accent-color: var(--accent);
+}
+
+.slider-field.is-off {
+  opacity: 0.4;
+}
+
+.slider-value {
+  font-size: 13px;
+  font-weight: 700;
+  min-width: 4.5ch;
+  font-variant-numeric: tabular-nums;
+}
+
+.switch-quiet {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.switch-hint {
+  display: block;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.switch input:disabled + .switch-track {
+  opacity: 0.45;
+}

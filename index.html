@@ -106,6 +106,24 @@
         </div>
       </section>
 
+      <section id="cleanup-panel" class="tuning cleanup" aria-label="Clean up">
+        <label class="switch">
+          <input id="denoise-on" type="checkbox" role="switch" />
+          <span class="switch-track" aria-hidden="true"></span>
+          <span class="switch-label">Noise reduction</span>
+        </label>
+        <label class="slider-field" id="denoise-amount-field">
+          <span class="field-label">Amount</span>
+          <input id="denoise-amount" type="range" min="3" max="30" step="1" value="12" aria-label="Noise reduction amount" />
+          <span id="denoise-amount-value" class="slider-value">12 dB</span>
+        </label>
+        <label class="switch switch-quiet">
+          <input id="mic-filter" type="checkbox" role="switch" />
+          <span class="switch-track" aria-hidden="true"></span>
+          <span class="switch-label">Mic noise filter <span class="switch-hint">live, browser</span></span>
+        </label>
+      </section>
+
       <p id="status" class="status" role="status"></p>
 
       <section class="library">

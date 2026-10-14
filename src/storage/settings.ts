@@ -43,6 +43,43 @@ export function loadTuning(): TuningPrefs {
   }
 }
 
+// --- clean-up -------------------------------------------------------------------------------
+
+export interface CleanupPrefs {
+  /** Offline spectral noise reduction on recordings. */
+  denoise: boolean;
+  /** Maximum noise attenuation in dB. */
+  denoiseDb: number;
+  /** Browser's live noise suppression on the mic. */
+  micFilter: boolean;
+}
+
+export const DEFAULT_CLEANUP: CleanupPrefs = { denoise: false, denoiseDb: 12, micFilter: false };
+
+const CLEANUP_KEY = 'recorder.cleanup';
+
+export function loadCleanup(): CleanupPrefs {
+  try {
+    const raw = JSON.parse(localStorage.getItem(CLEANUP_KEY) ?? 'null') as Partial<CleanupPrefs> | null;
+    if (!raw) return { ...DEFAULT_CLEANUP };
+    return {
+      denoise: typeof raw.denoise === 'boolean' ? raw.denoise : DEFAULT_CLEANUP.denoise,
+      denoiseDb: typeof raw.denoiseDb === 'number' && raw.denoiseDb >= 3 && raw.denoiseDb <= 30 ? raw.denoiseDb : DEFAULT_CLEANUP.denoiseDb,
+      micFilter: typeof raw.micFilter === 'boolean' ? raw.micFilter : DEFAULT_CLEANUP.micFilter,
+    };
+  } catch {
+    return { ...DEFAULT_CLEANUP };
+  }
+}
+
+export function saveCleanup(prefs: CleanupPrefs): void {
+  try {
+    localStorage.setItem(CLEANUP_KEY, JSON.stringify(prefs));
+  } catch {
+    // Storage unavailable: settings just won't persist.
+  }
+}
+
 export function saveTuning(prefs: TuningPrefs): void {
   try {
     localStorage.setItem(KEY, JSON.stringify(prefs));

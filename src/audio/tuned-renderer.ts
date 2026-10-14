@@ -1,18 +1,30 @@
-// Main-thread side of the render worker. Latest request wins: older pending renders resolve to null.
+// Main-thread side of the render worker (noise reduction + auto-tune + harmony).
+// Latest request wins: older pending renders resolve to null.
 
 import type { PitchFrame } from './pitch-tracker';
-import type { TuneSettings } from '../dsp/autotune';
+import type { ProcessSettings } from '../dsp/process';
 import { packFrames } from '../storage/pitch-track';
 import type { RenderRequest, RenderResponse } from './render-worker';
 import RenderWorker from './render-worker.ts?worker';
 
+export interface RenderOutput {
+  output: Float32Array;
+  notes: string[];
+}
+
 export class TunedRenderer {
   private worker: Worker | null = null;
   private nextId = 1;
-  private pending = new Map<number, { resolve: (out: Float32Array | null) => void; reject: (err: Error) => void }>();
+  private pending = new Map<number, { resolve: (out: RenderOutput | null) => void; reject: (err: Error) => void }>();
 
-  /** Renders the tuned version. Resolves to null if a newer render was requested meanwhile. */
-  render(samples: Float32Array, sampleRate: number, frames: readonly PitchFrame[], settings: TuneSettings): Promise<Float32Array | null> {
+  /** Renders the processed version. Resolves to null if a newer render was requested meanwhile. */
+  render(
+    recordingId: string,
+    samples: Float32Array,
+    sampleRate: number,
+    frames: readonly PitchFrame[],
+    settings: ProcessSettings,
+  ): Promise<RenderOutput | null> {
     const worker = this.ensureWorker();
     const id = this.nextId++;
     for (const [oldId, p] of this.pending) {
@@ -23,7 +35,7 @@ export class TunedRenderer {
       this.pending.set(id, { resolve, reject });
       // Copy so the caller keeps its samples (the copy is transferred, not cloned again).
       const copy = samples.slice();
-      const req: RenderRequest = { id, samples: copy, sampleRate, pitch: packFrames(frames), settings };
+      const req: RenderRequest = { id, recordingId, samples: copy, sampleRate, pitch: packFrames(frames), settings };
       worker.postMessage(req, [copy.buffer]);
     });
   }
@@ -45,7 +57,7 @@ export class TunedRenderer {
       const p = this.pending.get(e.data.id);
       if (!p) return; // superseded
       this.pending.delete(e.data.id);
-      if (e.data.output) p.resolve(e.data.output);
+      if (e.data.output) p.resolve({ output: e.data.output, notes: e.data.notes ?? [] });
       else p.reject(new Error(e.data.error ?? 'Render failed'));
     };
     this.worker = worker;

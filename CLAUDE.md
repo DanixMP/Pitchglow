@@ -49,6 +49,15 @@ Look: a near-black background (#0f0f10-ish), muted dark lane fills whose hue cyc
   - `base: './'` lets the build run from any sub-path.
 - **HTTPS for phones:** `npm run dev:lan` / `npm run preview:lan` use `--mode lan`, which turns on `@vitejs/plugin-basic-ssl` (a self-signed cert: accept the warning on the phone). This is enough for microphone testing. A *real* install with offline support on a phone needs a trusted HTTPS host (e.g. GitHub Pages), because service workers don't register on certificate errors.
 - **Headings and captions:** the heading follows the tuning state, like the video's title cards: "Live pitch / My voice", "Nearest note / On auto-tune", "Only / C major", "One voice, many notes / A harmonizer". `src/ui/captions.ts` shows short word-by-word captions when a setting changes, plus a one-time intro (`localStorage['recorder.introSeen']`).
+- **Noise reduction** (`src/dsp/denoise.ts`) runs offline before tuning:
+  - STFT with ~43 ms Hann frames (2048 at 48 kHz), 75% overlap, Hann synthesis, normalized by 1.5. Long frames are what let it remove noise *between* a voice's harmonics; 21 ms frames only managed about +3 dB in voiced parts.
+  - The noise profile is the average power of the quietest 15% of frames that overlap the signal (so digital silence counts, and a clean take passes through).
+  - Per bin: a decision-directed Wiener gain (α 0.96, 1.5× over-subtraction), smoothed across 3 bins, floored at −amountDb.
+  - If there are fewer than 18 frames, it doesn't run and reports "Too short to learn the noise".
+  - Measured on a demo take at 12 dB: noise floor −12 dB, voice −0.5 dB. In tests: about +9 dB SNR, and the voice keeps 97% of its level.
+- **Processing chain** (`src/dsp/process.ts`): denoise, then `renderWithHarmony`, all in the worker. The worker caches the last denoise output (keyed by recording id and amount), so re-tuning doesn't re-denoise. `ProcessSettings = { denoise, tune }`. The A/B switch and export are labelled Tuned, Cleaned or Clean + tuned.
+- **Mic noise filter:** `AudioInput.start(kind, { noiseSuppression })` uses the browser's live WebRTC filter. It's baked into new recordings, so it's locked during a take. Toggling it while listening restarts the mic.
+- **Demo source** adds faint room hiss (~−35 dBFS, to the recording only), so noise reduction can be tried without a mic.
 - **Modes** (`src/main.ts`): `idle`, `listening` (live line, nothing saved), `recording` (live line + saving), `playback` (a saved recording is open and the roll follows `Player.currentTime`).
 
 ## Architecture
@@ -65,6 +74,9 @@ src/
     psola.ts              TD-PSOLA renderer for the tuned audio
     harmony.ts            diatonic harmony voices + mixed render (renderWithHarmony)
     limiter.ts            look-ahead peak limiter
+    fft.ts                radix-2 complex FFT
+    denoise.ts            STFT Wiener noise reduction (noise profile from quiet frames)
+    process.ts            processing chain: denoise -> tune/harmony (+ denoise cache)
     resample.ts           low-pass + decimate to the analysis rate
   audio/
     capture-worklet.ts    AudioWorkletProcessor: forwards input blocks
@@ -72,8 +84,8 @@ src/
     pitch-tracker.ts      ring buffer + hop scheduling -> PitchFrame stream
     sample-buffer.ts      collects PCM blocks during a take
     player.ts             AudioBuffer playback: play/pause/seek/swap + latency-compensated clock
-    render-worker.ts      Web Worker: correctTrack + renderTuned off the main thread
-    tuned-renderer.ts     main-thread client for the worker (latest request wins)
+    render-worker.ts      Web Worker: processRecording off the main thread, caches the cleaned audio
+    tuned-renderer.ts     main-thread client for the worker (latest request wins, returns notes)
     wav.ts                16-bit PCM WAV encoder
   storage/
     recording-store.ts    IndexedDB: list/save/load/rename/delete recordings
@@ -178,11 +190,12 @@ npm run icons      # regenerate public/icons/*.png
 - [ ] Deploy to an HTTPS host (e.g. GitHub Pages) so the PWA can be installed on a phone (ask the user first: this publishes the app)
 - [ ] Harmony from played keys (Jacob Collier style), once live processing exists
 
-### Phase 6 — Clean-up & effects (next; user asked for noise cancelling "and etc.")
-- [ ] Mic option: browser noise suppression / echo cancellation toggle (quick win, live)
-- [ ] Spectral noise reduction: learn a noise profile from the recording's quiet parts, then STFT Wiener-style gain with smoothing (offline, in the worker, before PSOLA)
+### Phase 6 — Clean-up & effects (user asked for noise cancelling "and etc.")
+- [x] Mic option: browser noise suppression toggle (live; locked while recording)
+- [x] Spectral noise reduction: noise profile from quiet frames, STFT Wiener gain, Amount slider, cached in the worker, chained before auto-tune
+- [x] A/B + export generalized: Original vs Cleaned / Tuned / Clean + tuned
+- [ ] Listening test of noise reduction on real mic recordings (user); tune the frame size/α/over-subtraction if voices sound watery
 - [ ] Noise gate / expander using the pitch tracker's silence detection
 - [ ] High-pass (rumble) + de-esser + gentle compressor
 - [ ] Reverb / echo presets (offline convolution)
-- [ ] Original / Cleaned / Tuned comparison and export
 - [ ] Later: real-time auto-tune monitoring (needs low-latency streaming PSOLA)
