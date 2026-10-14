@@ -2,6 +2,7 @@ import { AudioInput, type InputKind } from './audio/audio-input';
 import { Player } from './audio/player';
 import { PitchTracker, type PitchFrame } from './audio/pitch-tracker';
 import { SampleBuffer } from './audio/sample-buffer';
+import { TunedRenderer } from './audio/tuned-renderer';
 import { wavBlob } from './audio/wav';
 import type { TuneSettings } from './dsp/autotune';
 import { nearestNote, noteName, pitchClassName } from './dsp/notes';
@@ -39,15 +40,24 @@ const ui = {
   tuneKey: $<HTMLSelectElement>('tune-key'),
   tuneScale: $<HTMLSelectElement>('tune-scale'),
   retuneValue: $('retune-value'),
+  abButtons: [...document.querySelectorAll<HTMLButtonElement>('.segmented .seg')],
+  renderStatus: $('render-status'),
+  exportTuned: $<HTMLButtonElement>('export-tuned'),
 };
 
 /** idle → listening/recording (live input) or playback (a saved recording is open). */
 type Mode = 'idle' | 'listening' | 'recording' | 'playback';
 
-interface OpenRecording {
+interface LoadedRecording {
   meta: RecordingMeta;
   samples: Float32Array;
   frames: PitchFrame[];
+}
+
+interface OpenRecording extends LoadedRecording {
+  /** Auto-tuned render of `samples`, and the settings it was rendered with. */
+  tuned: Float32Array | null;
+  tunedFor: string | null;
 }
 
 const MIN_RECORDING_SECONDS = 0.3;
@@ -75,6 +85,15 @@ let take: { audio: SampleBuffer; frames: PitchFrame[] } | null = null;
 /** Serialises button actions so fast double-clicks can't interleave async start/stop. */
 let busy: Promise<void> = Promise.resolve();
 let tuning = loadTuning();
+
+const renderer = new TunedRenderer();
+let renderTimer = 0;
+/** A/B: play the tuned render (when auto-tune is on) or the original. */
+let listenTuned = true;
+/** Start playback once the tuned render arrives (Play pressed on a just-opened recording). */
+let playWhenTuned = false;
+/** The array the player currently has loaded. */
+let playerSource: Float32Array | null = null;
 
 function onBlock(block: Float32Array): void {
   take?.audio.push(block);
@@ -172,9 +191,10 @@ async function openRecording(id: string, autoplay: boolean): Promise<void> {
   });
 }
 
-function showRecording(rec: OpenRecording, autoplay: boolean): void {
-  open = rec;
+function showRecording(rec: LoadedRecording, autoplay: boolean): void {
+  open = { ...rec, tuned: null, tunedFor: null };
   player.load(rec.samples, rec.meta.sampleRate);
+  playerSource = rec.samples;
   // Start "at the end" so the last few seconds are visible; Play restarts from the beginning.
   player.seek(autoplay ? 0 : rec.meta.duration);
   roll.showRecording(rec.frames, rec.meta.duration, player.currentTime);
@@ -182,12 +202,20 @@ function showRecording(rec: OpenRecording, autoplay: boolean): void {
   ui.timeTotal.textContent = formatTime(rec.meta.duration);
   setMode('playback');
   renderList();
-  if (autoplay) void player.play();
+  // If we're going to listen to the tuned version, wait for it rather than switching mid-play.
+  playWhenTuned = autoplay && wantsTuned();
+  scheduleTunedRender(0);
+  if (autoplay && !playWhenTuned) void player.play();
+  updateAbUi();
 }
 
 function closeRecording(): void {
   if (!open) return;
+  window.clearTimeout(renderTimer);
+  renderer.cancel();
+  playWhenTuned = false;
   player.unload();
+  playerSource = null;
   open = null;
   roll.clear();
   renderList();
@@ -207,13 +235,88 @@ async function exportRecording(id: string): Promise<void> {
     const meta = recordings.find((r) => r.id === id);
     const samples = open?.meta.id === id ? open.samples : (await (await getStore()).load(id))?.samples;
     if (!meta || !samples) throw new Error('Recording not found');
-    const url = URL.createObjectURL(wavBlob(samples, meta.sampleRate));
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${meta.name.replace(/[\\/:*?"<>|]+/g, '_')}.wav`;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    downloadWav(samples, meta.sampleRate, meta.name);
   });
+}
+
+function downloadWav(samples: Float32Array, sampleRate: number, name: string): void {
+  const url = URL.createObjectURL(wavBlob(samples, sampleRate));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${name.replace(/[\\/:*?"<>|]+/g, '_')}.wav`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+// --- tuned audio (Phase 4) -------------------------------------------------------------------
+
+function wantsTuned(): boolean {
+  return listenTuned && tuning.enabled;
+}
+
+/** (Re-)renders the open recording's tuned audio in the worker; debounced while the knob turns. */
+function scheduleTunedRender(delay = 120): void {
+  window.clearTimeout(renderTimer);
+  const rec = open;
+  if (!rec) return;
+  const settings = tuneSettings();
+  if (!settings) {
+    renderer.cancel();
+    updatePlaybackSource();
+    updateAbUi();
+    return;
+  }
+  const key = JSON.stringify(settings);
+  if (rec.tunedFor === key) return;
+  ui.renderStatus.textContent = 'Tuning…';
+  renderTimer = window.setTimeout(async () => {
+    try {
+      const out = await renderer.render(rec.samples, rec.meta.sampleRate, rec.frames, settings);
+      if (!out || open !== rec) return; // superseded or closed
+      rec.tuned = out;
+      rec.tunedFor = key;
+      updatePlaybackSource();
+    } catch (err) {
+      console.error(err);
+      showStatus(describeError(err));
+    } finally {
+      if (open === rec && !renderer.busy) {
+        updateAbUi();
+        if (playWhenTuned) {
+          playWhenTuned = false;
+          void player.play();
+        }
+      }
+    }
+  }, delay);
+}
+
+/** Points the player at the tuned or original audio, keeping position and play state. */
+function updatePlaybackSource(): void {
+  if (!open) return;
+  const next = wantsTuned() && open.tuned ? open.tuned : open.samples;
+  if (next === playerSource) return;
+  player.swap(next, open.meta.sampleRate);
+  playerSource = next;
+}
+
+function updateAbUi(): void {
+  const tunedReady = !!open?.tuned && tuning.enabled;
+  for (const btn of ui.abButtons) {
+    const isTuned = btn.dataset.ab === 'tuned';
+    const on = isTuned === wantsTuned();
+    btn.classList.toggle('is-on', on);
+    btn.setAttribute('aria-checked', String(on));
+    if (isTuned) btn.disabled = !tuning.enabled;
+  }
+  ui.exportTuned.disabled = !tunedReady;
+  ui.renderStatus.textContent = !tuning.enabled ? 'Auto-tune is off' : renderer.busy ? 'Tuning…' : '';
+}
+
+function setListenTuned(on: boolean): void {
+  listenTuned = on;
+  updatePlaybackSource();
+  updateAbUi();
 }
 
 async function deleteRecording(id: string): Promise<void> {
@@ -319,6 +422,8 @@ function applyTuning(): void {
   ui.retuneValue.textContent = `${tuning.retuneMs} ms`;
   ui.retuneValue.classList.toggle('is-zero', tuning.retuneMs === 0);
   updateHeading();
+  scheduleTunedRender();
+  updateAbUi();
 }
 
 for (let pc = 0; pc < 12; pc++) ui.tuneKey.add(new Option(pitchClassName(pc), String(pc)));
@@ -375,6 +480,10 @@ function togglePlay(): void {
 }
 
 ui.play.addEventListener('click', togglePlay);
+for (const btn of ui.abButtons) btn.addEventListener('click', () => setListenTuned(btn.dataset.ab === 'tuned'));
+ui.exportTuned.addEventListener('click', () => {
+  if (open?.tuned) downloadWav(open.tuned, open.meta.sampleRate, `${open.meta.name} (auto-tuned)`);
+});
 ui.seek.addEventListener('input', () => {
   player.seek(Number(ui.seek.value));
   roll.setTime(player.currentTime);
@@ -396,6 +505,8 @@ document.addEventListener('keydown', (e) => {
     ui.record.click();
   } else if (e.key === 't') {
     ui.tuneOn.click();
+  } else if (e.key === 'a' && mode === 'playback' && tuning.enabled) {
+    setListenTuned(!listenTuned);
   }
 });
 

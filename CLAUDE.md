@@ -33,6 +33,14 @@ Look: a near-black background (#0f0f10-ish), muted dark lane fills whose hue cyc
 - **Auto-tune curve** (`src/dsp/autotune.ts`): for each frame, choose the target note (nearest in-scale note, with 0.15-semitone hysteresis so a voice hovering at the midpoint doesn't flicker). The correction is a **shift** added to the sung pitch and smoothed with time constant `retuneMs / 3`. At 0 ms the result is the exact staircase. At slow speeds the average lands on the note while vibrato passes through, like classic auto-tune. The voice re-glides from its natural pitch after each silence.
 - **Tuning display:** the piano roll keeps raw frames plus `{target, corrected}`. It re-corrects everything it holds whenever settings change, so turning the knob updates a paused recording instantly. Lines are drawn to an offscreen layer, so the left-edge fade works for colored lines.
 - **Tuning prefs** (enabled, key, scale, retune) are saved in localStorage (`src/storage/settings.ts`). They are global for now; Phase 4 may store them per recording.
+- **Tuned audio** (`src/dsp/psola.ts`) uses TD-PSOLA:
+  - In voiced stretches there is one analysis mark per cycle, on the peak of a zero-phase 900 Hz low-passed copy.
+  - Synthesis marks step through time at `period / ratio`. Each one copies the Hann grain (half-length = max(analysis period, synthesis period)) from the nearest analysis mark.
+  - Unvoiced audio uses identity grains, so it passes through exactly.
+  - Overlap-add is normalized by the summed window weight, blending toward the original where the weight is below 0.25.
+  - Formants are preserved because grains are moved, never resampled. A minute of audio renders in well under a second.
+- **Render pipeline:** `TunedRenderer` sends the original samples, the packed pitch track and the settings to `render-worker.ts`, which runs `correctTrack` then `renderTuned`. The latest request wins; stale renders resolve to null. Re-renders are debounced by 120 ms while the knob turns.
+- **A/B:** the open recording keeps `samples` (original) and `tuned`. `Player.swap()` changes the buffer while keeping position and play state. Play on a just-opened recording waits for the tuned render, so it doesn't switch mid-play.
 - **Modes** (`src/main.ts`): `idle`, `listening` (live line, nothing saved), `recording` (live line + saving), `playback` (a saved recording is open and the roll follows `Player.currentTime`).
 
 ## Architecture
@@ -46,13 +54,16 @@ src/
     notes.ts              freq <-> MIDI, note names
     scales.ts             scale types, masks, nearest in-scale note
     autotune.ts           PitchCorrector: target note + retune-speed glide
+    psola.ts              TD-PSOLA renderer for the tuned audio
     resample.ts           low-pass + decimate to the analysis rate
   audio/
     capture-worklet.ts    AudioWorkletProcessor: forwards input blocks
     audio-input.ts        mic / demo-tone sources -> worklet -> callback
     pitch-tracker.ts      ring buffer + hop scheduling -> PitchFrame stream
     sample-buffer.ts      collects PCM blocks during a take
-    player.ts             AudioBuffer playback: play/pause/seek + latency-compensated clock
+    player.ts             AudioBuffer playback: play/pause/seek/swap + latency-compensated clock
+    render-worker.ts      Web Worker: correctTrack + renderTuned off the main thread
+    tuned-renderer.ts     main-thread client for the worker (latest request wins)
     wav.ts                16-bit PCM WAV encoder
   storage/
     recording-store.ts    IndexedDB: list/save/load/rename/delete recordings
@@ -70,7 +81,7 @@ tests/                    vitest unit tests (dsp, tracker, wav, packing, storage
 Data flow: mic → AudioWorklet → main thread `PitchTracker` (downsample, YIN, median filter) → `PitchFrame { time, freq, midi, clarity, rms }` → `PianoRoll.push()` → canvas drawn on each `requestAnimationFrame`.
 While recording, the same blocks and frames are also collected into a take. On Stop the take is saved to IndexedDB and opened in playback mode.
 
-Shortcuts: **R** = record/stop, **T** = auto-tune on/off, **Space** = play/pause (playback mode).
+Shortcuts: **R** = record/stop, **T** = auto-tune on/off, **Space** = play/pause and **A** = original/tuned (playback mode).
 
 ## Commands
 
@@ -134,11 +145,12 @@ npm test           # vitest unit tests
 - [x] Tuning prefs saved; applies live and to open recordings
 
 ### Phase 4 — Auto-tune audio
-- [ ] Pitch-mark detection (cycle boundaries) from the pitch track
-- [ ] TD-PSOLA pitch shifting to the corrected curve
-- [ ] Render the tuned version, A/B play original vs tuned
-- [ ] Export the tuned version as WAV
-- [ ] Quality pass: formants, transitions, unvoiced passthrough
+- [x] Pitch-mark detection (cycle boundaries) from the pitch track
+- [x] TD-PSOLA pitch shifting to the corrected curve (tests: ±1–3 semitones within 5¢, steady level, vibrato flattened)
+- [x] Render the tuned version in a Web Worker, A/B play original vs tuned
+- [x] Export the tuned version as WAV
+- [x] Unvoiced passthrough (exact), formant-preserving grains, normalized transitions
+- [ ] Listening test with real vocals (user); tune grain/mark parameters if artifacts appear
 
 ### Phase 5 — Polish & stretch
 - [ ] PWA (manifest, service worker, install on phone), HTTPS dev for LAN testing

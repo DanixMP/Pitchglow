@@ -37,6 +37,23 @@ export class Player {
     this._playing = false;
   }
 
+  /** Replaces the audio but keeps the position and play state (A/B switching, re-tuned audio). */
+  swap(samples: Float32Array, sampleRate: number): void {
+    if (!this.ctx || !this.buffer) {
+      this.load(samples, sampleRate);
+      return;
+    }
+    const wasPlaying = this._playing;
+    const time = this.currentTime;
+    this.stopSource();
+    this._playing = false;
+    const buffer = this.ctx.createBuffer(1, Math.max(1, samples.length), sampleRate);
+    buffer.copyToChannel(samples as Float32Array<ArrayBuffer>, 0);
+    this.buffer = buffer;
+    this.offset = Math.min(time, this.duration);
+    if (wasPlaying) void this.play();
+  }
+
   unload(): void {
     this.stopSource();
     this.buffer = null;

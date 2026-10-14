@@ -19,12 +19,25 @@
       </section>
 
       <section id="transport" class="transport" hidden>
-        <button id="play" class="icon-btn icon-btn-lg" type="button" aria-label="Play">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path class="i-play" d="M8 5.5v13l11-6.5z"/><path class="i-pause" d="M7 5h4v14H7zm6 0h4v14h-4z"/></svg>
-        </button>
-        <span id="time-current" class="time">0:00</span>
-        <input id="seek" class="seek" type="range" min="0" max="1" step="0.01" value="0" aria-label="Playback position" />
-        <span id="time-total" class="time">0:00</span>
+        <div class="transport-row">
+          <button id="play" class="icon-btn icon-btn-lg" type="button" aria-label="Play">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path class="i-play" d="M8 5.5v13l11-6.5z"/><path class="i-pause" d="M7 5h4v14H7zm6 0h4v14h-4z"/></svg>
+          </button>
+          <span id="time-current" class="time">0:00</span>
+          <input id="seek" class="seek" type="range" min="0" max="1" step="0.01" value="0" aria-label="Playback position" />
+          <span id="time-total" class="time">0:00</span>
+        </div>
+        <div class="transport-row transport-row-ab">
+          <div class="segmented" role="radiogroup" aria-label="Listen to">
+            <button class="seg" type="button" role="radio" aria-checked="false" data-ab="original">Original</button>
+            <button class="seg is-on" type="button" role="radio" aria-checked="true" data-ab="tuned">Tuned</button>
+          </div>
+          <span id="render-status" class="render-status" aria-live="polite"></span>
+          <button id="export-tuned" class="btn btn-small" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4h2v8.6l3.3-3.3 1.4 1.4L12 16.4l-5.7-5.7 1.4-1.4 3.3 3.3zM5 18h14v2H5z"/></svg>
+            <span>Tuned WAV</span>
+          </button>
+        </div>
       </section>
 
       <section class="readout" aria-live="polite">
