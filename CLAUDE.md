@@ -41,6 +41,14 @@ Look: a near-black background (#0f0f10-ish), muted dark lane fills whose hue cyc
   - Formants are preserved because grains are moved, never resampled. A minute of audio renders in well under a second.
 - **Render pipeline:** `TunedRenderer` sends the original samples, the packed pitch track and the settings to `render-worker.ts`, which runs `correctTrack` then `renderTuned`. The latest request wins; stale renders resolve to null. Re-renders are debounced by 120 ms while the knob turns.
 - **A/B:** the open recording keeps `samples` (original) and `tuned`. `Player.swap()` changes the buffer while keeping position and play state. Play on a just-opened recording waits for the tuned render, so it doesn't switch mid-play.
+- **Harmonizer** (`src/dsp/harmony.ts`): each voice follows the lead's *corrected* pitch, offset by a number of **scale steps**, so harmonies stay in key (3rd/5th up or down, octave up or down). In Chromatic the steps are fixed semitones: +4/+7 up, −3/−7 down. Every voice is its own PSOLA render, mixed at `mix / √voices` and passed through a look-ahead peak limiter (`src/dsp/limiter.ts`, ceiling 0.98), so only the loud moments get turned down. Harmony is part of `TuneSettings`, so it flows through the worker, the roll and the render cache key.
+- **PWA:**
+  - `public/manifest.webmanifest` and icons, regenerated with `npm run icons` (a procedural rasterizer in `scripts/make-icons.mjs`).
+  - `vite.config.ts` emits `sw.js` at build time. It precaches every built file, and its cache version is a content hash. Page navigations are network-first, everything else cache-first with `ignoreVary`.
+  - The service worker is registered only in production (`src/pwa.ts`), and an Install button appears when the browser offers installation.
+  - `base: './'` lets the build run from any sub-path.
+- **HTTPS for phones:** `npm run dev:lan` / `npm run preview:lan` use `--mode lan`, which turns on `@vitejs/plugin-basic-ssl` (a self-signed cert: accept the warning on the phone). This is enough for microphone testing. A *real* install with offline support on a phone needs a trusted HTTPS host (e.g. GitHub Pages), because service workers don't register on certificate errors.
+- **Headings and captions:** the heading follows the tuning state, like the video's title cards: "Live pitch / My voice", "Nearest note / On auto-tune", "Only / C major", "One voice, many notes / A harmonizer". `src/ui/captions.ts` shows short word-by-word captions when a setting changes, plus a one-time intro (`localStorage['recorder.introSeen']`).
 - **Modes** (`src/main.ts`): `idle`, `listening` (live line, nothing saved), `recording` (live line + saving), `playback` (a saved recording is open and the roll follows `Player.currentTime`).
 
 ## Architecture
@@ -55,6 +63,8 @@ src/
     scales.ts             scale types, masks, nearest in-scale note
     autotune.ts           PitchCorrector: target note + retune-speed glide
     psola.ts              TD-PSOLA renderer for the tuned audio
+    harmony.ts            diatonic harmony voices + mixed render (renderWithHarmony)
+    limiter.ts            look-ahead peak limiter
     resample.ts           low-pass + decimate to the analysis rate
   audio/
     capture-worklet.ts    AudioWorkletProcessor: forwards input blocks
@@ -73,6 +83,11 @@ src/
     piano-roll.ts         canvas renderer: keyboard, lanes, glowing line; live + playback modes, drag to scrub
     recordings-list.ts    recordings list (play, rename inline, WAV export, delete)
     knob.ts               rotary knob (drag, wheel, arrows, double-click to reset)
+    captions.ts           word-by-word explainer captions over the roll
+  pwa.ts                  service-worker registration + Install button
+public/                   manifest, icon.svg, icons/*.png (generated)
+scripts/make-icons.mjs    procedural icon renderer (no deps)
+vite.config.ts            base './', LAN HTTPS mode, build-time service worker
     colors.ts             lane/key color palette
     format.ts             time formatting
 tests/                    vitest unit tests (dsp, tracker, wav, packing, storage via fake-indexeddb)
@@ -90,6 +105,9 @@ npm install
 npm run dev        # Vite dev server (http://localhost:5173)
 npm run build      # type-check + production build
 npm test           # vitest unit tests
+npm run dev:lan    # HTTPS dev server on the LAN (phone mic testing; accept the cert warning)
+npm run preview:lan # build + HTTPS preview on the LAN
+npm run icons      # regenerate public/icons/*.png
 ```
 
 - The **Demo tone** button feeds a synthetic gliding voice-like tone through the same pipeline, for testing without a microphone.
@@ -153,6 +171,18 @@ npm test           # vitest unit tests
 - [ ] Listening test with real vocals (user); tune grain/mark parameters if artifacts appear
 
 ### Phase 5 — Polish & stretch
-- [ ] PWA (manifest, service worker, install on phone), HTTPS dev for LAN testing
-- [ ] Harmonizer: several pitch-shifted voices / chord from the keys
-- [ ] Explainer captions and headings in the video's style
+- [x] PWA: manifest, icons, build-time service worker (checked offline with the server stopped), Install button
+- [x] HTTPS dev/preview for LAN testing (`dev:lan`, `preview:lan`)
+- [x] Harmonizer: diatonic 3rd/5th/octave voices, mix slider, lines + lit keys per voice, peak limiter
+- [x] Explainer captions and headings in the video's style
+- [ ] Deploy to an HTTPS host (e.g. GitHub Pages) so the PWA can be installed on a phone (ask the user first: this publishes the app)
+- [ ] Harmony from played keys (Jacob Collier style), once live processing exists
+
+### Phase 6 — Clean-up & effects (next; user asked for noise cancelling "and etc.")
+- [ ] Mic option: browser noise suppression / echo cancellation toggle (quick win, live)
+- [ ] Spectral noise reduction: learn a noise profile from the recording's quiet parts, then STFT Wiener-style gain with smoothing (offline, in the worker, before PSOLA)
+- [ ] Noise gate / expander using the pitch tracker's silence detection
+- [ ] High-pass (rumble) + de-esser + gentle compressor
+- [ ] Reverb / echo presets (offline convolution)
+- [ ] Original / Cleaned / Tuned comparison and export
+- [ ] Later: real-time auto-tune monitoring (needs low-latency streaming PSOLA)

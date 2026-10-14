@@ -6,13 +6,16 @@ import { TunedRenderer } from './audio/tuned-renderer';
 import { wavBlob } from './audio/wav';
 import type { TuneSettings } from './dsp/autotune';
 import { nearestNote, noteName, pitchClassName } from './dsp/notes';
-import { SCALE_TYPES, type ScaleType } from './dsp/scales';
+import { HARMONY_VOICES, type HarmonyVoice } from './dsp/harmony';
+import { SCALE_TYPES, scaleName, type ScaleType } from './dsp/scales';
 import { packFrames, unpackFrames } from './storage/pitch-track';
 import { RecordingStore, type RecordingMeta } from './storage/recording-store';
 import { DEFAULT_TUNING, loadTuning, saveTuning } from './storage/settings';
+import { Captions } from './ui/captions';
 import { formatTime } from './ui/format';
 import { Knob } from './ui/knob';
 import { PianoRoll } from './ui/piano-roll';
+import { setupPwa } from './pwa';
 import { RecordingsList } from './ui/recordings-list';
 
 function $<T extends HTMLElement>(id: string): T {
@@ -43,6 +46,9 @@ const ui = {
   abButtons: [...document.querySelectorAll<HTMLButtonElement>('.segmented .seg')],
   renderStatus: $('render-status'),
   exportTuned: $<HTMLButtonElement>('export-tuned'),
+  harmonyVoices: $('harmony-voices'),
+  harmonyMix: $<HTMLInputElement>('harmony-mix'),
+  harmonyMixValue: $('harmony-mix-value'),
 };
 
 /** idle → listening/recording (live input) or playback (a saved recording is open). */
@@ -63,6 +69,7 @@ interface OpenRecording extends LoadedRecording {
 const MIN_RECORDING_SECONDS = 0.3;
 
 const roll = new PianoRoll($<HTMLCanvasElement>('roll'));
+const captions = new Captions($('caption'));
 const player = new Player();
 const input = new AudioInput(onBlock);
 const list = new RecordingsList($('recordings'), {
@@ -122,6 +129,7 @@ async function startLive(record: boolean): Promise<void> {
   take = record ? { audio: new SampleBuffer(), frames: [] } : null;
   roll.start();
   setMode(record ? 'recording' : 'listening');
+  explainIntro();
 }
 
 async function stopLive(): Promise<void> {
@@ -317,6 +325,8 @@ function setListenTuned(on: boolean): void {
   listenTuned = on;
   updatePlaybackSource();
   updateAbUi();
+  updateHeading();
+  explainListenMode();
 }
 
 async function deleteRecording(id: string): Promise<void> {
@@ -353,19 +363,79 @@ function setMode(next: Mode): void {
   updateHeading();
 }
 
+/** Title card for the current tuning, in the style of Goal.mp4's headings. */
+function headingCard(): { eyebrow: string; title: string; tone: 'tuned' | 'scale' | 'harmony' | null } {
+  if (!tuning.enabled) return { eyebrow: 'Live pitch', title: 'My voice', tone: null };
+  if (tuning.harmony.length) return { eyebrow: 'One voice, many notes', title: 'A harmonizer', tone: 'harmony' };
+  if (tuning.type !== 'chromatic') return { eyebrow: 'Only', title: scaleName({ root: tuning.root, type: tuning.type }), tone: 'scale' };
+  return { eyebrow: 'Nearest note', title: 'On auto-tune', tone: 'tuned' };
+}
+
 function updateHeading(): void {
-  ui.eyebrow.classList.toggle('is-recording', mode === 'recording');
+  const card = headingCard();
+  let { eyebrow, title, tone } = card;
   if (mode === 'recording') {
-    ui.eyebrow.textContent = `● Recording ${formatTime((take?.audio.length ?? 0) / sampleRate)}`;
-    ui.title.textContent = tuning.enabled ? 'On auto-tune' : 'My voice';
+    eyebrow = `● Recording ${formatTime((take?.audio.length ?? 0) / sampleRate)}`;
   } else if (mode === 'playback' && open) {
-    ui.eyebrow.textContent = 'Playback';
-    ui.title.textContent = open.meta.name;
-  } else {
-    ui.eyebrow.textContent = 'Live pitch';
-    ui.title.textContent = tuning.enabled ? 'On auto-tune' : 'My voice';
+    eyebrow = tuning.enabled ? `Playback · ${wantsTuned() ? 'Tuned' : 'Original'}` : 'Playback';
+    title = open.meta.name;
+    tone = null;
   }
-  ui.title.classList.toggle('is-tuned', tuning.enabled && mode !== 'playback');
+  ui.eyebrow.textContent = eyebrow;
+  ui.title.textContent = title;
+  ui.eyebrow.classList.toggle('is-recording', mode === 'recording');
+  ui.title.classList.toggle('is-tuned', tone === 'tuned');
+  ui.title.classList.toggle('is-scale', tone === 'scale');
+  ui.title.classList.toggle('is-harmony', tone === 'harmony');
+}
+
+// --- explainer captions ------------------------------------------------------------------------
+
+const INTRO_KEY = 'recorder.introSeen';
+let retuneCaptionTimer = 0;
+
+function explainIntro(): void {
+  try {
+    if (localStorage.getItem(INTRO_KEY)) return;
+    localStorage.setItem(INTRO_KEY, '1');
+  } catch {
+    return;
+  }
+  captions.show(['Each of these lanes is one key on a piano.', 'As you sing, this line follows the pitch of your voice.']);
+}
+
+function explainTuningSwitch(): void {
+  captions.show(tuning.enabled ? 'Auto-tune snaps your voice to the nearest note.' : 'This is your voice, untouched.');
+}
+
+function explainRetune(): void {
+  window.clearTimeout(retuneCaptionTimer);
+  retuneCaptionTimer = window.setTimeout(() => {
+    const ms = tuning.retuneMs;
+    captions.show(
+      ms === 0
+        ? '0 ms: it jumps the instant you move. That’s the robot sound.'
+        : ms < 100
+          ? `${ms} ms: it snaps quickly onto each note.`
+          : `${ms} ms: set it gently, and it glides into each note.`,
+    );
+  }, 350);
+}
+
+function explainScale(): void {
+  captions.show(
+    tuning.type === 'chromatic'
+      ? 'Chromatic: it can land on any key.'
+      : `Only ${scaleName({ root: tuning.root, type: tuning.type })}: it can only land on these notes.`,
+  );
+}
+
+function explainHarmony(): void {
+  captions.show(tuning.harmony.length ? 'One voice, many notes: every lit key is a voice.' : 'Harmony off: just your voice.');
+}
+
+function explainListenMode(): void {
+  captions.show(wantsTuned() ? 'Tuned: your voice, on pitch.' : 'Original: exactly what you sang.');
 }
 
 function updateReadout(): void {
@@ -405,7 +475,10 @@ function describeError(err: unknown): string {
 // --- auto-tune settings ----------------------------------------------------------------------
 
 function tuneSettings(): TuneSettings | null {
-  return tuning.enabled ? { scale: { root: tuning.root, type: tuning.type }, retuneMs: tuning.retuneMs } : null;
+  if (!tuning.enabled) return null;
+  const settings: TuneSettings = { scale: { root: tuning.root, type: tuning.type }, retuneMs: tuning.retuneMs };
+  if (tuning.harmony.length) settings.harmony = { voices: [...tuning.harmony], mix: tuning.harmonyMix };
+  return settings;
 }
 
 /** Pushes the current tuning to the piano roll, the controls and localStorage. */
@@ -421,10 +494,39 @@ function applyTuning(): void {
   knob.value = tuning.retuneMs;
   ui.retuneValue.textContent = `${tuning.retuneMs} ms`;
   ui.retuneValue.classList.toggle('is-zero', tuning.retuneMs === 0);
+  for (const chip of harmonyChips) {
+    chip.setAttribute('aria-pressed', String(tuning.harmony.includes(chip.dataset.voice as HarmonyVoice)));
+    chip.disabled = !tuning.enabled;
+  }
+  ui.harmonyMix.value = String(Math.round(tuning.harmonyMix * 100));
+  ui.harmonyMix.disabled = !tuning.enabled || tuning.harmony.length === 0;
+  ui.harmonyMixValue.textContent = `${Math.round(tuning.harmonyMix * 100)}%`;
   updateHeading();
   scheduleTunedRender();
   updateAbUi();
 }
+
+const harmonyChips = (Object.keys(HARMONY_VOICES) as HarmonyVoice[]).map((voice) => {
+  const chip = document.createElement('button');
+  chip.type = 'button';
+  chip.className = 'chip';
+  chip.dataset.voice = voice;
+  chip.textContent = HARMONY_VOICES[voice].label;
+  chip.addEventListener('click', () => {
+    const on = tuning.harmony.includes(voice);
+    // Keep voices in a stable (menu) order so the render cache key doesn't depend on click order.
+    const next = (Object.keys(HARMONY_VOICES) as HarmonyVoice[]).filter((v) => (v === voice ? !on : tuning.harmony.includes(v)));
+    tuning = { ...tuning, harmony: next };
+    applyTuning();
+    explainHarmony();
+  });
+  ui.harmonyVoices.append(chip);
+  return chip;
+});
+ui.harmonyMix.addEventListener('input', () => {
+  tuning = { ...tuning, harmonyMix: Number(ui.harmonyMix.value) / 100 };
+  applyTuning();
+});
 
 for (let pc = 0; pc < 12; pc++) ui.tuneKey.add(new Option(pitchClassName(pc), String(pc)));
 for (const [type, { label }] of Object.entries(SCALE_TYPES)) ui.tuneScale.add(new Option(label, type));
@@ -441,6 +543,7 @@ const knob = new Knob({
   onInput: (v) => {
     tuning = { ...tuning, retuneMs: v };
     applyTuning();
+    explainRetune();
   },
 });
 $('retune-knob').replaceWith(knob.element);
@@ -448,14 +551,17 @@ $('retune-knob').replaceWith(knob.element);
 ui.tuneOn.addEventListener('change', () => {
   tuning = { ...tuning, enabled: ui.tuneOn.checked };
   applyTuning();
+  explainTuningSwitch();
 });
 ui.tuneKey.addEventListener('change', () => {
   tuning = { ...tuning, root: Number(ui.tuneKey.value) };
   applyTuning();
+  explainScale();
 });
 ui.tuneScale.addEventListener('change', () => {
   tuning = { ...tuning, type: ui.tuneScale.value as ScaleType };
   applyTuning();
+  explainScale();
 });
 
 // --- events ----------------------------------------------------------------------------------
@@ -526,6 +632,7 @@ function frame(t: number): void {
   requestAnimationFrame(frame);
 }
 
+setupPwa($<HTMLButtonElement>('install'));
 applyTuning();
 setMode('idle');
 run(refreshList);

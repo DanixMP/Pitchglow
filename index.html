@@ -4,11 +4,22 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#0f0f10" />
+    <meta name="description" content="Record your voice, see it on piano-key lanes, and auto-tune it to any scale." />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Recorder" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
     <title>Recorder</title>
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
     <main class="app">
+      <button id="install" class="install-btn" type="button" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4h2v8.6l3.3-3.3 1.4 1.4L12 16.4l-5.7-5.7 1.4-1.4 3.3 3.3zM5 18h14v2H5z"/></svg>
+        Install app
+      </button>
       <header class="heading">
         <p id="eyebrow" class="eyebrow">Live pitch</p>
         <h1 id="title" class="title">My voice</h1>
@@ -16,6 +27,7 @@
 
       <section class="stage">
         <canvas id="roll" aria-label="Pitch of your voice drawn over piano-key lanes"></canvas>
+        <p id="caption" class="caption" aria-live="polite"></p>
       </section>
 
       <section id="transport" class="transport" hidden>
@@ -82,6 +94,15 @@
             <span class="field-label">Retune speed</span>
             <span id="retune-value" class="retune-value">50 ms</span>
           </div>
+        </div>
+        <div class="harmony">
+          <span class="field-label">Harmony</span>
+          <div id="harmony-voices" class="harmony-voices" role="group" aria-label="Harmony voices"></div>
+          <label class="harmony-mix">
+            <span class="field-label">Mix</span>
+            <input id="harmony-mix" type="range" min="0" max="100" step="1" value="60" aria-label="Harmony mix" />
+            <span id="harmony-mix-value" class="harmony-mix-value">60%</span>
+          </label>
         </div>
       </section>
 

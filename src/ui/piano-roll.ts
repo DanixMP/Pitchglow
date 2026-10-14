@@ -6,6 +6,7 @@
 import type { PitchFrame } from '../audio/pitch-tracker';
 import { PitchCorrector, correctTrack, type Correction, type TuneSettings } from '../dsp/autotune';
 import { isBlackKey, octaveOf, pitchClass, pitchClassName } from '../dsp/notes';
+import { harmonyNote } from '../dsp/harmony';
 import { scaleMask, scaleName } from '../dsp/scales';
 import { laneFill, litColor, theme } from './colors';
 
@@ -16,8 +17,11 @@ export interface PianoRollOptions {
   playheadRatio?: number;
 }
 
-/** A pitch frame plus its auto-tune correction (null fields when tuning is off or unvoiced). */
-export type RollFrame = PitchFrame & Correction;
+/**
+ * A pitch frame plus its auto-tune correction (null fields when tuning is off or unvoiced) and the
+ * notes the harmony voices sing at that moment (empty when there is no harmony).
+ */
+export type RollFrame = PitchFrame & Correction & { harmony: number[] };
 
 const LOWEST_NOTE = 24; // C1
 const HIGHEST_NOTE = 96; // C7
@@ -97,7 +101,8 @@ export class PianoRoll {
   }
 
   push(frame: PitchFrame): void {
-    this.frames.push({ ...frame, ...this.correct(frame) });
+    const correction = this.correct(frame);
+    this.frames.push({ ...frame, ...correction, harmony: this.harmonyFor(correction.target) });
     this.latestTime = frame.time;
     this.lastPushAt = performance.now();
     const keepFrom = frame.time - this.secondsVisible - 1;
@@ -109,7 +114,7 @@ export class PianoRoll {
   /** Shows a whole recorded pitch track; move through it with `setTime`. */
   showRecording(frames: readonly PitchFrame[], duration: number, time = duration): void {
     this.live = false;
-    this.frames = frames.map((f) => ({ ...f, target: null, corrected: null }));
+    this.frames = frames.map((f) => ({ ...f, target: null, corrected: null, harmony: [] }));
     this.retune();
     this.duration = duration;
     this.latestTime = frames.length ? frames[frames.length - 1].time : 0;
@@ -156,7 +161,8 @@ export class PianoRoll {
 
     const head = this.frameAt(now);
     this.updateView(head ? this.displayMidi(head) : null, dt);
-    this.updateLit(head ? this.litNote(head) : null, dt);
+    const leadNote = head ? this.litNote(head) : null;
+    this.updateLit(leadNote === null ? [] : [leadNote, ...head!.harmony], dt);
 
     const { ctx, width: w, height: h, dpr } = this;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -178,13 +184,25 @@ export class PianoRoll {
     return this.corrector?.process(frame) ?? { target: null, corrected: null };
   }
 
+  private harmonyFor(target: number | null): number[] {
+    const voices = this.tuning?.harmony?.voices;
+    if (target === null || !voices?.length) return [];
+    return voices.map((v) => harmonyNote(target, v, this.tuning!.scale));
+  }
+
   private retune(): void {
     if (!this.tuning) {
-      for (const f of this.frames) f.target = f.corrected = null;
+      for (const f of this.frames) {
+        f.target = f.corrected = null;
+        f.harmony = [];
+      }
       return;
     }
     const corrections = correctTrack(this.frames, this.tuning);
-    this.frames.forEach((f, i) => Object.assign(f, corrections[i]));
+    this.frames.forEach((f, i) => {
+      Object.assign(f, corrections[i]);
+      f.harmony = this.harmonyFor(f.target);
+    });
     // Continue live correction from where the shown history ends.
     this.corrector = new PitchCorrector(this.tuning);
     for (const f of this.frames.slice(-3)) this.corrector.process(f);
@@ -265,12 +283,14 @@ export class PianoRoll {
     this.viewCenter += (this.viewTarget - this.viewCenter) * (1 - Math.exp(-dt * 4));
   }
 
-  private updateLit(note: number | null, dt: number): void {
-    if (note !== null && !this.lit.has(note)) this.lit.set(note, 0);
+  /** Fades lit keys/lanes towards the currently sounding notes (lead + harmony voices). */
+  private updateLit(notes: readonly number[], dt: number): void {
+    for (const n of notes) if (!this.lit.has(n)) this.lit.set(n, 0);
     const k = 1 - Math.exp(-dt * 14);
     for (const [m, level] of this.lit) {
-      const next = level + ((m === note ? 1 : 0) - level) * k;
-      if (next < 0.01 && m !== note) this.lit.delete(m);
+      const on = notes.includes(m);
+      const next = level + ((on ? 1 : 0) - level) * k;
+      if (next < 0.01 && !on) this.lit.delete(m);
       else this.lit.set(m, next);
     }
   }
@@ -365,35 +385,16 @@ export class PianoRoll {
       g.stroke();
     }
 
-    // Main line: white, or the target note's colour when tuned (one stroke per note run).
-    g.lineWidth = 2.5;
-    g.shadowBlur = 12;
-    let prev: RollFrame | null = null;
-    let runColor = '';
-    for (let i = from; i < to; i++) {
-      const f = this.frames[i];
-      const y = this.displayMidi(f);
-      if (y === null) {
-        prev = null;
-        continue;
-      }
-      const color = this.tuning && f.target !== null ? litColor(f.target) : theme.line;
-      const connected = prev !== null && this.connected(prev, f, this.displayMidi(prev)!, y);
-      if (color !== runColor) {
-        if (runColor) g.stroke();
-        runColor = color;
-        g.strokeStyle = color;
-        g.shadowColor = this.tuning ? color : theme.lineGlow;
-        g.beginPath();
-        // Start the new colour where the previous one ended so the line stays continuous.
-        if (connected) g.moveTo(xOf(prev!.time), L.yOf(this.displayMidi(prev!)!));
-        else g.moveTo(xOf(f.time), L.yOf(y));
-      }
-      if (connected) g.lineTo(xOf(f.time), L.yOf(y));
-      else g.moveTo(xOf(f.time), L.yOf(y));
-      prev = f;
+    // Harmony voices: thinner lines on their own notes' lanes (Goal.mp4, 1:28).
+    const voiceCount = this.tuning?.harmony?.voices.length ?? 0;
+    for (let k = 0; k < voiceCount; k++) {
+      const note = (f: RollFrame) => f.harmony[k] ?? null;
+      const value = (f: RollFrame) => (f.corrected === null || f.target === null || f.harmony[k] === undefined ? null : f.corrected + f.harmony[k] - f.target);
+      this.strokeRuns(g, L, xOf, from, to, value, note, 1.75, 8, 0.85);
     }
-    if (runColor) g.stroke();
+
+    // Main line: white, or the target note's colour when tuned.
+    this.strokeRuns(g, L, xOf, from, to, (f) => this.displayMidi(f), (f) => (this.tuning ? f.target : null), 2.5, 12, 1);
 
     // Glowing head dot on the playhead while the voice is sounding.
     const head = this.frameAt(now);
@@ -423,6 +424,58 @@ export class PianoRoll {
     this.ctx.setTransform(1, 0, 0, 1, 0, 0);
     this.ctx.drawImage(this.layer, 0, 0);
     this.ctx.restore();
+  }
+
+  /**
+   * Strokes a line through `value(f)` for frames [from, to), one stroke per run of the same colour
+   * (the lit colour of `note(f)`, or white when null), keeping colour changes visually continuous.
+   */
+  private strokeRuns(
+    g: CanvasRenderingContext2D,
+    L: Layout,
+    xOf: (t: number) => number,
+    from: number,
+    to: number,
+    value: (f: RollFrame) => number | null,
+    note: (f: RollFrame) => number | null,
+    width: number,
+    blur: number,
+    alpha: number,
+  ): void {
+    g.save();
+    g.lineWidth = width;
+    g.shadowBlur = blur;
+    g.globalAlpha = alpha;
+    let prev: RollFrame | null = null;
+    let prevY = 0;
+    let runColor = '';
+    for (let i = from; i < to; i++) {
+      const f = this.frames[i];
+      const y = value(f);
+      if (y === null) {
+        prev = null;
+        continue;
+      }
+      const n = note(f);
+      const color = n === null ? theme.line : litColor(n);
+      const connected = prev !== null && this.connected(prev, f, prevY, y);
+      if (color !== runColor) {
+        if (runColor) g.stroke();
+        runColor = color;
+        g.strokeStyle = color;
+        g.shadowColor = n === null ? theme.lineGlow : color;
+        g.beginPath();
+        // Start the new colour where the previous one ended so the line stays continuous.
+        if (connected) g.moveTo(xOf(prev!.time), L.yOf(prevY));
+        else g.moveTo(xOf(f.time), L.yOf(y));
+      }
+      if (connected) g.lineTo(xOf(f.time), L.yOf(y));
+      else g.moveTo(xOf(f.time), L.yOf(y));
+      prev = f;
+      prevY = y;
+    }
+    if (runColor) g.stroke();
+    g.restore();
   }
 
   private connected(a: RollFrame, b: RollFrame, ya: number, yb: number): boolean {
@@ -514,6 +567,8 @@ export class PianoRoll {
       ['SCALE', scaleName(t.scale).toUpperCase()],
       ['RETUNE', `${Math.round(t.retuneMs)} ms`],
     ];
+    const voices = t.harmony?.voices.length ?? 0;
+    if (voices) parts.push(['HARMONY', `+${voices}`]);
     const labelFont = `600 9px ${FONT}`;
     const valueFont = `700 11px ${FONT}`;
     const pad = 9;

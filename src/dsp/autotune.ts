@@ -5,6 +5,7 @@
 // staircase); slow retune pulls the average onto the note but lets fast movement like vibrato through.
 
 import type { PitchFrame } from '../audio/pitch-tracker';
+import type { HarmonySettings } from './harmony';
 import { nearestInScale, scaleMask, type Scale } from './scales';
 import { pitchClass } from './notes';
 
@@ -14,6 +15,8 @@ export interface TuneSettings {
   retuneMs: number;
   /** Extra semitones the voice must move past the halfway point before switching notes. */
   hysteresis?: number;
+  /** Harmony voices layered on the tuned lead (see harmony.ts). */
+  harmony?: HarmonySettings;
 }
 
 export interface Correction {
