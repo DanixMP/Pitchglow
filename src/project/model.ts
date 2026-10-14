@@ -4,6 +4,7 @@
 // vocal track points at a take in the library and carries its own mix and processing settings.
 
 import type { Scale } from '../dsp/scales';
+import type { SongFx, TrackFx } from './fx';
 import { DEFAULT_TUNING, type CleanupPrefs, type TuningPrefs } from '../storage/settings';
 
 export type TrackKind = 'vocal' | 'instrumental';
@@ -32,6 +33,8 @@ export interface Track {
   cleanup: TrackCleanup;
   /** Hue for the track's colour chip. */
   hue: number;
+  /** Vocal chain + sends (Phase 11; missing = defaults). */
+  fx?: TrackFx;
 }
 
 export interface Project {
@@ -48,6 +51,8 @@ export interface Project {
   /** Musical key (detected from the instrumental, or chosen); applied to new tracks' auto-tune. */
   key?: Scale | null;
   bpm?: number | null;
+  /** Reverb/echo buses (Phase 11; missing = defaults). */
+  fx?: SongFx;
 }
 
 /** Track colours: spread around the wheel, starting with the app's accent-ish yellow. */
@@ -184,6 +189,16 @@ export function withoutTake(projects: readonly Project[], takeId: string, now = 
 }
 
 // --- mixing math ---------------------------------------------------------------------------
+
+/** Semitones a track is heard transposed by: its own pitch offset plus the song's key shift. */
+export function trackSemitones(t: Track, p: Project): number {
+  return t.kind === 'vocal' ? t.pitch + p.keyShift : p.keyShift;
+}
+
+/** A scale moved by a number of semitones (the auto-tune scale follows the key shift). */
+export function transposeScale(scale: Scale, semitones: number): Scale {
+  return { ...scale, root: (((scale.root + semitones) % 12) + 12) % 12 };
+}
 
 export function masterOf(p: Project): { gain: number; limiter: boolean } {
   return { gain: dbToGain(p.masterGainDb), limiter: p.limiter !== false };

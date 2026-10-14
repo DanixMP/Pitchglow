@@ -15,7 +15,8 @@ import { alignTake, countInTimes, detectClickLatency } from '../audio/sync';
 import { downmix } from '../dsp/analyze';
 import type { Scale } from '../dsp/scales';
 import { MixPlayer, type MixTrackSpec } from '../audio/mix-player';
-import { renderMix, renderStems } from '../audio/mixdown';
+import { exportLength, renderMix, renderStems } from '../audio/mixdown';
+import { songFxOf, trackFxOf, withPreset, FX_PRESETS, type FxPresetId, type SongFx, type TrackFx } from '../project/fx';
 import { createZip } from '../audio/zip';
 import { peaksOf } from '../audio/peaks';
 import type { TimelineClip } from '../ui/timeline';
@@ -34,6 +35,8 @@ import {
   effectiveGain,
   masterOf,
   newId,
+  trackSemitones,
+  transposeScale,
   nextProjectName,
   removeTrack as removeTrackModel,
   titleFromFileName,
@@ -47,7 +50,7 @@ import { packFrames, unpackFrames } from '../storage/pitch-track';
 import { RecordingStore, type Asset, type RecordingMeta } from '../storage/recording-store';
 import type { CleanupPrefs, TuningPrefs } from '../storage/settings';
 import type { PianoRoll } from '../ui/piano-roll';
-import { processedLabelOf, processSettingsOf, tuneSettingsOf, wantsProcessed } from './processing';
+import { processedLabelOf, processSettingsOf, trackProcessSettings, tuneSettingsOf, wantsProcessed } from './processing';
 import { openProject, type AppStore, type RenderState } from './state';
 
 const MIN_RECORDING_SECONDS = 0.3;
@@ -87,6 +90,8 @@ export class Session {
   private blockSink: ((block: Float32Array, time: number) => void) | null = null;
   /** Decoded instrumentals by asset id. */
   private assets = new Map<string, AudioBuffer>();
+  /** Key-shifted instrumentals by `assetId|semitones` (phase vocoder in the worker). */
+  private shiftedAssets = new Map<string, AudioBuffer>();
 
   /** Take preview (no song open). */
   private preview: (LoadedTake & Rendered) | null = null;
@@ -384,7 +389,8 @@ export class Session {
         const specs = this.mixSpecs(project);
         if (!specs.length) return;
         const rate = Math.max(...specs.map((s) => s.sampleRate));
-        const mix = await renderMix(specs, rate, masterOf(project));
+        const song = { fx: songFxOf(project), bpm: project.bpm ?? null };
+        const mix = await renderMix(specs, rate, masterOf(project), exportLength(specs, song), song);
         downloadBlob(wavBlobChannels(mix.channels, mix.sampleRate), `${project.name} (mix)`);
       });
     } else if (this.preview?.processed) {
@@ -425,7 +431,7 @@ export class Session {
       const specs = this.mixSpecs(project);
       if (!specs.length) return;
       const rate = Math.max(...specs.map((s) => s.sampleRate));
-      const stems = await renderStems(specs, rate);
+      const stems = await renderStems(specs, rate, { fx: songFxOf(project), bpm: project.bpm ?? null });
       const width = String(project.tracks.length).length;
       const entries = stems.map(({ id, rendered }) => {
         const i = project.tracks.findIndex((t) => t.id === id);
@@ -474,7 +480,10 @@ export class Session {
     this.selectTrack(first?.id ?? null);
     this.rebuildMix();
     this.player.seek(0);
-    for (const t of project.tracks) this.scheduleTrackRender(t.id, 0);
+    for (const t of project.tracks) {
+      this.scheduleTrackRender(t.id, 0);
+      if (t.kind === 'instrumental' && t.assetId) this.scheduleInstrumentalShift(t.id, t.assetId, project.keyShift);
+    }
   }
 
   closeProject(): void {
@@ -609,6 +618,100 @@ export class Session {
     this.player.setMaster(masterOf(openProject(this.store.get())!));
   }
 
+  /** The inspector's tuning as the roll should draw it: moved by the selected track's transpose. */
+  private rollTuning() {
+    const state = this.store.get();
+    const settings = tuneSettingsOf(state.tuning);
+    const project = openProject(state);
+    const track = project?.tracks.find((t) => t.id === state.selectedTrackId);
+    if (!settings || !project || !track) return settings;
+    return { ...settings, scale: transposeScale(settings.scale, trackSemitones(track, project)) };
+  }
+
+  /** Vocal-chain / send edits. Live parts apply instantly; gate/de-ess re-render the track. */
+  updateTrackFx(trackId: string, patch: Partial<Omit<TrackFx, 'preset'>>): void {
+    const project = openProject(this.store.get());
+    const track = project?.tracks.find((t) => t.id === trackId);
+    if (!project || !track) return;
+    const fx: TrackFx = { ...trackFxOf(track), ...patch, eq: { ...trackFxOf(track).eq, ...patch.eq }, preset: null };
+    this.mutateProject(project.id, (p) => updateTrackModel(p, trackId, { fx }), `fx:${trackId}:${Object.keys(patch).join(',')}`);
+    this.player.setTrackFx(trackId, fx);
+    if ('gate' in patch || 'deess' in patch) this.scheduleTrackRender(trackId);
+  }
+
+  /** Applies a vocal preset ("Robot" also sets hard auto-tune on the track). */
+  applyFxPreset(trackId: string, id: FxPresetId): void {
+    const project = openProject(this.store.get());
+    const track = project?.tracks.find((t) => t.id === trackId);
+    if (!project || !track) return;
+    const fx = withPreset(id);
+    const tuning = FX_PRESETS[id].robot ? { ...track.tuning, enabled: true, retuneMs: 0 } : track.tuning;
+    this.mutateProject(project.id, (p) => updateTrackModel(p, trackId, { fx, tuning }));
+    this.player.setTrackFx(trackId, fx);
+    if (tuning !== track.tuning && this.store.get().selectedTrackId === trackId) this.selectTrack(trackId); // reload inspector
+    this.scheduleTrackRender(trackId);
+  }
+
+  /** Per-track transpose in semitones (e.g. an octave-up double). */
+  setTrackPitch(trackId: string, semitones: number): void {
+    const project = openProject(this.store.get());
+    if (!project) return;
+    this.mutateProject(project.id, (p) => updateTrackModel(p, trackId, { pitch: semitones }), `pitch:${trackId}`);
+    this.scheduleTrackRender(trackId);
+    this.refreshSongView();
+  }
+
+  /** Master key shift: transposes the instrumental (phase vocoder) and every vocal (PSOLA). */
+  setKeyShift(semitones: number): void {
+    const project = openProject(this.store.get());
+    if (!project) return;
+    this.mutateProject(project.id, (p) => ({ ...p, keyShift: semitones, updatedAt: Date.now() }), 'keyShift');
+    const updated = openProject(this.store.get())!;
+    for (const t of updated.tracks) {
+      if (t.kind === 'vocal') this.scheduleTrackRender(t.id, 250);
+      else if (t.assetId) this.scheduleInstrumentalShift(t.id, t.assetId, semitones);
+    }
+    this.rebuildMix();
+  }
+
+  updateSongFx(patch: { reverb?: Partial<SongFx['reverb']>; echo?: Partial<SongFx['echo']> }): void {
+    const project = openProject(this.store.get());
+    if (!project) return;
+    const cur = songFxOf(project);
+    const fx: SongFx = { reverb: { ...cur.reverb, ...patch.reverb }, echo: { ...cur.echo, ...patch.echo } };
+    this.mutateProject(project.id, (p) => ({ ...p, fx, updatedAt: Date.now() }), `songfx:${Object.keys(patch.reverb ?? patch.echo ?? {}).join(',')}`);
+    this.player.setSongFx(fx, project.bpm ?? null);
+  }
+
+  /** The instrumental at the song's key shift (the original until the shifted render is ready). */
+  private instrumentalBuffer(assetId: string, semitones: number): AudioBuffer | undefined {
+    if (semitones === 0) return this.assets.get(assetId);
+    return this.shiftedAssets.get(`${assetId}|${semitones}`) ?? this.assets.get(assetId);
+  }
+
+  private scheduleInstrumentalShift(trackId: string, assetId: string, semitones: number): void {
+    const key = `${assetId}|${semitones}`;
+    if (semitones === 0 || this.shiftedAssets.has(key)) return;
+    this.debounce(`shift:${assetId}`, 300, async () => {
+      const source = this.assets.get(assetId);
+      if (!source) return;
+      this.setTrackRender(trackId, { busy: true });
+      try {
+        const channels = Array.from({ length: source.numberOfChannels }, (_, c) => source.getChannelData(c));
+        const shifted = await this.renderer.shiftInstrumental(channels, semitones);
+        const buffer = this.player.context.createBuffer(shifted.length, shifted[0].length, source.sampleRate);
+        shifted.forEach((ch, c) => buffer.copyToChannel(ch as Float32Array<ArrayBuffer>, c));
+        this.shiftedAssets.set(key, buffer);
+        // Only apply if the song still wants this shift.
+        if (openProject(this.store.get())?.keyShift === semitones) this.rebuildMix();
+      } catch (err) {
+        this.store.set({ status: describeError(err) });
+      } finally {
+        this.setTrackRender(trackId, { busy: false });
+      }
+    });
+  }
+
   undo(): void {
     this.restore((current) => this.history.undo(current));
   }
@@ -638,7 +741,10 @@ export class Session {
         if (t.assetId) await this.loadAsset(t.assetId);
       }
       this.rebuildMix();
-      for (const t of restored.tracks) this.scheduleTrackRender(t.id, 0);
+      for (const t of restored.tracks) {
+        this.scheduleTrackRender(t.id, 0);
+        if (t.kind === 'instrumental' && t.assetId) this.scheduleInstrumentalShift(t.id, t.assetId, restored.keyShift);
+      }
     });
   }
 
@@ -693,10 +799,14 @@ export class Session {
     const state = this.store.get();
     const project = openProject(state);
     if (!project || this.isLive) return;
+    // As heard: shifted by each track's offset and transposed by its pitch + the song's key shift.
     const shifted = (t: Track) => {
       const take = t.takeId ? this.takes.get(t.takeId) : undefined;
-      return take ? take.frames.map((f) => ({ ...f, time: f.time + t.offset })) : [];
+      const st = trackSemitones(t, project);
+      return take ? take.frames.map((f) => ({ ...f, time: f.time + t.offset, midi: f.midi === null ? null : f.midi + st })) : [];
     };
+    this.roll.setTuning(this.rollTuning());
+    this.roll.setScaleHint(project.key ? transposeScale(project.key, project.keyShift) : null);
     const selected = project.tracks.find((t) => t.id === state.selectedTrackId);
     this.roll.setGhosts(project.tracks.filter((t) => t !== selected && t.kind === 'vocal').map((t) => ({ frames: shifted(t), hue: t.hue })));
     this.roll.showRecording(selected ? shifted(selected) : [], this.player.duration, this.player.currentTime);
@@ -849,7 +959,7 @@ export class Session {
    */
   settingsChanged(): void {
     const state = this.store.get();
-    this.roll.setTuning(tuneSettingsOf(state.tuning));
+    this.roll.setTuning(this.rollTuning());
     if (!state.projectId) {
       this.schedulePreviewRender();
       return;
@@ -932,7 +1042,7 @@ export class Session {
     const track = project?.tracks.find((t) => t.id === trackId && t.kind === 'vocal');
     const take = track?.takeId ? this.takes.get(track.takeId) : undefined;
     if (!project || !track || !take) return;
-    const settings = processSettingsOf(track.tuning, { ...track.cleanup, micFilter: false });
+    const settings = trackProcessSettings(track, project);
     const audio = this.trackAudio.get(trackId) ?? { processed: null, processedFor: null };
     this.trackAudio.set(trackId, audio);
     if (!settings) {
@@ -973,7 +1083,7 @@ export class Session {
     const specs: MixTrackSpec[] = [];
     for (const t of project.tracks) {
       if (t.kind === 'instrumental') {
-        const buffer = t.assetId ? this.assets.get(t.assetId) : undefined;
+        const buffer = t.assetId ? this.instrumentalBuffer(t.assetId, project.keyShift) : undefined;
         if (buffer) {
           specs.push({ id: t.id, samples: EMPTY, sampleRate: buffer.sampleRate, buffer, gain: effectiveGain(t, project.tracks), pan: t.pan, offset: t.offset });
         }
@@ -982,9 +1092,17 @@ export class Session {
       const take = t.takeId ? this.takes.get(t.takeId) : undefined;
       if (!take) continue;
       const audio = this.trackAudio.get(t.id);
-      const processedWanted = listen && processSettingsOf(t.tuning, { ...t.cleanup, micFilter: false }) !== null;
+      const processedWanted = listen && trackProcessSettings(t, project) !== null;
       const samples = processedWanted && audio?.processed ? audio.processed : take.samples;
-      specs.push({ id: t.id, samples, sampleRate: take.meta.sampleRate, gain: effectiveGain(t, project.tracks), pan: t.pan, offset: t.offset });
+      specs.push({
+        id: t.id,
+        samples,
+        sampleRate: take.meta.sampleRate,
+        gain: effectiveGain(t, project.tracks),
+        pan: t.pan,
+        offset: t.offset,
+        fx: trackFxOf(t),
+      });
     }
     return specs;
   }
@@ -993,6 +1111,7 @@ export class Session {
     const project = openProject(this.store.get());
     if (!project) return;
     this.player.setMaster(masterOf(project));
+    this.player.setSongFx(songFxOf(project), project.bpm ?? null);
     this.player.setTracks(this.mixSpecs(project));
     this.store.set({ duration: this.player.duration });
     this.refreshSongView();

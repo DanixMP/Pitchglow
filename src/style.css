@@ -1524,3 +1524,31 @@ body {
       '. . f f f f d d';
   }
 }
+
+/* --- effects (Phase 11) ----------------------------------------------------------------------- */
+
+.section-hint {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.fx-controls {
+  display: grid;
+  gap: 12px;
+}
+
+.fx-sliders {
+  display: grid;
+  gap: 8px;
+}
+
+.fx-sliders .slider-field {
+  grid-template-columns: 78px minmax(0, 1fr) 62px;
+}
+
+.key-shift-note {
+  align-self: end;
+  padding-bottom: 8px;
+  font-size: 12px;
+}

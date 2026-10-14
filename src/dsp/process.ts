@@ -1,13 +1,21 @@
-// Full offline processing chain for a recording: noise reduction -> auto-tune (+ harmony).
+// Full offline processing chain for a recording:
+// noise reduction -> gate -> auto-tune (+ harmony) and pitch shift -> de-esser.
 
 import type { PitchFrame } from '../audio/pitch-tracker';
 import type { TuneSettings } from './autotune';
 import { denoise, type DenoiseSettings } from './denoise';
+import { deess, gate } from './dynamics';
 import { renderWithHarmony } from './harmony';
 
 export interface ProcessSettings {
   denoise: DenoiseSettings | null;
   tune: TuneSettings | null;
+  /** Transpose (track pitch + song key shift), semitones. */
+  pitch?: number;
+  /** Noise gate amount 0..1. */
+  gate?: number;
+  /** De-esser amount 0..1. */
+  deess?: number;
 }
 
 export interface ProcessResult {
@@ -44,7 +52,9 @@ export function processRecording(
     audio = entry.output;
     if (!entry.applied) notes.push('Too short to learn the noise');
   }
+  if (settings.gate) audio = gate(audio, sampleRate, frames, settings.gate);
   // The pitch track (from the original) still describes the cleaned audio: same timing, same voice.
-  const output = settings.tune ? renderWithHarmony(audio, sampleRate, frames, settings.tune) : audio.slice();
+  let output = settings.tune || settings.pitch ? renderWithHarmony(audio, sampleRate, frames, settings.tune, settings.pitch ?? 0) : audio.slice();
+  if (settings.deess) output = deess(output, sampleRate, settings.deess);
   return { output, notes };
 }

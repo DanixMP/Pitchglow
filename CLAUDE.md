@@ -93,6 +93,22 @@ Look: a near-black background (#0f0f10-ish), muted dark lane fills whose hue cyc
   - `RecordingStore.open()` first opens at the current version. If it's below `DB_VERSION` or any required store is missing (an interrupted upgrade), it re-opens at version + 1, which runs the additive, idempotent upgrade.
   - Connections close on `versionchange`, so another tab can't block an upgrade.
   - (This healed a real dev DB that was stuck at "v2 without projects" after a hot reload landed between two edits.)
+- **Effects (Phase 11):**
+  - **Offline (worker, part of the track's processed render):** gate → auto-tune/harmony + **transpose** → de-esser (`src/dsp/dynamics.ts`, `process.ts`).
+    - The transpose is track `pitch` + song `keyShift`, added to the *corrected* curve, so harmonies move with it and auto-tune still snaps in the sung key before shifting.
+    - The gate opens on voiced frames or anything 10 dB over the noise floor, with 5 ms attack, 50 ms release and 80 ms hold.
+    - The de-esser splits at 5.5 kHz (zero-phase) and turns the high band down where it dominates.
+  - **Instrumental key shift:** phase vocoder (`src/dsp/vocoder.ts`: 2048/512 STFT, identity phase locking, then Catmull-Rom resample), run in the worker. It's cached per `assetId|semitones`; the original plays until the shifted version is ready. It's accurate to ~5 cents, at about 0.5× realtime per channel. A future 2× speed-up would pack L/R into one complex FFT.
+  - **Live (`src/audio/chain.ts`, same graph for playback and export):**
+    - Per track: high-pass → low-shelf 200 Hz / peak 2.5 kHz / high-shelf 8 kHz → compressor (amount 0..1 sets threshold −6…−30 dB and ratio 1…8) → fader → pan, with post-pan sends.
+    - Song buses (`FxBuses`): a reverb `ConvolverNode` using generated IRs (`src/dsp/reverb.ts`: Room/Plate/Hall/Cathedral, seeded noise with damping, cached), and an echo `DelayNode` with a low-pass feedback loop, tempo-synced (`echoSeconds`).
+    - Exports add a tail (`fxTail`) when any track sends.
+  - **Model:** `src/project/fx.ts` holds `TrackFx` (`track.fx`), `SongFx` (`project.fx`), the presets (Clean pop, Radio, Dreamy, Robot; Robot also sets 0 ms auto-tune) and `trackProcessSettings()` (`app/processing.ts`). A manual edit turns the preset into "Custom". All FX edits are undoable and coalesced per control.
+  - **The roll draws the song as heard:** tracks are transposed by pitch + key shift, and the scale/hint moves with them.
+  - **Verified in the app:**
+    - Dreamy adds a tail of RMS 0.013 after the soloed vocal, where the dry export is 0.
+    - Key shift +2 moved the beat's bass from 110.0 to 123.3 Hz (123.5 expected); undo brings back 110.0.
+    - Robot sets 0 ms. Gate and pitch re-render the track; EQ is live.
 - **Modes** (`AppState.mode`, driven by `Session`): `idle`, `listening` (live line, nothing saved), `recording` (live line + saving), `playback` (a saved recording is open and the roll follows `Player.currentTime`).
 
 ## Architecture
@@ -121,6 +137,9 @@ src/
     denoise.ts            STFT Wiener noise reduction (noise profile from quiet frames)
     process.ts            processing chain: denoise -> tune/harmony (+ denoise cache)
     analyze.ts            key (chroma + Krumhansl) and tempo (onset autocorrelation) of instrumentals
+    vocoder.ts            phase-vocoder pitch shift (identity phase locking) for instrumentals
+    reverb.ts             generated impulse responses (Room, Plate, Hall, Cathedral)
+    dynamics.ts           offline noise gate (pitch-tracker driven) and split-band de-esser
     resample.ts           low-pass + decimate to the analysis rate
   audio/
     context.ts            the shared AudioContext (mic + playback on one clock) + output latency
@@ -136,7 +155,9 @@ src/
     tuned-renderer.ts     main-thread client for the worker (per-channel latest-wins, returns notes)
     wav.ts                16-bit PCM WAV encoder (mono or interleaved multi-channel)
   project/
-    model.ts              Project/Track types + pure helpers (create, duplicate, update, effective gain, scheduling)
+    model.ts              Project/Track types + pure helpers (create, duplicate, update, effective gain, scheduling, transpose)
+    fx.ts                 TrackFx / SongFx, presets, echo timing
+    history.ts            undo/redo snapshots with drag coalescing
   storage/
     recording-store.ts    IndexedDB: takes + projects; self-healing open/upgrade
     pitch-track.ts        pack/unpack PitchFrame[] <-> typed-array columns
@@ -163,6 +184,7 @@ src/
       import-panel.ts     Import beat buttons, file drop overlay, key/BPM detection banner
       tuning-panel.ts     Auto-tune + Harmony sections
       cleanup-panel.ts    Noise reduction section
+      fx-panel.ts         Effects (track) and Song FX (key shift, reverb, echo) sections
 public/                   manifest, icon.svg, icons/*.png (generated)
 scripts/make-icons.mjs    procedural icon renderer (no deps)
 vite.config.ts            base './', LAN HTTPS mode, build-time service worker
@@ -338,13 +360,15 @@ The user asked for pitch and reverb effects, a remix-studio style mixer, importi
 - [x] **Limiter fix** (found by the check): `DynamicsCompressorNode` alone let +6 dB mixes clip (no look-ahead, make-up gain). Now export = master gain → **look-ahead `limitLinked`** (linked L/R, ceiling 0.98): +6 dB export peak 0.980 with 0 clipped samples (vs 5,719 off). Live = compressor (−3 dB, 1 ms) → soft-clip `WaveShaper` whose curve ends at 0.98, so live output can't exceed the ceiling either
 
 ### Phase 11 — Effects (pitch, reverb & more)
-- [ ] Phase vocoder (identity phase locking) for instrumental pitch shift; tests for pitch accuracy and level at ±1–4 semitones
-- [ ] Master key shift: transposes the instrumental (phase vocoder) and vocals (PSOLA), and moves the auto-tune scale with it
-- [ ] Per-track pitch offset (vocals via PSOLA, formant-preserving)
-- [ ] Reverb bus: generated IRs (Room, Plate, Hall, Cathedral), per-track send, decay/pre-delay/tone
-- [ ] Echo/delay: tempo-synced, feedback, filter, per-track send
-- [ ] Vocal chain per track: high-pass, noise gate (from silence detection), de-esser, compressor, 3-band EQ, with presets ("Clean pop", "Radio", "Dreamy", "Robot")
-- [ ] Effects work live in the mix and are rendered identically in export
+- [x] Phase vocoder (identity phase locking) for instrumental pitch shift; tests: ±1–4 st within ~5¢, level within 1.5 dB, chords
+- [x] Master key shift (±6): instrumental via phase vocoder (worker, cached), vocals via PSOLA; auto-tune scale and roll follow it; undoable
+- [x] Per-track pitch offset (±12, vocals via PSOLA, formant-preserving)
+- [x] Reverb bus: generated IRs (Room, Plate, Hall, Cathedral), per-track send, level/tone
+- [x] Echo/delay: tempo-synced (1/4, 1/8, dotted 1/8, 1/16), feedback, filtered repeats, per-track send
+- [x] Vocal chain per track: high-pass, noise gate, de-esser, compressor, 3-band EQ; presets Clean pop / Radio / Dreamy / Robot
+- [x] Effects work live in the mix and are rendered identically in export (shared chain + tails); browser-verified
+- [ ] Speed-up: pack stereo into one complex FFT in the phase vocoder (~2×); key shift of a 4-min beat currently takes ~1 min
+- [ ] Listening test on real material (user): preset voicings, reverb levels, gate/de-ess amounts
 
 ### Phase 12 — Polish
 - [ ] Clip/timeline view: waveforms per track, playhead, loop region

@@ -2,6 +2,8 @@
 
 import type { TuneSettings } from '../dsp/autotune';
 import type { ProcessSettings } from '../dsp/process';
+import { trackFxOf } from '../project/fx';
+import { trackSemitones, type Project, type Track } from '../project/model';
 import { scaleName } from '../dsp/scales';
 import type { CleanupPrefs, TuningPrefs } from '../storage/settings';
 import type { AppState } from './state';
@@ -18,6 +20,19 @@ export function processSettingsOf(tuning: TuningPrefs, cleanup: CleanupPrefs): P
   const tune = tuneSettingsOf(tuning);
   const denoise = cleanup.denoise ? { amountDb: cleanup.denoiseDb } : null;
   return tune || denoise ? { tune, denoise } : null;
+}
+
+/**
+ * What the worker renders for a song's vocal track: clean-up, auto-tune/harmony, transpose (track
+ * pitch + key shift) and the offline vocal-chain parts (gate, de-esser). Null = play the take as is.
+ */
+export function trackProcessSettings(track: Track, project: Project): ProcessSettings | null {
+  if (track.kind !== 'vocal') return null;
+  const base = processSettingsOf(track.tuning, { ...track.cleanup, micFilter: false });
+  const fx = trackFxOf(track);
+  const pitch = trackSemitones(track, project);
+  if (!base && !pitch && !fx.gate && !fx.deess) return null;
+  return { tune: base?.tune ?? null, denoise: base?.denoise ?? null, pitch, gate: fx.gate, deess: fx.deess };
 }
 
 /** Name for the processed version, used on the A/B switch, heading and export. */

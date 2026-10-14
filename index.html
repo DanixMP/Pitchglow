@@ -239,6 +239,53 @@
             </label>
           </div>
         </details>
+
+        <details id="fx-panel" class="section" open>
+          <summary class="section-head">Effects</summary>
+          <div class="section-body">
+            <p id="fx-hint" class="section-hint">Open a song and select a vocal track to add effects.</p>
+            <div id="fx-controls" class="fx-controls">
+              <div class="field-row">
+                <div class="field">
+                  <label class="field-label" for="fx-preset">Preset</label>
+                  <select id="fx-preset" class="select"></select>
+                </div>
+                <div class="field">
+                  <label class="field-label" for="fx-pitch">Pitch</label>
+                  <select id="fx-pitch" class="select"></select>
+                </div>
+              </div>
+              <div id="fx-sliders" class="fx-sliders"></div>
+            </div>
+          </div>
+        </details>
+
+        <details id="songfx-panel" class="section" open>
+          <summary class="section-head">Song FX</summary>
+          <div class="section-body">
+            <p id="songfx-hint" class="section-hint">Open a song for key shift, reverb and echo.</p>
+            <div id="songfx-controls" class="fx-controls">
+              <div class="field-row">
+                <div class="field">
+                  <label class="field-label" for="key-shift">Key shift</label>
+                  <select id="key-shift" class="select"></select>
+                </div>
+                <div class="field">
+                  <label class="field-label" for="reverb-preset">Reverb</label>
+                  <select id="reverb-preset" class="select"></select>
+                </div>
+              </div>
+              <div class="field-row">
+                <div class="field">
+                  <label class="field-label" for="echo-division">Echo</label>
+                  <select id="echo-division" class="select"></select>
+                </div>
+                <span id="key-shift-note" class="section-hint key-shift-note"></span>
+              </div>
+              <div id="songfx-sliders" class="fx-sliders"></div>
+            </div>
+          </div>
+        </details>
       </aside>
 
       <!-- Phone: bottom tab bar switching the panel under the roll -->

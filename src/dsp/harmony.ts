@@ -59,10 +59,15 @@ export function renderWithHarmony(
   samples: Float32Array,
   sampleRate: number,
   frames: readonly PitchFrame[],
-  settings: TuneSettings,
+  settings: TuneSettings | null,
+  semitones = 0,
 ): Float32Array {
-  const lead = correctTrack(frames, settings);
+  // Auto-tune in the sung key (or no tuning: the sung pitch), then transpose the whole curve, so
+  // harmonies derived from it move along and land in the shifted key.
+  let lead: Correction[] = settings ? correctTrack(frames, settings) : frames.map((f) => ({ target: null, corrected: f.midi }));
+  if (semitones) lead = lead.map((c) => (c.corrected === null ? c : { ...c, corrected: c.corrected + semitones }));
   const out = renderTuned(samples, sampleRate, frames, lead);
+  if (!settings) return out;
   const voices = settings.harmony?.voices ?? [];
   if (voices.length === 0) return out;
 

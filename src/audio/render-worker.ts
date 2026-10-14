@@ -2,6 +2,7 @@
 
 import { analyzeInstrumental, type AnalysisResult } from '../dsp/analyze';
 import { processRecording, type DenoiseCache, type ProcessSettings } from '../dsp/process';
+import { pitchShift } from '../dsp/vocoder';
 import { unpackFrames, type PackedPitchTrack } from '../storage/pitch-track';
 
 export interface RenderRequest {
@@ -23,9 +24,18 @@ export interface AnalyzeRequest {
   sampleRate: number;
 }
 
+/** Phase-vocoder pitch shift of an instrumental (each channel). */
+export interface ShiftRequest {
+  kind: 'shift';
+  id: number;
+  channels: Float32Array[];
+  semitones: number;
+}
+
 export interface RenderResponse {
   id: number;
   output?: Float32Array;
+  channels?: Float32Array[];
   notes?: string[];
   analysis?: AnalysisResult;
   error?: string;
@@ -49,7 +59,17 @@ const cache = {
   },
 };
 
-self.onmessage = (e: MessageEvent<RenderRequest | AnalyzeRequest>) => {
+self.onmessage = (e: MessageEvent<RenderRequest | AnalyzeRequest | ShiftRequest>) => {
+  if (e.data.kind === 'shift') {
+    const { id, channels, semitones } = e.data;
+    try {
+      const out = channels.map((ch) => pitchShift(ch, semitones));
+      (self as unknown as Worker).postMessage({ id, channels: out } satisfies RenderResponse, out.map((c) => c.buffer));
+    } catch (err) {
+      (self as unknown as Worker).postMessage({ id, error: err instanceof Error ? err.message : String(err) } satisfies RenderResponse);
+    }
+    return;
+  }
   if (e.data.kind === 'analyze') {
     const { id, samples, sampleRate } = e.data;
     try {

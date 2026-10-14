@@ -5,7 +5,8 @@
 //   length (song start to song end) so they line up in any DAW.
 
 import { limitLinked } from '../dsp/limiter';
-import { createTrackChain, LIMIT_CEILING, MasterChain, type MasterSettings } from './chain';
+import { DEFAULT_SONG_FX, type SongFx } from '../project/fx';
+import { createTrackChain, FxBuses, fxTail, LIMIT_CEILING, MasterChain, type MasterSettings } from './chain';
 import type { MixTrackSpec } from './mix-player';
 
 export interface Rendered {
@@ -19,11 +20,23 @@ export function songLength(specs: readonly MixTrackSpec[]): number {
   return specs.reduce((m, s) => Math.max(m, s.offset + lengthOf(s)), 0);
 }
 
+export interface SongFxContext {
+  fx: SongFx;
+  bpm: number | null;
+}
+
+/** Song length plus room for reverb/echo to ring out, if any track sends to them. */
+export function exportLength(specs: readonly MixTrackSpec[], song: SongFxContext = { fx: DEFAULT_SONG_FX, bpm: null }): number {
+  const anySend = specs.some((s) => s.gain > 0 && ((s.fx?.reverbSend ?? 0) > 0 || (s.fx?.echoSend ?? 0) > 0));
+  return songLength(specs) + fxTail(song.fx, song.bpm, anySend);
+}
+
 export async function renderMix(
   specs: readonly MixTrackSpec[],
   sampleRate: number,
   master: MasterSettings = { gain: 1, limiter: true },
-  duration = songLength(specs),
+  duration = exportLength(specs),
+  song: SongFxContext = { fx: DEFAULT_SONG_FX, bpm: null },
 ): Promise<Rendered> {
   const length = Math.max(1, Math.ceil(duration * sampleRate));
   const ctx = new OfflineAudioContext({ numberOfChannels: 2, length, sampleRate });
@@ -31,6 +44,7 @@ export async function renderMix(
   // cleaner than the live compressor + soft clipper.
   const chain = new MasterChain(ctx, { gain: master.gain, limiter: false });
   chain.output.connect(ctx.destination);
+  const buses = new FxBuses(ctx, chain.input, song.fx, song.bpm);
 
   for (const spec of specs) {
     if (spec.gain === 0 || lengthOf(spec) === 0) continue;
@@ -40,8 +54,8 @@ export async function renderMix(
       buffer.copyToChannel(spec.samples as Float32Array<ArrayBuffer>, 0);
     }
     const source = new AudioBufferSourceNode(ctx, { buffer });
-    const track = createTrackChain(ctx, spec.gain, spec.pan ?? 0, chain.input);
-    source.connect(track.gain);
+    const track = createTrackChain(ctx, spec.gain, spec.pan ?? 0, chain.input, spec.fx, buses);
+    source.connect(track.input);
     // A negative offset (take started before the song, e.g. a count-in) skips the take's head.
     source.start(Math.max(0, spec.offset), Math.max(0, -spec.offset));
   }
@@ -51,16 +65,17 @@ export async function renderMix(
   return { channels: master.limiter ? limitLinked(channels, sampleRate, { ceiling: LIMIT_CEILING }) : channels, sampleRate };
 }
 
-/** One stereo render per audible track, each as long as the song. */
+/** One stereo render per audible track (with its own reverb/echo), each as long as the mix. */
 export async function renderStems(
   specs: readonly MixTrackSpec[],
   sampleRate: number,
+  song: SongFxContext = { fx: DEFAULT_SONG_FX, bpm: null },
 ): Promise<{ id: string; rendered: Rendered }[]> {
-  const duration = songLength(specs);
+  const duration = exportLength(specs, song);
   const out: { id: string; rendered: Rendered }[] = [];
   for (const spec of specs) {
     if (spec.gain === 0) continue; // muted / not soloed: not part of the mix
-    out.push({ id: spec.id, rendered: await renderMix([spec], sampleRate, { gain: 1, limiter: false }, duration) });
+    out.push({ id: spec.id, rendered: await renderMix([spec], sampleRate, { gain: 1, limiter: false }, duration, song) });
   }
   return out;
 }

@@ -6,7 +6,7 @@ import type { PitchFrame } from './pitch-tracker';
 import type { AnalysisResult } from '../dsp/analyze';
 import type { ProcessSettings } from '../dsp/process';
 import { packFrames } from '../storage/pitch-track';
-import type { AnalyzeRequest, RenderRequest, RenderResponse } from './render-worker';
+import type { AnalyzeRequest, RenderRequest, RenderResponse, ShiftRequest } from './render-worker';
 import RenderWorker from './render-worker.ts?worker';
 
 export interface RenderOutput {
@@ -22,6 +22,19 @@ export class TunedRenderer {
     { channel: string; resolve: (out: RenderOutput | null) => void; reject: (err: Error) => void }
   >();
   private analyses = new Map<number, { resolve: (r: AnalysisResult) => void; reject: (err: Error) => void }>();
+  private shifts = new Map<number, { resolve: (c: Float32Array[]) => void; reject: (err: Error) => void }>();
+
+  /** Pitch-shifts an instrumental's channels (copied; the originals stay usable). */
+  shiftInstrumental(channels: readonly Float32Array[], semitones: number): Promise<Float32Array[]> {
+    const worker = this.ensureWorker();
+    const id = this.nextId++;
+    return new Promise((resolve, reject) => {
+      this.shifts.set(id, { resolve, reject });
+      const copies = channels.map((c) => c.slice());
+      const req: ShiftRequest = { kind: 'shift', id, channels: copies, semitones };
+      worker.postMessage(req, copies.map((c) => c.buffer));
+    });
+  }
 
   /** Detects key and tempo of an instrumental (mono samples are transferred, not copied). */
   analyze(samples: Float32Array, sampleRate: number): Promise<AnalysisResult> {
@@ -78,6 +91,13 @@ export class TunedRenderer {
     if (this.worker) return this.worker;
     const worker = new RenderWorker();
     worker.onmessage = (e: MessageEvent<RenderResponse>) => {
+      const s = this.shifts.get(e.data.id);
+      if (s) {
+        this.shifts.delete(e.data.id);
+        if (e.data.channels) s.resolve(e.data.channels);
+        else s.reject(new Error(e.data.error ?? 'Key shift failed'));
+        return;
+      }
       const a = this.analyses.get(e.data.id);
       if (a) {
         this.analyses.delete(e.data.id);

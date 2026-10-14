@@ -1,7 +1,10 @@
 import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
+import { echoSeconds, FX_PRESETS, withPreset } from '../src/project/fx';
 import {
   addTrack,
+  trackSemitones,
+  transposeScale,
   masterOf,
   panLabel,
   snapOffset,
@@ -88,6 +91,31 @@ describe('project model', () => {
     expect(scheduleTrack(0, 2, 3)).toEqual({ delay: 2, from: 0 }); // starts later
     expect(scheduleTrack(3, 2, 3)).toEqual({ delay: 0, from: 1 }); // mid-track
     expect(scheduleTrack(6, 2, 3)).toBeNull(); // already over
+  });
+});
+
+describe('fx helpers', () => {
+  it('computes tempo-synced echo times', () => {
+    expect(echoSeconds('1/4', 120)).toBe(0.5);
+    expect(echoSeconds('1/8d', 120)).toBe(0.375);
+    expect(echoSeconds('1/16', null)).toBe(0.15); // 100 BPM default
+    expect(echoSeconds('1/4', 20)).toBe(2); // capped
+  });
+
+  it('applies presets as independent copies', () => {
+    const a = withPreset('dreamy');
+    a.eq.high = 99;
+    expect(withPreset('dreamy').eq.high).toBe(4);
+    expect(a.preset).toBe('dreamy');
+    expect(FX_PRESETS.robot.robot).toBe(true);
+  });
+
+  it('transposes scales and sums track pitch with the key shift', () => {
+    expect(transposeScale({ root: 9, type: 'minor' }, 3)).toEqual({ root: 0, type: 'minor' });
+    expect(transposeScale({ root: 1, type: 'major' }, -2)).toEqual({ root: 11, type: 'major' });
+    const p = { ...createProject('S', 1, 'x'), keyShift: 2 };
+    const vocal = { ...createVocalTrack(take('a'), tuning, cleanup, []), pitch: 12 };
+    expect(trackSemitones(vocal, p)).toBe(14);
   });
 });
 

@@ -1,7 +1,7 @@
 // Playback transport: play/pause, seek, time, Original/processed A/B switch, processed export.
 
 import { listenModeText } from '../../app/explain';
-import { processedLabelOf, processSettingsOf, wantsProcessed } from '../../app/processing';
+import { processedLabelOf, processSettingsOf, trackProcessSettings, wantsProcessed } from '../../app/processing';
 import type { Session } from '../../app/session';
 import { openProject, type AppState, type AppStore } from '../../app/state';
 import type { Captions } from '../captions';
@@ -78,7 +78,7 @@ export function mountTransport(store: AppStore, session: Session, roll: PianoRol
   function viewOf(s: AppState) {
     const song = openProject(s);
     if (song) {
-      const available = song.tracks.some((t) => processSettingsOf(t.tuning, { ...t.cleanup, micFilter: false }) !== null);
+      const available = song.tracks.some((t) => trackProcessSettings(t, song) !== null);
       const busy = song.tracks.some((t) => s.trackRender[t.id]?.busy);
       const notes = [...new Set(song.tracks.flatMap((t) => s.trackRender[t.id]?.notes ?? []))];
       return {

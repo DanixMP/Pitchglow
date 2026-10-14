@@ -9,6 +9,7 @@ import { saveCleanup, saveInput, saveTuning } from './storage/settings';
 import { Captions } from './ui/captions';
 import { $ } from './ui/dom';
 import { mountCleanupPanel } from './ui/panels/cleanup-panel';
+import { mountFxPanel } from './ui/panels/fx-panel';
 import { mountHeader } from './ui/panels/header';
 import { mountImportPanel } from './ui/panels/import-panel';
 import { mountInputPanel } from './ui/panels/input-panel';
@@ -37,6 +38,7 @@ const mixer = mountTracksPanel(store, session);
 mountImportPanel(store, session, captions);
 mountTuningPanel(store, captions);
 mountCleanupPanel(store, captions);
+mountFxPanel(store, session);
 const transport = mountTransport(store, session, roll, captions);
 const readout = mountReadout(store, roll, session.player);
 

@@ -1,7 +1,14 @@
 // The mix signal chain, built the same way for live playback (MixPlayer) and export (mixdown), so
 // what you hear is what you export:
-//   track:  source -> Gain (fader/mute/solo) -> StereoPanner -> master
+//   track:  source -> high-pass -> EQ (low shelf, mid peak, high shelf) -> compressor
+//           -> Gain (fader/mute/solo) -> StereoPanner -> master
+//                                                     \-> reverb send, echo send (post-fader)
+//   buses:  reverb send -> Convolver (generated IR) -> return -> master
+//           echo send -> Delay <-> (low-pass, feedback) -> return -> master
 //   master: Gain (master fader) -> [limiter] -> output
+
+import { generateImpulse, REVERB_PRESETS } from '../dsp/reverb';
+import { DEFAULT_TRACK_FX, echoSeconds, type SongFx, type TrackFx } from '../project/fx';
 
 export interface MasterSettings {
   /** Linear master gain. */
@@ -11,15 +18,157 @@ export interface MasterSettings {
 }
 
 export interface TrackChain {
+  /** Where the track's source connects. */
+  input: AudioNode;
+  highpass: BiquadFilterNode;
+  low: BiquadFilterNode;
+  mid: BiquadFilterNode;
+  high: BiquadFilterNode;
+  comp: DynamicsCompressorNode;
   gain: GainNode;
   pan: StereoPannerNode;
+  reverbSend: GainNode;
+  echoSend: GainNode;
 }
 
-export function createTrackChain(ctx: BaseAudioContext, gain: number, pan: number, destination: AudioNode): TrackChain {
-  const g = new GainNode(ctx, { gain });
-  const p = new StereoPannerNode(ctx, { pan: clampPan(pan) });
-  g.connect(p).connect(destination);
-  return { gain: g, pan: p };
+/** The song's effect buses a track can send to. */
+export interface BusInputs {
+  reverbIn: AudioNode;
+  echoIn: AudioNode;
+}
+
+export function createTrackChain(
+  ctx: BaseAudioContext,
+  gain: number,
+  pan: number,
+  destination: AudioNode,
+  fx: TrackFx = DEFAULT_TRACK_FX,
+  buses?: BusInputs,
+): TrackChain {
+  const chain: TrackChain = {
+    input: null as unknown as AudioNode,
+    highpass: new BiquadFilterNode(ctx, { type: 'highpass', Q: 0.707 }),
+    low: new BiquadFilterNode(ctx, { type: 'lowshelf', frequency: 200 }),
+    mid: new BiquadFilterNode(ctx, { type: 'peaking', frequency: 2500, Q: 1 }),
+    high: new BiquadFilterNode(ctx, { type: 'highshelf', frequency: 8000 }),
+    comp: new DynamicsCompressorNode(ctx, { knee: 6, attack: 0.005, release: 0.15 }),
+    gain: new GainNode(ctx, { gain }),
+    pan: new StereoPannerNode(ctx, { pan: clampPan(pan) }),
+    reverbSend: new GainNode(ctx, { gain: 0 }),
+    echoSend: new GainNode(ctx, { gain: 0 }),
+  };
+  chain.input = chain.highpass;
+  chain.highpass.connect(chain.low).connect(chain.mid).connect(chain.high).connect(chain.comp).connect(chain.gain).connect(chain.pan).connect(destination);
+  if (buses) {
+    chain.pan.connect(chain.reverbSend).connect(buses.reverbIn);
+    chain.pan.connect(chain.echoSend).connect(buses.echoIn);
+  }
+  applyTrackFx(chain, fx);
+  return chain;
+}
+
+/** Sets the live parts of a track's FX (smoothly when `ctx` is given, i.e. while playing). */
+export function applyTrackFx(chain: TrackChain, fx: TrackFx = DEFAULT_TRACK_FX, ctx?: BaseAudioContext): void {
+  const set = (param: AudioParam, value: number) => {
+    if (ctx) param.setTargetAtTime(value, ctx.currentTime, 0.02);
+    else param.value = value;
+  };
+  set(chain.highpass.frequency, fx.highpassHz > 0 ? fx.highpassHz : 10); // 10 Hz = effectively off
+  set(chain.low.gain, fx.eq.low);
+  set(chain.mid.gain, fx.eq.mid);
+  set(chain.high.gain, fx.eq.high);
+  // Compressor amount 0..1: off (ratio 1) … threshold −30 dB, ratio 8.
+  set(chain.comp.threshold, -6 - 24 * fx.compressor);
+  set(chain.comp.ratio, 1 + 7 * fx.compressor);
+  set(chain.reverbSend.gain, fx.reverbSend);
+  set(chain.echoSend.gain, fx.echoSend);
+}
+
+export function disconnectChain(chain: TrackChain): void {
+  for (const node of [chain.highpass, chain.low, chain.mid, chain.high, chain.comp, chain.gain, chain.pan, chain.reverbSend, chain.echoSend]) {
+    node.disconnect();
+  }
+}
+
+/** Impulse responses are deterministic, so they're generated once per preset/tone/rate. */
+const irCache = new Map<string, [Float32Array, Float32Array]>();
+
+function impulseBuffer(ctx: BaseAudioContext, fx: SongFx['reverb']): AudioBuffer {
+  const key = `${fx.preset}|${fx.tone}|${ctx.sampleRate}`;
+  let ir = irCache.get(key);
+  if (!ir) {
+    ir = generateImpulse(REVERB_PRESETS[fx.preset].shape, ctx.sampleRate, fx.tone);
+    irCache.set(key, ir);
+  }
+  const buffer = ctx.createBuffer(2, ir[0].length, ctx.sampleRate);
+  buffer.copyToChannel(ir[0] as Float32Array<ArrayBuffer>, 0);
+  buffer.copyToChannel(ir[1] as Float32Array<ArrayBuffer>, 1);
+  return buffer;
+}
+
+/** The song's shared reverb and echo buses. */
+export class FxBuses implements BusInputs {
+  readonly reverbIn: GainNode;
+  readonly echoIn: GainNode;
+  private readonly convolver: ConvolverNode;
+  private readonly reverbReturn: GainNode;
+  private readonly delay: DelayNode;
+  private readonly feedback: GainNode;
+  private readonly tone: BiquadFilterNode;
+  private readonly echoReturn: GainNode;
+  private irKey = '';
+
+  constructor(
+    private readonly ctx: BaseAudioContext,
+    destination: AudioNode,
+    fx: SongFx,
+    bpm: number | null | undefined,
+  ) {
+    this.reverbIn = new GainNode(ctx);
+    this.convolver = new ConvolverNode(ctx, { disableNormalization: true });
+    this.reverbReturn = new GainNode(ctx);
+    this.reverbIn.connect(this.convolver).connect(this.reverbReturn).connect(destination);
+
+    this.echoIn = new GainNode(ctx);
+    this.delay = new DelayNode(ctx, { maxDelayTime: 2 });
+    this.tone = new BiquadFilterNode(ctx, { type: 'lowpass', Q: 0.5 });
+    this.feedback = new GainNode(ctx);
+    this.echoReturn = new GainNode(ctx);
+    this.echoIn.connect(this.delay).connect(this.tone).connect(this.echoReturn).connect(destination);
+    this.tone.connect(this.feedback).connect(this.delay); // feedback loop (allowed: it contains a delay)
+    this.apply(fx, bpm);
+  }
+
+  apply(fx: SongFx, bpm: number | null | undefined, live = false): void {
+    const set = (param: AudioParam, value: number) => {
+      if (live) param.setTargetAtTime(value, this.ctx.currentTime, 0.03);
+      else param.value = value;
+    };
+    const key = `${fx.reverb.preset}|${fx.reverb.tone}`;
+    if (key !== this.irKey) {
+      this.convolver.buffer = impulseBuffer(this.ctx, fx.reverb);
+      this.irKey = key;
+    }
+    set(this.reverbReturn.gain, fx.reverb.level);
+    set(this.delay.delayTime, echoSeconds(fx.echo.division, bpm));
+    set(this.tone.frequency, 1500 + fx.echo.tone * 8000);
+    set(this.feedback.gain, Math.min(0.85, fx.echo.feedback));
+    set(this.echoReturn.gain, fx.echo.level);
+  }
+}
+
+/** How long reverb/echo keep sounding after the music stops (for export tails), seconds. */
+export function fxTail(fx: SongFx, bpm: number | null | undefined, anySend: boolean): number {
+  if (!anySend) return 0;
+  const reverb = REVERB_PRESETS[fx.reverb.preset].shape.decay;
+  // Echo falls 60 dB after log(0.001)/log(feedback) repeats.
+  const fb = Math.max(0.05, Math.min(0.85, fx.echo.feedback));
+  const echo = echoSeconds(fx.echo.division, bpm) * Math.min(20, Math.log(0.001) / Math.log(fb));
+  return Math.min(8, Math.max(reverb, echo));
+}
+
+export function clampPan(pan: number): number {
+  return Math.max(-1, Math.min(1, pan));
 }
 
 /** Ceiling of the live limiter's soft clipper (and the export limiter). */
@@ -73,6 +222,3 @@ export class MasterChain {
   }
 }
 
-export function clampPan(pan: number): number {
-  return Math.max(-1, Math.min(1, pan));
-}

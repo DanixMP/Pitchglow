@@ -3,8 +3,9 @@
 // live, swapping a track's audio keeps the position and play state. Analysers tap every track and the
 // master (L/R) for the meters. A single clock (with output-latency compensation) drives the visuals.
 
+import { DEFAULT_SONG_FX, type SongFx, type TrackFx } from '../project/fx';
 import { scheduleTrack } from '../project/model';
-import { clampPan, createTrackChain, MasterChain, type MasterSettings, type TrackChain } from './chain';
+import { applyTrackFx, clampPan, createTrackChain, disconnectChain, FxBuses, MasterChain, type MasterSettings, type TrackChain } from './chain';
 import { sharedContext } from './context';
 
 export interface Level {
@@ -24,6 +25,8 @@ export interface MixTrackSpec {
   gain: number;
   /** −1 (left) … 1 (right); default centre. */
   pan?: number;
+  /** Vocal chain + sends (live parts). */
+  fx?: TrackFx;
   /** Start position in the song, seconds. */
   offset: number;
 }
@@ -47,6 +50,8 @@ export class MixPlayer {
   private master: MasterChain | null = null;
   private masterMeters: AnalyserNode[] = [];
   private masterSettings: MasterSettings = { gain: 1, limiter: true };
+  private buses: FxBuses | null = null;
+  private songFx: { fx: SongFx; bpm: number | null } = { fx: DEFAULT_SONG_FX, bpm: null };
   private lanes = new Map<string, Lane>();
   private scratch = new Float32Array(METER_FFT);
   private startedAt = 0;
@@ -114,12 +119,13 @@ export class MixPlayer {
       let chain = prev?.chain;
       let meter = prev?.meter;
       if (!chain || !meter) {
-        chain = createTrackChain(ctx, spec.gain, spec.pan ?? 0, this.master!.input);
+        chain = createTrackChain(ctx, spec.gain, spec.pan ?? 0, this.master!.input, spec.fx, this.buses!);
         meter = new AnalyserNode(ctx, { fftSize: METER_FFT });
         chain.pan.connect(meter);
       }
       chain.gain.gain.value = spec.gain;
       chain.pan.pan.value = clampPan(spec.pan ?? 0);
+      applyTrackFx(chain, spec.fx);
       next.set(spec.id, { spec, buffer, chain, meter, source: null });
     }
     for (const [id, lane] of this.lanes) if (!next.has(id)) disconnectLane(lane);
@@ -150,6 +156,20 @@ export class MixPlayer {
     if (!lane || !this.ctx) return;
     lane.spec = { ...lane.spec, pan };
     lane.chain.pan.pan.setTargetAtTime(clampPan(pan), this.ctx.currentTime, 0.015);
+  }
+
+  /** Live change of a track's inserts/sends (EQ, compressor, high-pass, reverb/echo sends). */
+  setTrackFx(id: string, fx: TrackFx): void {
+    const lane = this.lanes.get(id);
+    if (!lane || !this.ctx) return;
+    lane.spec = { ...lane.spec, fx };
+    applyTrackFx(lane.chain, fx, this.ctx);
+  }
+
+  /** Live change of the song's reverb/echo buses. */
+  setSongFx(fx: SongFx, bpm: number | null): void {
+    this.songFx = { fx, bpm };
+    this.buses?.apply(fx, bpm, true);
   }
 
   /** Live master fader / limiter. */
@@ -203,7 +223,7 @@ export class MixPlayer {
       const s = scheduleTrack(this.offset, lane.spec.offset, lane.buffer.duration);
       if (!s) continue;
       const source = new AudioBufferSourceNode(this.ctx, { buffer: lane.buffer });
-      source.connect(lane.chain.gain);
+      source.connect(lane.chain.input);
       source.start(now + s.delay, s.from);
       lane.source = source;
     }
@@ -235,6 +255,7 @@ export class MixPlayer {
       this.ctx = ctx;
       this.master = new MasterChain(ctx, this.masterSettings);
       this.master.output.connect(ctx.destination);
+      this.buses = new FxBuses(ctx, this.master.input, this.songFx.fx, this.songFx.bpm);
       const split = new ChannelSplitterNode(ctx, { numberOfOutputs: 2 });
       this.master.output.connect(split);
       this.masterMeters = [0, 1].map((ch) => {
@@ -283,8 +304,7 @@ export class MixPlayer {
 }
 
 function disconnectLane(lane: Lane): void {
-  lane.chain.gain.disconnect();
-  lane.chain.pan.disconnect();
+  disconnectChain(lane.chain);
   lane.meter.disconnect();
 }
 
