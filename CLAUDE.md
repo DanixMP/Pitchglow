@@ -195,7 +195,81 @@ npm run icons      # regenerate public/icons/*.png
 - [x] Spectral noise reduction: noise profile from quiet frames, STFT Wiener gain, Amount slider, cached in the worker, chained before auto-tune
 - [x] A/B + export generalized: Original vs Cleaned / Tuned / Clean + tuned
 - [ ] Listening test of noise reduction on real mic recordings (user); tune the frame size/α/over-subtraction if voices sound watery
-- [ ] Noise gate / expander using the pitch tracker's silence detection
-- [ ] High-pass (rumble) + de-esser + gentle compressor
-- [ ] Reverb / echo presets (offline convolution)
+- [ ] Noise gate, high-pass, de-esser, compressor, reverb/echo → moved to **Phase 11 (Effects)** so they live in the studio's per-track FX chain
 - [ ] Later: real-time auto-tune monitoring (needs low-latency streaming PSOLA)
+
+---
+
+## Roadmap v2 — "Studio" (planned 2026-10-14)
+
+The user asked for pitch and reverb effects, a remix-studio style mixer, importing instrumentals to sing over, and a better UX: a three-column layout with the piano roll in the middle.
+
+### Decisions (from the user)
+- **Song model:** a *project* holds **1 instrumental + any number of vocal tracks** (lead, doubles, harmonies, ad-libs). Each track has its own volume, pan, mute/solo, auto-tune, clean-up and FX. Today's recordings become **takes** that get placed on tracks.
+- **Pitch:** both a **master key shift** (±12 semitones; moves the instrumental and the vocals, and the auto-tune scale follows it) and a **per-track pitch offset** (e.g. an octave-up double).
+- **Layout:** at ≥1100 px, **three columns**: Takes/Projects | piano roll + transport + mixer | Controls/Inspector. On a phone, the piano roll and transport stay on top and a **bottom tab bar** (Takes · Mixer · FX) switches the panel below. A tablet gets two columns, with Takes as a slide-in drawer.
+- **Order:** layout first, so every new feature lands in its final place.
+
+### Technical decisions
+- **Offline per-track processing, live mixing.**
+  - Heavy, per-take work runs in the worker and produces one processed buffer per track: denoise → auto-tune/harmony → pitch offset.
+  - Mixing is a live Web Audio graph, so faders, pan, mute/solo and FX sends react instantly: source → Gain → StereoPanner → (sends) → master Gain → limiter → destination.
+  - **Export** renders the same graph in an `OfflineAudioContext` and writes a stereo WAV.
+- **Instrumental storage:** keep the **original compressed file** (mp3/m4a/wav Blob) in IndexedDB and decode with `decodeAudioData` when a project opens. Storing decoded stereo Float32 would be about 90 MB for 4 minutes.
+- **Pitch-shifting instrumentals:** PSOLA is only for a single voice. Polyphonic material needs a **phase vocoder with identity phase locking** (time-stretch, then resample), written by us. Avoid GPL libraries (Rubber Band); SoundTouch is LGPL. Expect good quality up to about ±4 semitones.
+- **Key and tempo detection on import:** chroma features plus Krumhansl–Schmuckler key profiles → "Detected A minor, use it for auto-tune?". BPM from autocorrelation of the onset envelope, used for tempo-synced echo and a grid.
+- **Recording over the beat:**
+  - Play the project, minus the track being recorded, while recording.
+  - Align the take using the measured round-trip latency (`outputLatency` + `baseLatency` + the track's `getSettings().latency`), plus a manual **nudge** (±200 ms) and an optional click-loopback calibration.
+  - Recommend wired headphones; Bluetooth adds 150–300 ms of variable latency.
+- **Reverb:** a shared **reverb bus**, i.e. a `ConvolverNode` fed by per-track sends. Impulse responses are generated algorithmically (decaying filtered noise, pre-delay, damping): Room, Plate, Hall, Cathedral. Echo is a `DelayNode` with feedback and a filter, tempo-synced (1/4, 1/8, dotted 1/8).
+- **Code structure:** `main.ts` (~900 lines) gets split before the studio grows. A small typed **store** (state + subscribe) holds project, track, selection and transport, and panels become modules that render from it: `ui/layout`, `ui/takes-panel`, `ui/inspector`, `ui/mixer`, `ui/transport`.
+- **IndexedDB v2 migration:** new stores `projects` (with embedded track list) and `assets` (imported files). The existing `meta`/`data` stores stay as the takes library, so no data is lost.
+
+### Phase 7 — Studio layout (3 columns + mobile tabs)
+- [ ] Split `main.ts` into a store + panel modules, with no behavior change; all tests still pass
+- [ ] CSS grid shell: Takes | Center (header, roll, transport) | Inspector, at the ≥1100 / 760–1100 / <760 px breakpoints
+- [ ] Left: takes library (search, rename, delete, export) in a scrolling column
+- [ ] Right: inspector with collapsible sections (Auto-tune, Harmony, Clean-up, later FX); controls sized for a column
+- [ ] Center: compact header (project/take name + title card), roll fills the available height, transport bar under it
+- [ ] Phone: sticky roll + transport, bottom tab bar (Takes · Mixer · FX), safe-area aware
+- [ ] Keyboard and a11y: landmarks, focus order, shortcuts unchanged; visual check at 3 widths
+
+### Phase 8 — Projects & tracks
+- [ ] IndexedDB v2: `projects`, `assets`; migration keeps all existing takes
+- [ ] Project list (new/rename/delete/duplicate) in the left column; open a project → its tracks in the center
+- [ ] Track model: kind (vocal/instrumental), source (take/asset), name, gain dB, pan, mute, solo, offset s, pitch offset, tuning, clean-up, FX
+- [ ] Add a take to a project as a vocal track (button + drag from the takes list)
+- [ ] Inspector edits the **selected track** (tuning, clean-up, FX are now per track)
+- [ ] Piano roll shows the selected vocal track's pitch line; other vocal tracks faded
+
+### Phase 9 — Instrumental import & singing over the beat
+- [ ] Import instrumental: file picker + drag & drop (mp3/wav/m4a/ogg/flac), size/length limits, store the original blob
+- [ ] Decode + resample to the project rate; stereo support throughout playback
+- [ ] Key + BPM detection; offer to set the project key (auto-tune scale) and tempo
+- [ ] Record a new vocal track while the project plays (headphones prompt, count-in option)
+- [ ] Latency compensation (measured + manual nudge + optional loopback calibration); unit-test the alignment math
+- [ ] Piano roll highlights the project key's scale lanes while recording over the beat
+
+### Phase 10 — Mixer (remix studio)
+- [ ] Live Web Audio mix graph per project; play/pause/seek across all tracks in sync
+- [ ] Channel strips: fader (dB), pan, mute, solo, peak/RMS meter, name, color
+- [ ] Master strip: volume, limiter, master key shift (Phase 11 pitch engine)
+- [ ] Track offset: drag a clip to align it, with a waveform overview under the roll
+- [ ] Export mixdown (OfflineAudioContext → stereo WAV); also export stems
+- [ ] Undo/redo for mixer and track edits
+
+### Phase 11 — Effects (pitch, reverb & more)
+- [ ] Phase vocoder (identity phase locking) for instrumental pitch shift; tests for pitch accuracy and level at ±1–4 semitones
+- [ ] Master key shift: transposes the instrumental (phase vocoder) and vocals (PSOLA), and moves the auto-tune scale with it
+- [ ] Per-track pitch offset (vocals via PSOLA, formant-preserving)
+- [ ] Reverb bus: generated IRs (Room, Plate, Hall, Cathedral), per-track send, decay/pre-delay/tone
+- [ ] Echo/delay: tempo-synced, feedback, filter, per-track send
+- [ ] Vocal chain per track: high-pass, noise gate (from silence detection), de-esser, compressor, 3-band EQ, with presets ("Clean pop", "Radio", "Dreamy", "Robot")
+- [ ] Effects work live in the mix and are rendered identically in export
+
+### Phase 12 — Polish
+- [ ] Clip/timeline view: waveforms per track, playhead, loop region
+- [ ] Project export/import (a single file with takes + instrumental)
+- [ ] MP3 export (lamejs; check the license) alongside WAV
+- [ ] Onboarding captions for the studio features (same caption system)
