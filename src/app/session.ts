@@ -15,11 +15,15 @@ import { alignTake, countInTimes, detectClickLatency } from '../audio/sync';
 import { downmix } from '../dsp/analyze';
 import type { Scale } from '../dsp/scales';
 import { MixPlayer, type MixTrackSpec } from '../audio/mix-player';
-import { renderMix } from '../audio/mixdown';
+import { renderMix, renderStems } from '../audio/mixdown';
+import { createZip } from '../audio/zip';
+import { peaksOf } from '../audio/peaks';
+import type { TimelineClip } from '../ui/timeline';
+import { History } from '../project/history';
 import { PitchTracker, type PitchFrame } from '../audio/pitch-tracker';
 import { SampleBuffer } from '../audio/sample-buffer';
 import { TunedRenderer } from '../audio/tuned-renderer';
-import { wavBlob, wavBlobChannels } from '../audio/wav';
+import { encodeWavChannels, wavBlob, wavBlobChannels } from '../audio/wav';
 import {
   addTrack,
   applyKey,
@@ -28,7 +32,7 @@ import {
   createVocalTrack,
   duplicateProject as duplicateProjectModel,
   effectiveGain,
-  instrumentalOf,
+  masterOf,
   newId,
   nextProjectName,
   removeTrack as removeTrackModel,
@@ -94,6 +98,8 @@ export class Session {
   /** Global settings, stashed while a song's track settings occupy the inspector. */
   private stash: { tuning: TuningPrefs; cleanup: CleanupPrefs } | null = null;
   private saveTimers = new Map<string, number>();
+  /** Undo/redo of the open song (snapshots). */
+  private readonly history = new History<Project>();
 
   /** Start playback once the processed render arrives (Play pressed on a just-opened take). */
   private playWhenProcessed = false;
@@ -117,6 +123,10 @@ export class Session {
     const db = await this.getDb();
     const [recordings, projects] = await Promise.all([db.list(), db.listProjects()]);
     this.store.set({ recordings, projects });
+    // Replaced/removed instrumentals are kept until the next start (so undo can bring them back),
+    // then deleted here once no song references them.
+    const used = new Set(projects.flatMap((p) => p.tracks.map((t) => t.assetId).filter(Boolean)));
+    for (const id of await db.listAssetIds()) if (!used.has(id)) await db.deleteAsset(id);
   }
 
   // --- live input -----------------------------------------------------------------------------
@@ -374,13 +384,57 @@ export class Session {
         const specs = this.mixSpecs(project);
         if (!specs.length) return;
         const rate = Math.max(...specs.map((s) => s.sampleRate));
-        const mix = await renderMix(specs, rate);
+        const mix = await renderMix(specs, rate, masterOf(project));
         downloadBlob(wavBlobChannels(mix.channels, mix.sampleRate), `${project.name} (mix)`);
       });
     } else if (this.preview?.processed) {
       const label = processedLabelOf(state.tuning, state.cleanup).toLowerCase();
       downloadBlob(wavBlob(this.preview.processed, this.preview.meta.sampleRate), `${this.preview.meta.name} (${label})`);
     }
+  }
+
+  /** Clips for the timeline: every track of the open song with its waveform, in track order. */
+  timelineClips(): TimelineClip[] {
+    const state = this.store.get();
+    const project = openProject(state);
+    if (!project) return [];
+    const clips: TimelineClip[] = [];
+    for (const t of project.tracks) {
+      const take = t.takeId ? this.takes.get(t.takeId) : undefined;
+      const buffer = t.assetId ? this.assets.get(t.assetId) : undefined;
+      if (!take && !buffer) continue;
+      const audio = buffer ? { samples: EMPTY, sampleRate: buffer.sampleRate, buffer } : { samples: take!.samples, sampleRate: take!.meta.sampleRate };
+      clips.push({
+        id: t.id,
+        color: t.hue < 0 ? '#8a8a90' : `hsl(${t.hue} 70% 62%)`,
+        peaks: peaksOf(audio),
+        offset: t.offset,
+        duration: buffer ? buffer.duration : take!.meta.duration,
+        muted: effectiveGain(t, project.tracks) === 0,
+        selected: t.id === state.selectedTrackId,
+      });
+    }
+    return clips;
+  }
+
+  /** Each audible track as its own stereo WAV (post fader + pan, same length), zipped. */
+  exportStems(): void {
+    const project = openProject(this.store.get());
+    if (!project) return;
+    this.run(async () => {
+      const specs = this.mixSpecs(project);
+      if (!specs.length) return;
+      const rate = Math.max(...specs.map((s) => s.sampleRate));
+      const stems = await renderStems(specs, rate);
+      const width = String(project.tracks.length).length;
+      const entries = stems.map(({ id, rendered }) => {
+        const i = project.tracks.findIndex((t) => t.id === id);
+        const name = `${String(i + 1).padStart(Math.max(2, width), '0')} ${safeName(project.tracks[i]?.name ?? 'track')}.wav`;
+        return { name, data: new Uint8Array(encodeWavChannels(rendered.channels, rendered.sampleRate)) };
+      });
+      const zip = createZip(entries);
+      downloadBlob(new Blob([zip as Uint8Array<ArrayBuffer>], { type: "application/zip" }), `${project.name} (stems)`, "zip");
+    });
   }
 
   // --- songs (projects) -----------------------------------------------------------------------
@@ -413,7 +467,8 @@ export class Session {
     const { tuning, cleanup } = this.store.get();
     this.stash = { tuning, cleanup };
     const first = project.tracks.find((t) => t.kind === 'vocal') ?? null;
-    this.store.set({ projectId: id, selectedTrackId: null, mode: 'playback', trackRender: {}, detection: null });
+    this.history.clear();
+    this.store.set({ projectId: id, selectedTrackId: null, mode: 'playback', trackRender: {}, detection: null, history: { canUndo: false, canRedo: false } });
     this.roll.setScaleHint(project.key ?? null);
     this.player.unload();
     this.selectTrack(first?.id ?? null);
@@ -432,6 +487,7 @@ export class Session {
   private closeProjectNow(): void {
     if (!this.store.get().projectId) return;
     this.flushSaves();
+    this.history.clear();
     this.cancelRender();
     for (const t of this.renderTimers.values()) window.clearTimeout(t);
     this.renderTimers.clear();
@@ -448,6 +504,7 @@ export class Session {
       duration: 0,
       mode: 'idle',
       detection: null,
+      history: { canUndo: false, canRedo: false },
       ...(stash ? { tuning: stash.tuning, cleanup: { ...stash.cleanup, micFilter: this.store.get().cleanup.micFilter } } : {}),
     });
   }
@@ -499,8 +556,6 @@ export class Session {
   removeTrack(trackId: string): void {
     const project = openProject(this.store.get());
     if (!project) return;
-    const removed = project.tracks.find((t) => t.id === trackId);
-    if (removed?.assetId) void this.releaseAsset(removed.assetId, project.id);
     this.cancelRender(trackId);
     this.trackAudio.delete(trackId);
     this.mutateProject(project.id, (p) => removeTrackModel(p, trackId));
@@ -527,16 +582,80 @@ export class Session {
     this.refreshSongView();
   }
 
-  /** Mix changes from the track list (fader, mute, solo, name): applied live, saved shortly after. */
-  updateTrackMix(trackId: string, patch: Partial<Pick<Track, 'gainDb' | 'mute' | 'solo' | 'name'>>): void {
+  /**
+   * Mixer edits (fader, pan, mute, solo, name, clip position): applied live, saved shortly after,
+   * undoable (a fader or clip drag is one undo step).
+   */
+  updateTrackMix(trackId: string, patch: Partial<Pick<Track, 'gainDb' | 'pan' | 'mute' | 'solo' | 'name' | 'offset'>>): void {
     const project = openProject(this.store.get());
     if (!project) return;
-    this.mutateProject(project.id, (p) => updateTrackModel(p, trackId, patch));
+    const field = Object.keys(patch)[0];
+    const coalesce = field === 'gainDb' || field === 'pan' || field === 'name' || field === 'offset' ? `${field}:${trackId}` : null;
+    this.mutateProject(project.id, (p) => updateTrackModel(p, trackId, patch), coalesce);
     const tracks = openProject(this.store.get())!.tracks;
+    if ('offset' in patch) {
+      this.rebuildMix();
+      return;
+    }
+    if ('pan' in patch) this.player.setPan(trackId, patch.pan!);
     for (const t of tracks) this.player.setGain(t.id, effectiveGain(t, tracks));
   }
 
-  private mutateProject(id: string, fn: (p: Project) => Project): void {
+  /** Master fader / limiter. */
+  setMaster(patch: Partial<Pick<Project, 'masterGainDb' | 'limiter'>>): void {
+    const project = openProject(this.store.get());
+    if (!project) return;
+    this.mutateProject(project.id, (p) => ({ ...p, ...patch, updatedAt: Date.now() }), 'masterGainDb' in patch ? 'master' : null);
+    this.player.setMaster(masterOf(openProject(this.store.get())!));
+  }
+
+  undo(): void {
+    this.restore((current) => this.history.undo(current));
+  }
+
+  redo(): void {
+    this.restore((current) => this.history.redo(current));
+  }
+
+  private restore(step: (current: Project) => Project | null): void {
+    const current = openProject(this.store.get());
+    if (!current) return;
+    const target = step(current);
+    if (!target) return;
+    const restored = { ...target, updatedAt: Date.now() };
+    this.store.set((s) => ({ projects: s.projects.map((p) => (p.id === restored.id ? restored : p)) }));
+    this.scheduleSave(restored);
+    this.publishHistory();
+    for (const id of [...this.trackAudio.keys()]) if (!restored.tracks.some((t) => t.id === id)) this.trackAudio.delete(id);
+    // Reload the inspector (or pick another track if the selected one is gone), then the audio.
+    const selected = this.store.get().selectedTrackId;
+    const keep = restored.tracks.some((t) => t.id === selected && t.kind === 'vocal');
+    this.selectTrack(keep ? selected : (restored.tracks.find((t) => t.kind === 'vocal')?.id ?? null));
+    this.roll.setScaleHint(restored.key ?? null);
+    this.run(async () => {
+      for (const t of restored.tracks) {
+        if (t.takeId) await this.loadTake(t.takeId);
+        if (t.assetId) await this.loadAsset(t.assetId);
+      }
+      this.rebuildMix();
+      for (const t of restored.tracks) this.scheduleTrackRender(t.id, 0);
+    });
+  }
+
+  private publishHistory(): void {
+    this.store.set({ history: { canUndo: this.history.canUndo, canRedo: this.history.canRedo } });
+  }
+
+  /**
+   * Changes a song. For the open song the change is recorded for undo, unless `historyKey` is false;
+   * edits with the same key in quick succession (a drag) become one undo step.
+   */
+  private mutateProject(id: string, fn: (p: Project) => Project, historyKey: string | null | false = null): void {
+    const before = this.store.get().projects.find((p) => p.id === id);
+    if (before && historyKey !== false && id === this.store.get().projectId) {
+      this.history.push(before, historyKey);
+      this.publishHistory();
+    }
     let updated: Project | null = null;
     this.store.set((s) => ({
       projects: s.projects.map((p) => {
@@ -619,9 +738,7 @@ export class Session {
           await this.openProjectNow(project.id);
         }
         const project = openProject(this.store.get())!;
-        const previous = instrumentalOf(project);
         this.mutateProject(project.id, (p) => withInstrumental(p, createInstrumentalTrack(asset)));
-        if (previous?.assetId) await this.releaseAsset(previous.assetId, project.id, previous.id);
         this.rebuildMix();
         this.player.seek(0);
 
@@ -630,7 +747,7 @@ export class Session {
         const analysis = await this.renderer.analyze(downmix(channels), buffer.sampleRate);
         const bpm = analysis.tempo && analysis.tempo.confidence > 1.3 ? Math.round(analysis.tempo.bpm) : null;
         const key = analysis.key && analysis.key.confidence > 0.5 ? analysis.key.scale : null;
-        if (bpm) this.mutateProject(project.id, (p) => ({ ...p, bpm, updatedAt: Date.now() }));
+        if (bpm) this.mutateProject(project.id, (p) => ({ ...p, bpm, updatedAt: Date.now() }), false);
         if (this.store.get().projectId === project.id) this.store.set({ detection: { projectId: project.id, key, bpm } });
       } finally {
         this.store.set({ importing: false });
@@ -668,16 +785,6 @@ export class Session {
     const buffer = await this.player.decode(asset.data);
     this.assets.set(id, buffer);
     return buffer;
-  }
-
-  /** Deletes an imported file once no song uses it any more. */
-  private async releaseAsset(assetId: string, exceptProjectId: string, exceptTrackId?: string): Promise<void> {
-    const usedElsewhere = this.store
-      .get()
-      .projects.some((p) => p.tracks.some((t) => t.assetId === assetId && !(p.id === exceptProjectId && (exceptTrackId === undefined || t.id === exceptTrackId))));
-    if (usedElsewhere) return;
-    this.assets.delete(assetId);
-    await (await this.getDb()).deleteAsset(assetId);
   }
 
   // --- latency calibration ----------------------------------------------------------------------
@@ -757,7 +864,7 @@ export class Session {
     if (JSON.stringify(track.tuning) === JSON.stringify(state.tuning) && JSON.stringify(track.cleanup) === JSON.stringify(cleanup)) {
       return; // just loaded into the inspector by selectTrack
     }
-    this.mutateProject(state.projectId, (p) => updateTrackModel(p, track.id, { tuning: state.tuning, cleanup }));
+    this.mutateProject(state.projectId, (p) => updateTrackModel(p, track.id, { tuning: state.tuning, cleanup }), `settings:${track.id}`);
     this.scheduleTrackRender(track.id);
   }
 
@@ -868,7 +975,7 @@ export class Session {
       if (t.kind === 'instrumental') {
         const buffer = t.assetId ? this.assets.get(t.assetId) : undefined;
         if (buffer) {
-          specs.push({ id: t.id, samples: EMPTY, sampleRate: buffer.sampleRate, buffer, gain: effectiveGain(t, project.tracks), offset: t.offset });
+          specs.push({ id: t.id, samples: EMPTY, sampleRate: buffer.sampleRate, buffer, gain: effectiveGain(t, project.tracks), pan: t.pan, offset: t.offset });
         }
         continue;
       }
@@ -877,7 +984,7 @@ export class Session {
       const audio = this.trackAudio.get(t.id);
       const processedWanted = listen && processSettingsOf(t.tuning, { ...t.cleanup, micFilter: false }) !== null;
       const samples = processedWanted && audio?.processed ? audio.processed : take.samples;
-      specs.push({ id: t.id, samples, sampleRate: take.meta.sampleRate, gain: effectiveGain(t, project.tracks), offset: t.offset });
+      specs.push({ id: t.id, samples, sampleRate: take.meta.sampleRate, gain: effectiveGain(t, project.tracks), pan: t.pan, offset: t.offset });
     }
     return specs;
   }
@@ -885,6 +992,7 @@ export class Session {
   private rebuildMix(): void {
     const project = openProject(this.store.get());
     if (!project) return;
+    this.player.setMaster(masterOf(project));
     this.player.setTracks(this.mixSpecs(project));
     this.store.set({ duration: this.player.duration });
     this.refreshSongView();
@@ -920,11 +1028,15 @@ function nextRecordingName(recordings: readonly RecordingMeta[]): string {
   return `Recording ${Math.max(0, ...used) + 1}`;
 }
 
-export function downloadBlob(blob: Blob, name: string): void {
+function safeName(name: string): string {
+  return name.replace(/[\\/:*?"<>|]+/g, '_');
+}
+
+export function downloadBlob(blob: Blob, name: string, ext = 'wav'): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `${name.replace(/[\\/:*?"<>|]+/g, '_')}.wav`;
+  a.download = `${safeName(name)}.${ext}`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }

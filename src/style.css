@@ -1397,3 +1397,130 @@ body {
     display: none;
   }
 }
+
+/* --- mixer (Phase 10) ------------------------------------------------------------------------- */
+
+.timeline {
+  display: block;
+  width: 100%;
+  height: 34px;
+  margin: 0 0 8px;
+  border-radius: 8px;
+  background: var(--surface);
+  touch-action: none;
+}
+
+.timeline:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.track {
+  grid-template-columns: 10px minmax(70px, 1fr) 10px 30px 30px 56px minmax(80px, 140px) 56px 32px;
+}
+
+.track-pan {
+  width: 100%;
+  accent-color: var(--muted);
+}
+
+.fader-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.meter {
+  height: 3px;
+  border-radius: 2px;
+  background: #24242a;
+  overflow: hidden;
+  display: grid;
+  gap: 1px;
+}
+
+.meter-stereo {
+  height: 7px;
+}
+
+.meter-fill {
+  display: block;
+  height: 100%;
+  background: #5fd18b;
+  transform: scaleX(0);
+  transform-origin: left;
+}
+
+.meter-fill.is-hot {
+  background: var(--accent);
+}
+
+.meter-fill.is-clip {
+  background: var(--record);
+}
+
+.master-strip {
+  margin-top: 6px;
+  background: transparent;
+  border: 1px solid var(--border);
+  cursor: default;
+  grid-template-areas: 'c n . l l . f d .';
+}
+
+.master-dot {
+  grid-area: c;
+  background: var(--fg);
+}
+
+.master-name {
+  grid-area: n;
+  font-weight: 700;
+}
+
+.track-lim {
+  grid-area: l;
+  width: auto;
+}
+
+.track-lim[aria-pressed='true'] {
+  background: var(--fg);
+  border-color: var(--fg);
+  color: var(--bg);
+}
+
+.master-strip .fader-cell {
+  grid-area: f;
+}
+
+.master-strip .track-db {
+  grid-area: d;
+}
+
+/* Narrow center column: two-row strips (controls on top, pan/fader/dB below). */
+@media (max-width: 1299px) and (min-width: 1100px), (max-width: 899px) {
+  .track {
+    grid-template-columns: 10px 56px minmax(0, 1fr) 10px 30px 30px 56px 32px;
+    grid-template-areas:
+      'c n n b m s x x'
+      '. p f f f f d d';
+  }
+
+  .track-pan {
+    grid-area: p;
+  }
+
+  .track .fader-cell {
+    grid-area: f;
+  }
+
+  .track .icon-close {
+    justify-self: end;
+  }
+
+  .master-strip {
+    grid-template-areas:
+      'c n n n l l . .'
+      '. . f f f f d d';
+  }
+}

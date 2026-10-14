@@ -87,6 +87,10 @@
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4h2v8.6l3.3-3.3 1.4 1.4L12 16.4l-5.7-5.7 1.4-1.4 3.3 3.3zM5 18h14v2H5z"/></svg>
               <span>Tuned WAV</span>
             </button>
+            <button id="export-stems" class="btn btn-small btn-ghost" type="button" title="Every track as its own WAV, in a .zip" hidden>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4h2v8.6l3.3-3.3 1.4 1.4L12 16.4l-5.7-5.7 1.4-1.4 3.3 3.3zM5 18h14v2H5z"/></svg>
+              <span>Stems</span>
+            </button>
           </div>
         </section>
 
@@ -94,6 +98,12 @@
           <div class="tracks-head">
             <span class="field-label">Tracks <span id="song-meta" class="song-meta"></span></span>
             <div class="tracks-actions">
+              <button id="undo" class="icon-btn" type="button" aria-label="Undo" title="Undo (Ctrl+Z)" disabled>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12.5 8c-2.65 0-5.05 1-6.9 2.6L2 7v9h9l-3.62-3.62A7.48 7.48 0 0 1 12.5 10.5c3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z"/></svg>
+              </button>
+              <button id="redo" class="icon-btn" type="button" aria-label="Redo" title="Redo (Ctrl+Shift+Z)" disabled>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.4 10.6A10.44 10.44 0 0 0 11.5 8c-4.65 0-8.58 3.03-9.97 7.22l2.37.78a7.97 7.97 0 0 1 7.6-5.5c1.95 0 3.73.72 5.12 1.88L13 16h9V7z"/></svg>
+              </button>
               <button id="track-import" class="btn btn-small btn-ghost" type="button" title="Import an instrumental into this song">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3z"/></svg>
                 <span>Import beat</span>
@@ -108,7 +118,18 @@
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19l5.6-5.6 5.6 5.6 1.4-1.4-5.6-5.6L19 6.4 17.6 5 12 10.6z"/></svg>
             </button>
           </div>
+          <canvas id="timeline" class="timeline" aria-label="Timeline: drag a clip to move it, click to seek, arrow keys nudge the selected clip"></canvas>
           <ul id="track-list" class="track-list"></ul>
+          <div id="master-strip" class="track master-strip">
+            <span class="track-color master-dot" aria-hidden="true"></span>
+            <span class="track-name master-name">Master</span>
+            <button id="master-limiter" class="track-btn track-lim" type="button" aria-pressed="true" title="Limiter: keeps the mix below −1 dBFS">LIM</button>
+            <div class="fader-cell">
+              <input id="master-fader" class="track-fader" type="range" min="-24" max="6" step="0.5" value="0" aria-label="Master volume" />
+              <div class="meter meter-stereo" aria-hidden="true"><i class="meter-fill"></i><i class="meter-fill"></i></div>
+            </div>
+            <span id="master-db" class="track-db">0.0 dB</span>
+          </div>
           <p id="tracks-empty" class="tracks-empty">Drop a take or a beat here, press <b>+</b> on a take, or just Record.</p>
         </section>
 

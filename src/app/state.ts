@@ -36,6 +36,8 @@ export interface AppState {
   detection: Detection | null;
   /** Loopback latency calibration in progress. */
   calibrating: boolean;
+  /** Undo/redo availability for the open song. */
+  history: { canUndo: boolean; canRedo: boolean };
   /**
    * The settings the inspector edits: the global defaults, or the selected track's settings while a
    * song is open (Session loads them in and writes edits back to the track).
@@ -78,6 +80,7 @@ export function createAppStore(): AppStore {
     importing: false,
     detection: null,
     calibrating: false,
+    history: { canUndo: false, canRedo: false },
     tuning: loadTuning(),
     cleanup: loadCleanup(),
     recordings: [],

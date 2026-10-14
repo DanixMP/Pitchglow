@@ -33,7 +33,7 @@ mountLiveControls(store, session, captions);
 mountInputPanel(store, session, captions);
 mountSongsPanel(store, session);
 mountTakesPanel(store, session);
-mountTracksPanel(store, session);
+const mixer = mountTracksPanel(store, session);
 mountImportPanel(store, session, captions);
 mountTuningPanel(store, captions);
 mountCleanupPanel(store, captions);
@@ -66,6 +66,11 @@ document.addEventListener('keydown', (e) => {
   if (e.code === 'Space' && s.mode === 'playback') {
     e.preventDefault();
     session.togglePlay();
+  } else if ((e.ctrlKey || e.metaKey) && !e.altKey && s.projectId && (e.key === 'z' || e.key === 'Z' || e.key === 'y')) {
+    // Undo / redo in the open song (text fields keep their own undo: handled by the early return above).
+    e.preventDefault();
+    if (e.key === 'y' || e.shiftKey) session.redo();
+    else session.undo();
   } else if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) {
     return;
   } else if (e.key === 'r') {
@@ -79,7 +84,10 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+let lastFrame = 0;
 function frame(t: number): void {
+  const dt = lastFrame ? Math.min(0.1, (t - lastFrame) / 1000) : 0;
+  lastFrame = t;
   const { mode, recordingSeconds } = store.get();
   if (mode === 'playback') {
     transport.tick();
@@ -89,6 +97,7 @@ function frame(t: number): void {
   }
   roll.render(t);
   readout.tick();
+  mixer.tick(dt);
   requestAnimationFrame(frame);
 }
 

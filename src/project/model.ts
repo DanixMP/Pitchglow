@@ -43,6 +43,8 @@ export interface Project {
   /** Master transpose in semitones (Phase 11). */
   keyShift: number;
   masterGainDb: number;
+  /** Master limiter (default on). */
+  limiter?: boolean;
   /** Musical key (detected from the instrumental, or chosen); applied to new tracks' auto-tune. */
   key?: Scale | null;
   bpm?: number | null;
@@ -182,6 +184,26 @@ export function withoutTake(projects: readonly Project[], takeId: string, now = 
 }
 
 // --- mixing math ---------------------------------------------------------------------------
+
+export function masterOf(p: Project): { gain: number; limiter: boolean } {
+  return { gain: dbToGain(p.masterGainDb), limiter: p.limiter !== false };
+}
+
+/**
+ * Snaps a clip position: to 1/16 notes when the song has a tempo, otherwise to 10 ms. `free` (e.g.
+ * Alt held while dragging) only rounds to the millisecond.
+ */
+export function snapOffset(offset: number, bpm: number | null | undefined, free = false): number {
+  if (free) return Math.round(offset * 1000) / 1000 || 0;
+  const grid = bpm ? 60 / bpm / 4 : 0.01;
+  return Math.round(Math.round(offset / grid) * grid * 1000) / 1000 || 0; // `|| 0`: no -0
+}
+
+/** Pan as shown on a strip: "C", "L35", "R100". */
+export function panLabel(pan: number): string {
+  const v = Math.round(pan * 100);
+  return v === 0 ? 'C' : v < 0 ? `L${-v}` : `R${v}`;
+}
 
 export function dbToGain(db: number): number {
   return db <= -60 ? 0 : Math.pow(10, db / 20);

@@ -1,9 +1,17 @@
-// Plays several tracks in sync (a project), or a single take (one track). Each track is an
-// AudioBuffer -> GainNode -> master; gain changes are live, swapping a track's audio keeps the
-// position and play state. A single clock (with output-latency compensation) drives the visuals.
+// Plays several tracks in sync (a project), or a single take (one track). Each track runs through
+// the shared mix chain (gain -> pan -> master -> limiter, see chain.ts); gain/pan/master changes are
+// live, swapping a track's audio keeps the position and play state. Analysers tap every track and the
+// master (L/R) for the meters. A single clock (with output-latency compensation) drives the visuals.
 
 import { scheduleTrack } from '../project/model';
+import { clampPan, createTrackChain, MasterChain, type MasterSettings, type TrackChain } from './chain';
 import { sharedContext } from './context';
+
+export interface Level {
+  /** Linear peak and RMS over the analyser window (~21 ms). */
+  peak: number;
+  rms: number;
+}
 
 export interface MixTrackSpec {
   id: string;
@@ -14,6 +22,8 @@ export interface MixTrackSpec {
   buffer?: AudioBuffer;
   /** Linear gain (mute/solo already applied). */
   gain: number;
+  /** −1 (left) … 1 (right); default centre. */
+  pan?: number;
   /** Start position in the song, seconds. */
   offset: number;
 }
@@ -21,9 +31,12 @@ export interface MixTrackSpec {
 interface Lane {
   spec: MixTrackSpec;
   buffer: AudioBuffer;
-  gainNode: GainNode;
+  chain: TrackChain;
+  meter: AnalyserNode;
   source: AudioBufferSourceNode | null;
 }
+
+const METER_FFT = 1024;
 
 /** Scheduling lead so all tracks start on the same audio frame. */
 const START_LEAD = 0.02;
@@ -31,8 +44,11 @@ const SINGLE = 'take';
 
 export class MixPlayer {
   private ctx: AudioContext | null = null;
-  private master: GainNode | null = null;
+  private master: MasterChain | null = null;
+  private masterMeters: AnalyserNode[] = [];
+  private masterSettings: MasterSettings = { gain: 1, limiter: true };
   private lanes = new Map<string, Lane>();
+  private scratch = new Float32Array(METER_FFT);
   private startedAt = 0;
   private offset = 0;
   private _playing = false;
@@ -95,12 +111,18 @@ export class MixPlayer {
       const sameAudio =
         prev && prev.spec.buffer === spec.buffer && prev.spec.samples === spec.samples && prev.spec.sampleRate === spec.sampleRate;
       const buffer = sameAudio ? prev.buffer : (spec.buffer ?? makeBuffer(ctx, spec.samples, spec.sampleRate));
-      const gainNode = prev?.gainNode ?? new GainNode(ctx);
-      if (!prev) gainNode.connect(this.master!);
-      gainNode.gain.value = spec.gain;
-      next.set(spec.id, { spec, buffer, gainNode, source: null });
+      let chain = prev?.chain;
+      let meter = prev?.meter;
+      if (!chain || !meter) {
+        chain = createTrackChain(ctx, spec.gain, spec.pan ?? 0, this.master!.input);
+        meter = new AnalyserNode(ctx, { fftSize: METER_FFT });
+        chain.pan.connect(meter);
+      }
+      chain.gain.gain.value = spec.gain;
+      chain.pan.pan.value = clampPan(spec.pan ?? 0);
+      next.set(spec.id, { spec, buffer, chain, meter, source: null });
     }
-    for (const [id, lane] of this.lanes) if (!next.has(id)) lane.gainNode.disconnect();
+    for (const [id, lane] of this.lanes) if (!next.has(id)) disconnectLane(lane);
     this.lanes = next;
     this._duration = [...next.values()].reduce((m, l) => Math.max(m, l.spec.offset + l.buffer.duration), 0);
     this.offset = Math.min(time, this._duration);
@@ -119,12 +141,46 @@ export class MixPlayer {
     const lane = this.lanes.get(id);
     if (!lane || !this.ctx) return;
     lane.spec = { ...lane.spec, gain };
-    lane.gainNode.gain.setTargetAtTime(gain, this.ctx.currentTime, 0.015);
+    lane.chain.gain.gain.setTargetAtTime(gain, this.ctx.currentTime, 0.015);
+  }
+
+  /** Live pan change. */
+  setPan(id: string, pan: number): void {
+    const lane = this.lanes.get(id);
+    if (!lane || !this.ctx) return;
+    lane.spec = { ...lane.spec, pan };
+    lane.chain.pan.pan.setTargetAtTime(clampPan(pan), this.ctx.currentTime, 0.015);
+  }
+
+  /** Live master fader / limiter. */
+  setMaster(settings: MasterSettings): void {
+    this.masterSettings = settings;
+    if (this.master && this.ctx) this.master.apply(settings, this.ctx);
+  }
+
+  /** Current levels per track and for the master (L, R). Cheap enough to call every frame. */
+  levels(): { tracks: Map<string, Level>; master: Level[] } {
+    const tracks = new Map<string, Level>();
+    for (const [id, lane] of this.lanes) tracks.set(id, this.measure(lane.meter));
+    return { tracks, master: this.masterMeters.map((m) => this.measure(m)) };
+  }
+
+  private measure(analyser: AnalyserNode): Level {
+    if (!this._playing) return { peak: 0, rms: 0 };
+    analyser.getFloatTimeDomainData(this.scratch);
+    let peak = 0;
+    let sum = 0;
+    for (const v of this.scratch) {
+      const a = Math.abs(v);
+      if (a > peak) peak = a;
+      sum += v * v;
+    }
+    return { peak, rms: Math.sqrt(sum / this.scratch.length) };
   }
 
   unload(): void {
     this.stopSources();
-    for (const lane of this.lanes.values()) lane.gainNode.disconnect();
+    for (const lane of this.lanes.values()) disconnectLane(lane);
     this.lanes.clear();
     this._duration = 0;
     this.offset = 0;
@@ -147,7 +203,7 @@ export class MixPlayer {
       const s = scheduleTrack(this.offset, lane.spec.offset, lane.buffer.duration);
       if (!s) continue;
       const source = new AudioBufferSourceNode(this.ctx, { buffer: lane.buffer });
-      source.connect(lane.gainNode);
+      source.connect(lane.chain.gain);
       source.start(now + s.delay, s.from);
       lane.source = source;
     }
@@ -177,8 +233,15 @@ export class MixPlayer {
     const ctx = sharedContext();
     if (this.ctx !== ctx) {
       this.ctx = ctx;
-      this.master = new GainNode(ctx);
-      this.master.connect(ctx.destination);
+      this.master = new MasterChain(ctx, this.masterSettings);
+      this.master.output.connect(ctx.destination);
+      const split = new ChannelSplitterNode(ctx, { numberOfOutputs: 2 });
+      this.master.output.connect(split);
+      this.masterMeters = [0, 1].map((ch) => {
+        const a = new AnalyserNode(ctx, { fftSize: METER_FFT });
+        split.connect(a, ch);
+        return a;
+      });
     }
     return ctx;
   }
@@ -217,6 +280,12 @@ export class MixPlayer {
       }
     }
   }
+}
+
+function disconnectLane(lane: Lane): void {
+  lane.chain.gain.disconnect();
+  lane.chain.pan.disconnect();
+  lane.meter.disconnect();
 }
 
 function makeBuffer(ctx: AudioContext, samples: Float32Array, sampleRate: number): AudioBuffer {

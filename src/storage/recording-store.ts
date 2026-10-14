@@ -156,6 +156,11 @@ export class RecordingStore {
     return promisify(tx.objectStore(ASSETS).get(id) as IDBRequest<Asset | undefined>);
   }
 
+  async listAssetIds(): Promise<string[]> {
+    const tx = this.db.transaction(ASSETS, 'readonly');
+    return (await promisify(tx.objectStore(ASSETS).getAllKeys())) as string[];
+  }
+
   async deleteAsset(id: string): Promise<void> {
     const tx = this.db.transaction(ASSETS, 'readwrite');
     tx.objectStore(ASSETS).delete(id);

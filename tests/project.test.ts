@@ -2,6 +2,9 @@ import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
 import {
   addTrack,
+  masterOf,
+  panLabel,
+  snapOffset,
   createProject,
   createVocalTrack,
   dbToGain,
@@ -85,6 +88,27 @@ describe('project model', () => {
     expect(scheduleTrack(0, 2, 3)).toEqual({ delay: 2, from: 0 }); // starts later
     expect(scheduleTrack(3, 2, 3)).toEqual({ delay: 0, from: 1 }); // mid-track
     expect(scheduleTrack(6, 2, 3)).toBeNull(); // already over
+  });
+});
+
+describe('mixer helpers', () => {
+  it('reads master settings with the limiter on by default', () => {
+    const p = createProject('S', 1, 'x');
+    expect(masterOf(p)).toEqual({ gain: 1, limiter: true });
+    expect(masterOf({ ...p, masterGainDb: -6, limiter: false }).limiter).toBe(false);
+    expect(masterOf({ ...p, masterGainDb: -6 }).gain).toBeCloseTo(0.501, 3);
+  });
+
+  it('snaps to 1/16 notes with a tempo, 10 ms without, ms when free', () => {
+    expect(snapOffset(0.33, 120)).toBe(0.375); // 1/16 at 120 BPM = 125 ms
+    expect(snapOffset(-0.07, 120)).toBe(-0.125);
+    expect(snapOffset(-0.06, 120)).toBe(0); // closer to 0 than to -0.125 (and not -0)
+    expect(snapOffset(1.2345, null)).toBe(1.23);
+    expect(snapOffset(1.23456, 120, true)).toBe(1.235);
+  });
+
+  it('labels pan positions', () => {
+    expect([panLabel(0), panLabel(-0.35), panLabel(1), panLabel(0.004)]).toEqual(['C', 'L35', 'R100', 'C']);
   });
 });
 

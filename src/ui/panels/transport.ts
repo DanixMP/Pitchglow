@@ -24,6 +24,8 @@ export function mountTransport(store: AppStore, session: Session, roll: PianoRol
   const renderStatus = $('render-status');
   const exportBtn = $<HTMLButtonElement>('export-tuned');
   const exportLabel = exportBtn.querySelector('span')!;
+  const stemsBtn = $<HTMLButtonElement>('export-stems');
+  stemsBtn.addEventListener('click', () => session.exportStems());
   const player = session.player;
 
   play.addEventListener('click', () => session.togglePlay());
@@ -64,6 +66,9 @@ export function mountTransport(store: AppStore, session: Session, roll: PianoRol
       }
       exportBtn.disabled = !v.exportEnabled;
       exportLabel.textContent = v.exportLabel;
+      const song = openProject(store.get());
+      stemsBtn.hidden = !song;
+      stemsBtn.disabled = !v.exportEnabled;
       renderStatus.textContent = v.status;
     },
     { shallow: true },
