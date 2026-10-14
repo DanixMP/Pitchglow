@@ -1,8 +1,9 @@
 :root {
   --bg: #0f0f10;
+  --panel: #131315;
   --surface: #17171a;
   --surface-2: #1f1f24;
-  --border: #2a2a30;
+  --border: #26262c;
   --fg: #f4f2ee;
   --muted: #8a8a90;
   --accent: #f6c453;
@@ -19,34 +20,225 @@
 html,
 body {
   margin: 0;
+  height: 100%;
   background: var(--bg);
   color: var(--fg);
   font-family: var(--font);
   -webkit-font-smoothing: antialiased;
 }
 
+/* The app fills the viewport; columns scroll on their own instead of the page. */
+body {
+  overflow: hidden;
+}
+
 [hidden] {
   display: none !important;
 }
 
-.app {
-  position: relative;
-  max-width: 960px;
-  margin: 0 auto;
-  padding: max(16px, env(safe-area-inset-top)) 0 max(32px, env(safe-area-inset-bottom));
+/* ===========================================================================================
+   Studio shell: 3 columns ≥1100px · 2 columns + takes drawer 760–1099px · tabs <760px
+   =========================================================================================== */
+
+.studio {
+  height: 100dvh;
+  display: grid;
 }
 
-/* --- heading ---------------------------------------------------------------------------- */
+.col {
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.col-left,
+.col-right {
+  background: var(--panel);
+  padding: max(14px, env(safe-area-inset-top)) 16px 20px;
+}
+
+.col-left {
+  border-right: 1px solid var(--border);
+}
+
+.col-right {
+  border-left: 1px solid var(--border);
+}
+
+.col-center {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 10px;
+}
+
+/* Scoped under .studio so these win over the generic .icon-btn display rule below. */
+.studio .tabbar,
+.studio .drawer-backdrop,
+.studio .topbar-btn,
+.studio .drawer-close {
+  display: none;
+}
+
+@media (min-width: 1100px) {
+  .studio {
+    grid-template-columns: minmax(240px, 300px) minmax(0, 1fr) minmax(300px, 360px);
+  }
+}
+
+@media (min-width: 760px) and (max-width: 1099px) {
+  .studio {
+    grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
+  }
+
+  .col-left {
+    position: fixed;
+    inset: 0 auto 0 0;
+    width: min(320px, 86vw);
+    z-index: 20;
+    transform: translateX(-100%);
+    transition: transform 0.22s ease;
+    box-shadow: 12px 0 40px rgba(0, 0, 0, 0.5);
+  }
+
+  .studio.is-drawer-open .col-left {
+    transform: none;
+  }
+
+  .studio .topbar-btn,
+  .studio .drawer-close {
+    display: inline-grid;
+  }
+
+  .studio .drawer-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 15;
+    background: rgba(0, 0, 0, 0.45);
+  }
+}
+
+@media (max-width: 759px) {
+  .studio {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto auto;
+  }
+
+  .col-center {
+    grid-row: 1;
+    padding-bottom: 6px;
+  }
+
+  .col-left,
+  .col-right {
+    grid-row: 2;
+    display: none;
+    max-height: 44dvh;
+    padding-top: 12px;
+    border: none;
+    border-top: 1px solid var(--border);
+  }
+
+  .studio[data-tab='takes'] .col-left,
+  .studio[data-tab='controls'] .col-right {
+    display: block;
+  }
+
+  /* With a panel open, give the roll the room: drop the readout. */
+  .studio[data-tab='takes'] .readout,
+  .studio[data-tab='controls'] .readout {
+    display: none;
+  }
+
+  .studio .tabbar {
+    grid-row: 3;
+    display: flex;
+    border-top: 1px solid var(--border);
+    background: var(--panel);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+/* --- phone tab bar ------------------------------------------------------------------------ */
+
+.tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 8px 4px 9px;
+  border: none;
+  border-top: 2px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font: 600 11px var(--font);
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.tab svg {
+  width: 20px;
+  height: 20px;
+  fill: currentColor;
+}
+
+.tab.is-on {
+  color: var(--fg);
+  border-top-color: var(--accent);
+}
+
+.tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -4px;
+}
+
+/* --- center: top bar + heading ------------------------------------------------------------ */
+
+.topbar {
+  display: grid;
+  grid-template-columns: minmax(44px, auto) minmax(0, 1fr) minmax(44px, auto);
+  align-items: center;
+  gap: 8px;
+  padding: max(12px, env(safe-area-inset-top)) 12px 12px;
+}
 
 .heading {
+  grid-column: 2;
   text-align: center;
-  padding: 8px 16px 20px;
+  min-width: 0;
+}
+
+.topbar-btn {
+  grid-column: 1;
+}
+
+.install-btn {
+  grid-column: 3;
+  justify-self: end;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--fg);
+  font: 600 12px var(--font);
+  cursor: pointer;
+}
+
+.install-btn svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
 }
 
 .eyebrow {
-  margin: 0 0 6px;
+  margin: 0 0 4px;
   min-height: 1.2em;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.22em;
   text-transform: uppercase;
@@ -60,21 +252,33 @@ body {
 
 .title {
   margin: 0;
-  font-size: clamp(28px, 6vw, 44px);
+  font-size: clamp(22px, 2.6vw + 8px, 38px);
   font-weight: 800;
   letter-spacing: 0.01em;
   text-transform: uppercase;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  padding: 0 8px;
 }
 
-/* --- stage ------------------------------------------------------------------------------ */
+.title.is-tuned {
+  color: var(--accent);
+}
+
+.title.is-scale {
+  color: #ff8a8a;
+}
+
+.title.is-harmony {
+  color: #9fd8ff;
+}
+
+/* --- center: piano roll ------------------------------------------------------------------- */
 
 .stage {
-  height: clamp(280px, 56dvh, 620px);
   position: relative;
+  flex: 1 1 auto;
+  min-height: 180px;
 }
 
 #roll {
@@ -84,6 +288,10 @@ body {
   height: 100%;
   display: block;
   touch-action: pan-y;
+}
+
+#roll.is-scrubbing {
+  cursor: grabbing;
 }
 
 .caption {
@@ -99,7 +307,7 @@ body {
   background: rgba(12, 12, 14, 0.78);
   backdrop-filter: blur(6px);
   text-align: center;
-  font-size: clamp(16px, 3.6vw, 20px);
+  font-size: clamp(15px, 1vw + 10px, 20px);
   font-weight: 700;
   line-height: 1.3;
   pointer-events: none;
@@ -133,17 +341,13 @@ body {
   }
 }
 
-#roll.is-scrubbing {
-  cursor: grabbing;
-}
-
-/* --- transport -------------------------------------------------------------------------- */
+/* --- center: transport -------------------------------------------------------------------- */
 
 .transport {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 14px 16px 0;
+  padding: 12px 16px 0;
 }
 
 .transport-row {
@@ -202,17 +406,6 @@ body {
   text-align: center;
 }
 
-.btn-small {
-  padding: 7px 14px;
-  font-size: 13px;
-  gap: 6px;
-}
-
-.btn-small svg {
-  width: 16px;
-  height: 16px;
-}
-
 .time {
   font-size: 13px;
   color: var(--muted);
@@ -238,19 +431,19 @@ body {
   display: inline;
 }
 
-/* --- readout ---------------------------------------------------------------------------- */
+/* --- center: readout, record controls, status -------------------------------------------- */
 
 .readout {
   display: flex;
   align-items: baseline;
   justify-content: center;
   gap: 14px;
-  padding: 16px 16px 4px;
-  min-height: 62px;
+  padding: 10px 16px 0;
+  min-height: 52px;
 }
 
 .readout-note {
-  font-size: 34px;
+  font-size: 30px;
   font-weight: 800;
   min-width: 2.6ch;
   text-align: right;
@@ -258,12 +451,10 @@ body {
 }
 
 .readout-detail {
-  font-size: 15px;
+  font-size: 14px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
-
-/* --- buttons ---------------------------------------------------------------------------- */
 
 .controls {
   display: flex;
@@ -271,6 +462,16 @@ body {
   gap: 12px;
   padding: 10px 16px 0;
 }
+
+.status {
+  min-height: 18px;
+  margin: 8px 16px 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--danger);
+}
+
+/* --- buttons ------------------------------------------------------------------------------- */
 
 .btn {
   display: inline-flex;
@@ -310,6 +511,17 @@ body {
   background: var(--fg);
   border-color: var(--fg);
   color: var(--bg);
+}
+
+.btn-small {
+  padding: 7px 14px;
+  font-size: 13px;
+  gap: 6px;
+}
+
+.btn-small svg {
+  width: 16px;
+  height: 16px;
 }
 
 .btn-record {
@@ -394,28 +606,10 @@ body {
 .btn:focus-visible,
 .icon-btn:focus-visible,
 .chip:focus-visible,
-.rec-name:focus-visible {
+.rec-name:focus-visible,
+.install-btn:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-}
-
-/* --- input source ----------------------------------------------------------------------- */
-
-.source {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  gap: 6px;
-  padding: 14px 16px 0;
-}
-
-.source-label {
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--muted);
-  margin-right: 4px;
 }
 
 .chip {
@@ -439,30 +633,134 @@ body {
   cursor: default;
 }
 
-/* --- tuning panel ----------------------------------------------------------------------- */
+/* --- side columns: headers, inspector sections -------------------------------------------- */
 
-.tuning {
+.col-head {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  justify-content: center;
-  gap: 14px 22px;
-  margin: 18px 16px 0;
-  padding: 14px 18px;
-  border-radius: 16px;
-  background: var(--surface);
-  border: 1px solid var(--border);
+  justify-content: space-between;
+  margin-bottom: 12px;
 }
 
-.tuning.is-off .field,
-.tuning.is-off .retune {
+.col-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.col-count {
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--fg);
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.col-count:empty {
+  display: none;
+}
+
+.search {
+  width: 100%;
+  margin-bottom: 12px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--fg);
+  font: 500 14px var(--font);
+}
+
+.search:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.section {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 16px;
+}
+
+.section + .section {
+  margin-top: 4px;
+}
+
+.section-head {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 2px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.section-head::-webkit-details-marker {
+  display: none;
+}
+
+.section-head::after {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 0.15s;
+}
+
+.section[open] > .section-head::after {
+  transform: rotate(45deg);
+}
+
+.section-head:hover {
+  color: var(--fg);
+}
+
+.section-head:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+.section-body {
+  display: grid;
+  gap: 14px;
+}
+
+/* Auto-tune off: everything but the on/off switch dims. */
+.section.is-off .section-body > :not(.switch) {
   opacity: 0.4;
+}
+
+.source {
+  display: flex;
+  gap: 6px;
+}
+
+/* --- inspector controls ------------------------------------------------------------------- */
+
+.field-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.7fr);
+  gap: 10px;
 }
 
 .field {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
+  min-width: 0;
 }
 
 .field-label {
@@ -474,8 +772,9 @@ body {
 }
 
 .select {
+  width: 100%;
   appearance: none;
-  padding: 7px 30px 7px 11px;
+  padding: 8px 30px 8px 11px;
   border-radius: 9px;
   border: 1px solid var(--border);
   background: var(--surface-2)
@@ -513,6 +812,7 @@ body {
 
 .switch-track {
   position: relative;
+  flex: none;
   width: 42px;
   height: 24px;
   border-radius: 999px;
@@ -546,10 +846,26 @@ body {
   outline-offset: 2px;
 }
 
+.switch input:disabled + .switch-track {
+  opacity: 0.45;
+}
+
+.switch-quiet {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.switch-hint {
+  display: block;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
 .retune {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
 }
 
 .retune-text {
@@ -619,26 +935,14 @@ body {
   fill: #33333a;
 }
 
-.harmony {
-  flex-basis: 100%;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: center;
-  gap: 8px 12px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
-}
-
-.tuning.is-off .harmony {
-  opacity: 0.4;
-}
-
 .harmony-voices {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
+}
+
+.harmony-voices .chip {
+  padding: 7px 4px;
 }
 
 .harmony-voices .chip[aria-pressed='true'] {
@@ -647,62 +951,35 @@ body {
   color: #1a1408;
 }
 
-.harmony-mix {
-  display: inline-flex;
+.slider-field {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 
-.harmony-mix input {
-  width: 110px;
+.slider-field input {
+  width: 100%;
   accent-color: var(--accent);
 }
 
-.harmony-mix input:disabled {
+.slider-field input:disabled {
   opacity: 0.4;
 }
 
-.harmony-mix-value {
+.slider-field.is-off {
+  opacity: 0.4;
+}
+
+.slider-value {
   font-size: 13px;
   font-weight: 700;
-  min-width: 4ch;
+  min-width: 4.5ch;
+  text-align: right;
   font-variant-numeric: tabular-nums;
 }
 
-.title.is-tuned {
-  color: var(--accent);
-}
-
-.title.is-scale {
-  color: #ff8a8a;
-}
-
-.title.is-harmony {
-  color: #9fd8ff;
-}
-
-.status {
-  min-height: 20px;
-  margin: 10px 16px 0;
-  text-align: center;
-  font-size: 13px;
-  color: var(--danger);
-}
-
-/* --- recordings list -------------------------------------------------------------------- */
-
-.library {
-  padding: 12px 16px 0;
-}
-
-.library-title {
-  margin: 0 0 10px;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
+/* --- takes list ------------------------------------------------------------------------------ */
 
 .rec-list {
   list-style: none;
@@ -715,8 +992,8 @@ body {
 .rec {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 6px 6px 8px;
+  gap: 4px;
+  padding: 6px 4px 6px 6px;
   border-radius: 12px;
   background: var(--surface);
   border: 1px solid transparent;
@@ -752,7 +1029,7 @@ body {
   border-radius: 6px;
   background: transparent;
   color: var(--fg);
-  font: 600 15px var(--font);
+  font: 600 14px var(--font);
   text-overflow: ellipsis;
 }
 
@@ -779,73 +1056,4 @@ body {
   color: var(--muted);
   border: 1px dashed var(--border);
   border-radius: 12px;
-}
-
-/* --- install --------------------------------------------------------------------------- */
-
-.install-btn {
-  position: absolute;
-  top: max(12px, env(safe-area-inset-top));
-  right: 12px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--fg);
-  font: 600 12px var(--font);
-  cursor: pointer;
-  z-index: 2;
-}
-
-.install-btn svg {
-  width: 14px;
-  height: 14px;
-  fill: currentColor;
-}
-
-/* --- clean-up panel ----------------------------------------------------------------------- */
-
-.cleanup {
-  margin-top: 12px;
-}
-
-.slider-field {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.slider-field input {
-  width: 120px;
-  accent-color: var(--accent);
-}
-
-.slider-field.is-off {
-  opacity: 0.4;
-}
-
-.slider-value {
-  font-size: 13px;
-  font-weight: 700;
-  min-width: 4.5ch;
-  font-variant-numeric: tabular-nums;
-}
-
-.switch-quiet {
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.switch-hint {
-  display: block;
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--muted);
-}
-
-.switch input:disabled + .switch-track {
-  opacity: 0.45;
 }

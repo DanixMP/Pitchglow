@@ -35,12 +35,12 @@ export class RecordingsList {
     private readonly handlers: RecordingsListHandlers,
   ) {}
 
-  render(items: readonly RecordingMeta[], selectedId: string | null): void {
+  render(items: readonly RecordingMeta[], selectedId: string | null, emptyText?: string): void {
     this.root.replaceChildren();
     if (items.length === 0) {
       const empty = document.createElement('li');
       empty.className = 'rec-empty';
-      empty.textContent = 'No recordings yet. Press Record to make your first one.';
+      empty.textContent = emptyText ?? 'No takes yet. Press Record to make your first one.';
       this.root.append(empty);
       return;
     }

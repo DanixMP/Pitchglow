@@ -58,14 +58,22 @@ Look: a near-black background (#0f0f10-ish), muted dark lane fills whose hue cyc
 - **Processing chain** (`src/dsp/process.ts`): denoise, then `renderWithHarmony`, all in the worker. The worker caches the last denoise output (keyed by recording id and amount), so re-tuning doesn't re-denoise. `ProcessSettings = { denoise, tune }`. The A/B switch and export are labelled Tuned, Cleaned or Clean + tuned.
 - **Mic noise filter:** `AudioInput.start(kind, { noiseSuppression })` uses the browser's live WebRTC filter. It's baked into new recordings, so it's locked during a take. Toggling it while listening restarts the mic.
 - **Demo source** adds faint room hiss (~−35 dBFS, to the recording only), so noise reduction can be tried without a mic.
-- **Modes** (`src/main.ts`): `idle`, `listening` (live line, nothing saved), `recording` (live line + saving), `playback` (a saved recording is open and the roll follows `Player.currentTime`).
+- **Modes** (`AppState.mode`, driven by `Session`): `idle`, `listening` (live line, nothing saved), `recording` (live line + saving), `playback` (a saved recording is open and the roll follows `Player.currentTime`).
 
 ## Architecture
 
 ```
 src/
-  main.ts                 controller: modes, buttons, recording/saving, playback, render loop
-  style.css
+  main.ts                 entry: creates store + session + panels; shortcuts; frame loop (wiring only)
+  style.css               studio shell (3 cols / drawer / tabs) + components
+  pwa.ts                  service-worker registration + Install button
+  app/
+    store.ts              tiny typed store: get / set(patch) / subscribe / watch(selector, cb, {shallow})
+    state.ts              AppState (mode, source, tuning, cleanup, takes, openId, A/B, render, layout) + createAppStore
+    session.ts            engine: live input + tracker, takes (record/save/open/rename/delete/export), player,
+                          worker renders; owns buffers/nodes, publishes plain state to the store
+    processing.ts         pure: prefs -> TuneSettings/ProcessSettings, processed label, title cards
+    explain.ts            pure: caption texts
   dsp/
     yin.ts                YIN pitch detector (pure, unit-tested)
     notes.ts              freq <-> MIDI, note names
@@ -88,22 +96,40 @@ src/
     tuned-renderer.ts     main-thread client for the worker (latest request wins, returns notes)
     wav.ts                16-bit PCM WAV encoder
   storage/
-    recording-store.ts    IndexedDB: list/save/load/rename/delete recordings
+    recording-store.ts    IndexedDB: list/save/load/rename/delete takes
     pitch-track.ts        pack/unpack PitchFrame[] <-> typed-array columns
-    settings.ts           auto-tune prefs in localStorage
+    settings.ts           tuning + clean-up prefs in localStorage
   ui/
+    dom.ts                $ / $$ helpers
     piano-roll.ts         canvas renderer: keyboard, lanes, glowing line; live + playback modes, drag to scrub
-    recordings-list.ts    recordings list (play, rename inline, WAV export, delete)
+    recordings-list.ts    takes list items (play, rename inline, WAV export, delete)
     knob.ts               rotary knob (drag, wheel, arrows, double-click to reset)
     captions.ts           word-by-word explainer captions over the roll
-  pwa.ts                  service-worker registration + Install button
+    colors.ts             lane/key color palette
+    format.ts             time formatting
+    panels/               each mounts onto existing markup, renders from the store, calls Session actions
+      layout.ts           phone tabs, tablet takes drawer (inert when closed, focus return)
+      header.ts           title cards / take name / recording timer
+      live-controls.ts    Listen / Record, status line, first-run intro caption
+      input-panel.ts      Mic / Demo tone, mic noise filter
+      transport.ts        play/seek/time, Original vs processed A/B, processed export
+      readout.ts          note under the playhead
+      takes-panel.ts      takes library + search
+      tuning-panel.ts     Auto-tune + Harmony sections
+      cleanup-panel.ts    Noise reduction section
 public/                   manifest, icon.svg, icons/*.png (generated)
 scripts/make-icons.mjs    procedural icon renderer (no deps)
 vite.config.ts            base './', LAN HTTPS mode, build-time service worker
-    colors.ts             lane/key color palette
-    format.ts             time formatting
-tests/                    vitest unit tests (dsp, tracker, wav, packing, storage via fake-indexeddb)
+tests/                    vitest unit tests (dsp, tracker, wav, packing, storage via fake-indexeddb, store/processing)
 ```
+
+**UI rule:** panels never talk to each other. They read state from the store and call `Session` (engine) actions or `store.set`. Prefs persistence and re-rendering on tuning/clean-up changes are wired once in `main.ts`.
+
+**Layout:**
+- ≥1100 px: three grid columns (Takes 240–300 | center | Inspector 300–360).
+- 760–1099 px: center + inspector, with Takes as a slide-in drawer (☰ button, Esc/backdrop to close).
+- <760 px: the center fills the screen, and a bottom tab bar (Takes · Controls) opens a panel under the roll (max 44dvh); tapping the open tab collapses it.
+- The page itself never scrolls; columns scroll independently.
 
 Data flow: mic → AudioWorklet → main thread `PitchTracker` (downsample, YIN, median filter) → `PitchFrame { time, freq, midi, clarity, rms }` → `PianoRoll.push()` → canvas drawn on each `requestAnimationFrame`.
 While recording, the same blocks and frames are also collected into a take. On Stop the take is saved to IndexedDB and opened in playback mode.
@@ -227,13 +253,14 @@ The user asked for pitch and reverb effects, a remix-studio style mixer, importi
 - **IndexedDB v2 migration:** new stores `projects` (with embedded track list) and `assets` (imported files). The existing `meta`/`data` stores stay as the takes library, so no data is lost.
 
 ### Phase 7 — Studio layout (3 columns + mobile tabs)
-- [ ] Split `main.ts` into a store + panel modules, with no behavior change; all tests still pass
-- [ ] CSS grid shell: Takes | Center (header, roll, transport) | Inspector, at the ≥1100 / 760–1100 / <760 px breakpoints
-- [ ] Left: takes library (search, rename, delete, export) in a scrolling column
-- [ ] Right: inspector with collapsible sections (Auto-tune, Harmony, Clean-up, later FX); controls sized for a column
-- [ ] Center: compact header (project/take name + title card), roll fills the available height, transport bar under it
-- [ ] Phone: sticky roll + transport, bottom tab bar (Takes · Mixer · FX), safe-area aware
-- [ ] Keyboard and a11y: landmarks, focus order, shortcuts unchanged; visual check at 3 widths
+- [x] Split `main.ts` into a store + panel modules, with no behavior change; all tests still pass (80; regression-checked record → save → A/B → rename → re-tune → delete)
+- [x] CSS grid shell: Takes | Center (header, roll, transport) | Inspector, at the ≥1100 / 760–1100 / <760 px breakpoints
+- [x] Left: takes library (search, rename, delete, export) in a scrolling column
+- [x] Right: inspector with collapsible sections (Input, Auto-tune, Harmony, Clean up); controls sized for a column
+- [x] Center: compact header (take name + title card), roll fills the available height, transport bar under it
+- [x] Phone: roll on top, bottom tab bar (Takes · Controls; Mixer joins in Phase 10), readout hidden while a panel is open, safe-area aware
+- [x] Keyboard and a11y: landmarks (main/aside/nav), drawer `inert` when closed + focus return, Esc closes, shortcuts unchanged; geometry checked at 1440/1100/900/390 px
+- [ ] Look at it on a real desktop, tablet and phone (user); the Claude browser pane is too small for full-size screenshots
 
 ### Phase 8 — Projects & tracks
 - [ ] IndexedDB v2: `projects`, `assets`; migration keeps all existing takes

@@ -15,122 +15,168 @@
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
-    <main class="app">
-      <button id="install" class="install-btn" type="button" hidden>
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4h2v8.6l3.3-3.3 1.4 1.4L12 16.4l-5.7-5.7 1.4-1.4 3.3 3.3zM5 18h14v2H5z"/></svg>
-        Install app
-      </button>
-      <header class="heading">
-        <p id="eyebrow" class="eyebrow">Live pitch</p>
-        <h1 id="title" class="title">My voice</h1>
-      </header>
-
-      <section class="stage">
-        <canvas id="roll" aria-label="Pitch of your voice drawn over piano-key lanes"></canvas>
-        <p id="caption" class="caption" aria-live="polite"></p>
-      </section>
-
-      <section id="transport" class="transport" hidden>
-        <div class="transport-row">
-          <button id="play" class="icon-btn icon-btn-lg" type="button" aria-label="Play">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path class="i-play" d="M8 5.5v13l11-6.5z"/><path class="i-pause" d="M7 5h4v14H7zm6 0h4v14h-4z"/></svg>
+    <div id="studio" class="studio">
+      <!-- Left column: takes library (desktop), drawer (tablet), tab panel (phone) -->
+      <aside id="takes-col" class="col col-left" aria-label="Takes">
+        <div class="col-head">
+          <h2 class="col-title">Takes <span id="takes-count" class="col-count"></span></h2>
+          <button id="takes-close" class="icon-btn drawer-close" type="button" aria-label="Close takes">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19l5.6-5.6 5.6 5.6 1.4-1.4-5.6-5.6L19 6.4 17.6 5 12 10.6z"/></svg>
           </button>
-          <span id="time-current" class="time">0:00</span>
-          <input id="seek" class="seek" type="range" min="0" max="1" step="0.01" value="0" aria-label="Playback position" />
-          <span id="time-total" class="time">0:00</span>
         </div>
-        <div class="transport-row transport-row-ab">
-          <div class="segmented" role="radiogroup" aria-label="Listen to">
-            <button class="seg" type="button" role="radio" aria-checked="false" data-ab="original">Original</button>
-            <button class="seg is-on" type="button" role="radio" aria-checked="true" data-ab="tuned">Tuned</button>
+        <input id="takes-search" class="search" type="search" placeholder="Search takes" aria-label="Search takes" />
+        <ul id="recordings" class="rec-list"></ul>
+      </aside>
+
+      <!-- Center column: heading, piano roll, transport, record controls -->
+      <main class="col col-center">
+        <header class="topbar">
+          <button id="takes-toggle" class="icon-btn topbar-btn" type="button" aria-label="Show takes" aria-controls="takes-col" aria-expanded="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v2H4zm0 5h16v2H4zm0 5h10v2H4z"/></svg>
+          </button>
+          <div class="heading">
+            <p id="eyebrow" class="eyebrow">Live pitch</p>
+            <h1 id="title" class="title">My voice</h1>
           </div>
-          <span id="render-status" class="render-status" aria-live="polite"></span>
-          <button id="export-tuned" class="btn btn-small" type="button">
+          <button id="install" class="install-btn" type="button" hidden>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4h2v8.6l3.3-3.3 1.4 1.4L12 16.4l-5.7-5.7 1.4-1.4 3.3 3.3zM5 18h14v2H5z"/></svg>
-            <span>Tuned WAV</span>
+            Install
           </button>
-        </div>
-      </section>
+        </header>
 
-      <section class="readout" aria-live="polite">
-        <span id="note" class="readout-note">–</span>
-        <span id="detail" class="readout-detail">Press Listen or Record and say something</span>
-      </section>
+        <section class="stage">
+          <canvas id="roll" aria-label="Pitch of your voice drawn over piano-key lanes"></canvas>
+          <p id="caption" class="caption" aria-live="polite"></p>
+        </section>
 
-      <nav class="controls">
-        <button id="listen" class="btn" type="button">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.93V21h2v-2.07A7 7 0 0 0 19 12h-2Z"/></svg>
-          <span>Listen</span>
+        <section id="transport" class="transport" hidden>
+          <div class="transport-row">
+            <button id="play" class="icon-btn icon-btn-lg" type="button" aria-label="Play">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path class="i-play" d="M8 5.5v13l11-6.5z"/><path class="i-pause" d="M7 5h4v14H7zm6 0h4v14h-4z"/></svg>
+            </button>
+            <span id="time-current" class="time">0:00</span>
+            <input id="seek" class="seek" type="range" min="0" max="1" step="0.01" value="0" aria-label="Playback position" />
+            <span id="time-total" class="time">0:00</span>
+          </div>
+          <div class="transport-row transport-row-ab">
+            <div class="segmented" role="radiogroup" aria-label="Listen to">
+              <button class="seg" type="button" role="radio" aria-checked="false" data-ab="original">Original</button>
+              <button class="seg is-on" type="button" role="radio" aria-checked="true" data-ab="tuned">Tuned</button>
+            </div>
+            <span id="render-status" class="render-status" aria-live="polite"></span>
+            <button id="export-tuned" class="btn btn-small" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4h2v8.6l3.3-3.3 1.4 1.4L12 16.4l-5.7-5.7 1.4-1.4 3.3 3.3zM5 18h14v2H5z"/></svg>
+              <span>Tuned WAV</span>
+            </button>
+          </div>
+        </section>
+
+        <section class="readout" aria-live="polite">
+          <span id="note" class="readout-note">–</span>
+          <span id="detail" class="readout-detail">Press Listen or Record and say something</span>
+        </section>
+
+        <nav class="controls" aria-label="Record">
+          <button id="listen" class="btn" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.93V21h2v-2.07A7 7 0 0 0 19 12h-2Z"/></svg>
+            <span>Listen</span>
+          </button>
+          <button id="record" class="btn btn-record" type="button">
+            <span class="rec-dot" aria-hidden="true"></span>
+            <span class="label">Record</span>
+          </button>
+        </nav>
+
+        <p id="status" class="status" role="status"></p>
+      </main>
+
+      <!-- Right column: inspector (desktop/tablet), tab panel (phone) -->
+      <aside id="controls-col" class="col col-right" aria-label="Controls">
+        <details class="section" open>
+          <summary class="section-head">Input</summary>
+          <div class="section-body">
+            <div class="source" role="radiogroup" aria-label="Input">
+              <button class="chip is-on" type="button" role="radio" aria-checked="true" data-source="mic">Mic</button>
+              <button class="chip" type="button" role="radio" aria-checked="false" data-source="demo">Demo tone</button>
+            </div>
+            <label class="switch switch-quiet">
+              <input id="mic-filter" type="checkbox" role="switch" />
+              <span class="switch-track" aria-hidden="true"></span>
+              <span class="switch-label">Mic noise filter <span class="switch-hint">live, browser</span></span>
+            </label>
+          </div>
+        </details>
+
+        <details id="tuning-panel" class="section" open>
+          <summary class="section-head">Auto-tune</summary>
+          <div class="section-body">
+            <label class="switch">
+              <input id="tune-on" type="checkbox" role="switch" />
+              <span class="switch-track" aria-hidden="true"></span>
+              <span class="switch-label">Auto-tune</span>
+            </label>
+            <div class="field-row">
+              <div class="field">
+                <label class="field-label" for="tune-key">Key</label>
+                <select id="tune-key" class="select"></select>
+              </div>
+              <div class="field">
+                <label class="field-label" for="tune-scale">Scale</label>
+                <select id="tune-scale" class="select"></select>
+              </div>
+            </div>
+            <div class="retune">
+              <div id="retune-knob"></div>
+              <div class="retune-text">
+                <span class="field-label">Retune speed</span>
+                <span id="retune-value" class="retune-value">50 ms</span>
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <details id="harmony-panel" class="section" open>
+          <summary class="section-head">Harmony</summary>
+          <div class="section-body">
+            <div id="harmony-voices" class="harmony-voices" role="group" aria-label="Harmony voices"></div>
+            <label class="slider-field">
+              <span class="field-label">Mix</span>
+              <input id="harmony-mix" type="range" min="0" max="100" step="1" value="60" aria-label="Harmony mix" />
+              <span id="harmony-mix-value" class="slider-value">60%</span>
+            </label>
+          </div>
+        </details>
+
+        <details id="cleanup-panel" class="section" open>
+          <summary class="section-head">Clean up</summary>
+          <div class="section-body">
+            <label class="switch">
+              <input id="denoise-on" type="checkbox" role="switch" />
+              <span class="switch-track" aria-hidden="true"></span>
+              <span class="switch-label">Noise reduction</span>
+            </label>
+            <label class="slider-field" id="denoise-amount-field">
+              <span class="field-label">Amount</span>
+              <input id="denoise-amount" type="range" min="3" max="30" step="1" value="12" aria-label="Noise reduction amount" />
+              <span id="denoise-amount-value" class="slider-value">12 dB</span>
+            </label>
+          </div>
+        </details>
+      </aside>
+
+      <!-- Phone: bottom tab bar switching the panel under the roll -->
+      <nav class="tabbar" aria-label="Panels">
+        <button class="tab" type="button" data-tab="takes" aria-controls="takes-col" aria-expanded="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v2H4zm0 5h16v2H4zm0 5h10v2H4z"/></svg>
+          <span>Takes</span>
         </button>
-        <button id="record" class="btn btn-record" type="button">
-          <span class="rec-dot" aria-hidden="true"></span>
-          <span class="label">Record</span>
+        <button class="tab" type="button" data-tab="controls" aria-controls="controls-col" aria-expanded="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h2v6h2v2H5V9h2zm0 10h2v8H7zm6-10h2v10h2v2h-6v-2h2zm0 14h2v4h-2zm6-14h2v4h2v2h-6V7h2zm0 8h2v6h-2z"/></svg>
+          <span>Controls</span>
         </button>
       </nav>
-
-      <div class="source" role="radiogroup" aria-label="Input">
-        <span class="source-label">Input</span>
-        <button class="chip is-on" type="button" role="radio" aria-checked="true" data-source="mic">Mic</button>
-        <button class="chip" type="button" role="radio" aria-checked="false" data-source="demo">Demo tone</button>
-      </div>
-
-      <section id="tuning-panel" class="tuning" aria-label="Auto-tune">
-        <label class="switch">
-          <input id="tune-on" type="checkbox" role="switch" />
-          <span class="switch-track" aria-hidden="true"></span>
-          <span class="switch-label">Auto-tune</span>
-        </label>
-        <div class="field">
-          <label class="field-label" for="tune-key">Key</label>
-          <select id="tune-key" class="select"></select>
-        </div>
-        <div class="field">
-          <label class="field-label" for="tune-scale">Scale</label>
-          <select id="tune-scale" class="select"></select>
-        </div>
-        <div class="retune">
-          <div id="retune-knob"></div>
-          <div class="retune-text">
-            <span class="field-label">Retune speed</span>
-            <span id="retune-value" class="retune-value">50 ms</span>
-          </div>
-        </div>
-        <div class="harmony">
-          <span class="field-label">Harmony</span>
-          <div id="harmony-voices" class="harmony-voices" role="group" aria-label="Harmony voices"></div>
-          <label class="harmony-mix">
-            <span class="field-label">Mix</span>
-            <input id="harmony-mix" type="range" min="0" max="100" step="1" value="60" aria-label="Harmony mix" />
-            <span id="harmony-mix-value" class="harmony-mix-value">60%</span>
-          </label>
-        </div>
-      </section>
-
-      <section id="cleanup-panel" class="tuning cleanup" aria-label="Clean up">
-        <label class="switch">
-          <input id="denoise-on" type="checkbox" role="switch" />
-          <span class="switch-track" aria-hidden="true"></span>
-          <span class="switch-label">Noise reduction</span>
-        </label>
-        <label class="slider-field" id="denoise-amount-field">
-          <span class="field-label">Amount</span>
-          <input id="denoise-amount" type="range" min="3" max="30" step="1" value="12" aria-label="Noise reduction amount" />
-          <span id="denoise-amount-value" class="slider-value">12 dB</span>
-        </label>
-        <label class="switch switch-quiet">
-          <input id="mic-filter" type="checkbox" role="switch" />
-          <span class="switch-track" aria-hidden="true"></span>
-          <span class="switch-label">Mic noise filter <span class="switch-hint">live, browser</span></span>
-        </label>
-      </section>
-
-      <p id="status" class="status" role="status"></p>
-
-      <section class="library">
-        <h2 class="library-title">Recordings</h2>
-        <ul id="recordings" class="rec-list"></ul>
-      </section>
-    </main>
+      <div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
