@@ -295,7 +295,10 @@ npm test           # vitest unit tests
 npm run dev:lan    # HTTPS dev server on the LAN (phone mic testing; accept the cert warning)
 npm run preview:lan # build + HTTPS preview on the LAN
 npm run icons      # regenerate public/icons/*.png
+npm run screenshots # regenerate README screenshots (headless Chrome via puppeteer-core; needs `npm run dev`; GIF needs ffmpeg)
 ```
+
+- **README** (`README.md`): features with screenshots from `docs/screenshots/`, made by `scripts/screenshots.mjs` (fresh browser profile, demo voice + generated beat, driven through `window.recorder`). Re-run it after visible UI changes.
 
 - The **Demo tone** button feeds a synthetic gliding voice-like tone through the same pipeline, for testing without a microphone.
 - Microphone access needs a secure context: localhost is fine; a phone on the LAN needs HTTPS (handled in a later phase).

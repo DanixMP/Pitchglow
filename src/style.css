@@ -637,9 +637,18 @@ body {
 
 .col-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   margin-bottom: 12px;
+}
+
+/* Titles and button labels never break mid-word; when the column is narrow, the buttons move under
+   the title instead. */
+.col-title,
+.col-head .btn {
+  white-space: nowrap;
 }
 
 .col-title {
@@ -1578,4 +1587,8 @@ body {
 
 .monitor-stats.is-warn {
   color: var(--accent);
+}
+
+.tracks-actions .btn {
+  white-space: nowrap;
 }
