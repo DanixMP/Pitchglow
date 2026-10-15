@@ -427,7 +427,8 @@ tests/                    vitest unit tests (dsp, tracker, wav, packing, storage
   - `pwa.ts` skips the service worker and the Install button inside Electron (service workers aren't available on `app://`).
   - `@breezystack/lamejs` moved to devDependencies (Vite bundles it), so the package has no runtime `node_modules`.
   - Targets: Windows NSIS installer (`Recorder-Setup-<v>.exe`: per-user, choose folder, shortcuts, MIT license page) + portable exe; macOS dmg; Linux AppImage. Output in `release/` (gitignored). Icon `build/icon.png` (512 px).
-  - **Releases:** `.github/workflows/release.yml` runs on a `v*` tag (or by hand): Windows/macOS/Linux runners do `npm ci`, test, build, then `electron-builder --publish always`. That makes a **draft** release with the installers (unsigned: `CSC_IDENTITY_AUTO_DISCOVERY=false`).
+  - **Releases:** `.github/workflows/release.yml` runs on a `v*` tag (or by hand with an existing tag): Windows/macOS/Linux runners do `npm ci`, test, build, `electron-builder --publish never` and upload their files as artifacts. Then one `release` job creates **a single draft** release with all installers (`softprops/action-gh-release`; unsigned: `CSC_IDENTITY_AUTO_DISCOVERY=false`).
+    - Fix after v0.1.0: when each job published by itself (`--publish always`), they raced and made two drafts (the dmg landed in its own).
   - Verified: `npm run dist:win` built both exes (~111 MB). The packaged app, driven over DevTools:
     - loads `app://recorder/index.html` (secure context, no service worker, Install hidden, 0 console errors);
     - the demo voice gives live notes in the readout and the line on the roll;
