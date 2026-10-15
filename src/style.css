@@ -175,7 +175,7 @@ body {
   color: var(--muted);
   font: 600 11px var(--font);
   letter-spacing: 0.04em;
-  cursor: pointer;
+  cursor: var(--cursor-pointer);
 }
 
 .tab svg {
@@ -226,7 +226,7 @@ body {
   background: var(--surface);
   color: var(--fg);
   font: 600 12px var(--font);
-  cursor: pointer;
+  cursor: var(--cursor-pointer);
 }
 
 .install-btn svg {
@@ -291,7 +291,7 @@ body {
 }
 
 #roll.is-scrubbing {
-  cursor: grabbing;
+  cursor: var(--cursor-grabbing);
 }
 
 .caption {
@@ -376,7 +376,7 @@ body {
   background: transparent;
   color: var(--muted);
   font: 600 13px var(--font);
-  cursor: pointer;
+  cursor: var(--cursor-pointer);
 }
 
 .seg.is-on {
@@ -391,7 +391,7 @@ body {
 
 .seg:disabled {
   opacity: 0.4;
-  cursor: default;
+  cursor: var(--cursor-default);
 }
 
 .seg:focus-visible {
@@ -483,7 +483,7 @@ body {
   background: var(--surface-2);
   color: var(--fg);
   font: 600 15px var(--font);
-  cursor: pointer;
+  cursor: var(--cursor-pointer);
   transition: background 0.15s, transform 0.1s, box-shadow 0.15s;
 }
 
@@ -497,7 +497,7 @@ body {
 
 .btn:disabled {
   opacity: 0.4;
-  cursor: default;
+  cursor: var(--cursor-default);
   transform: none;
 }
 
@@ -572,7 +572,7 @@ body {
   border: none;
   background: transparent;
   color: var(--muted);
-  cursor: pointer;
+  cursor: var(--cursor-pointer);
   transition: background 0.15s, color 0.15s;
 }
 
@@ -619,7 +619,7 @@ body {
   background: transparent;
   color: var(--muted);
   font: 600 13px var(--font);
-  cursor: pointer;
+  cursor: var(--cursor-pointer);
 }
 
 .chip.is-on {
@@ -630,7 +630,7 @@ body {
 
 .chip:disabled {
   opacity: 0.4;
-  cursor: default;
+  cursor: var(--cursor-default);
 }
 
 /* --- side columns: headers, inspector sections -------------------------------------------- */
@@ -710,7 +710,7 @@ body {
   letter-spacing: 0.18em;
   text-transform: uppercase;
   color: var(--muted);
-  cursor: pointer;
+  cursor: var(--cursor-pointer);
   user-select: none;
 }
 
@@ -791,12 +791,12 @@ body {
     no-repeat right 6px center / 18px;
   color: var(--fg);
   font: 600 14px var(--font);
-  cursor: pointer;
+  cursor: var(--cursor-pointer);
 }
 
 .select:disabled {
   opacity: 0.45;
-  cursor: default;
+  cursor: var(--cursor-default);
 }
 
 .select:focus-visible {
@@ -808,7 +808,7 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer);
   font-weight: 700;
   font-size: 15px;
 }
@@ -1006,7 +1006,7 @@ body {
   border-radius: 12px;
   background: var(--surface);
   border: 1px solid transparent;
-  cursor: pointer;
+  cursor: var(--cursor-pointer);
 }
 
 .rec:hover {
@@ -1112,7 +1112,7 @@ body {
 }
 
 .rec[draggable='true'] {
-  cursor: grab;
+  cursor: var(--cursor-grab);
 }
 
 .rec.is-dragging {
@@ -1165,7 +1165,7 @@ body {
   border-radius: 10px;
   background: var(--surface);
   border: 1px solid transparent;
-  cursor: pointer;
+  cursor: var(--cursor-pointer);
 }
 
 .track:hover {
@@ -1219,7 +1219,7 @@ body {
   background: transparent;
   color: var(--muted);
   font: 700 12px var(--font);
-  cursor: pointer;
+  cursor: var(--cursor-pointer);
 }
 
 .track-btn:hover {
@@ -1356,7 +1356,7 @@ body {
 }
 
 .track.is-instrumental {
-  cursor: default;
+  cursor: var(--cursor-default);
   background: #141418;
 }
 
@@ -1473,7 +1473,7 @@ body {
   margin-top: 6px;
   background: transparent;
   border: 1px solid var(--border);
-  cursor: default;
+  cursor: var(--cursor-default);
   grid-template-areas: 'c n . l l . f d .';
 }
 
@@ -1619,11 +1619,11 @@ body {
 }
 
 #roll.is-keys-playable.is-over-keys {
-  cursor: pointer;
+  cursor: var(--cursor-pointer);
 }
 
 #roll.is-note-hover {
-  cursor: grab;
+  cursor: var(--cursor-grab);
 }
 
 #roll.is-note-edge {
@@ -1631,7 +1631,7 @@ body {
 }
 
 #roll.is-note-dragging {
-  cursor: grabbing;
+  cursor: var(--cursor-grabbing);
 }
 
 /* --- Phase 17: tempo & click ---------------------------------------------------------------------- */
@@ -1850,7 +1850,7 @@ body {
 
 .ns.is-disabled {
   opacity: 0.4;
-  cursor: default;
+  cursor: var(--cursor-default);
 }
 
 .ns.is-disabled .ns-thumb {
@@ -2213,7 +2213,7 @@ body {
   padding: 0;
   border: none;
   background: transparent;
-  cursor: pointer;
+  cursor: var(--cursor-pointer);
   width: 26px;
   height: 26px;
   margin-left: auto;
@@ -2286,12 +2286,12 @@ body {
   margin: 0 -14px;
   padding: 10px 14px;
   background: inherit;
-  cursor: grab;
+  cursor: var(--cursor-grab);
   touch-action: none;
 }
 
 .float-panel.is-dragging .section-head {
-  cursor: grabbing;
+  cursor: var(--cursor-grabbing);
 }
 
 /* The docked section's place in the inspector while it floats. */
@@ -2315,5 +2315,166 @@ body {
   from {
     opacity: 0;
     transform: translateY(6px) scale(0.98);
+  }
+}
+
+/* ===========================================================================================
+   App frame (a margin on every side, columns as cards), neon scrollbars, custom cursors
+   =========================================================================================== */
+
+:root {
+  /* The frame around the app and between its columns. */
+  --frame: #08080a;
+  --frame-gap: 10px;
+  --frame-radius: 14px;
+  /* Custom cursors (neon on dark; the keyword after each is the fallback). */
+  --cursor-default: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24'><path d='M4 2.5v16.2l4.2-3.9 2.7 6.1 2.7-1.2-2.7-6 5.9-.3z' fill='%23f4f2ee' stroke='%230b0b0c' stroke-width='1.5' stroke-linejoin='round'/></svg>") 4 3, default;
+  --cursor-pointer: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24'><path d='M4 2.5v16.2l4.2-3.9 2.7 6.1 2.7-1.2-2.7-6 5.9-.3z' fill='%23f6c453' stroke='%230b0b0c' stroke-width='1.5' stroke-linejoin='round'/></svg>") 4 3, pointer;
+  --cursor-grab: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24'><path d='M12 2l3.5 3.5H13v5h5V8l3.5 3.5L18 15v-2.5h-5v5h2.5L12 21l-3.5-3.5H11v-5H6V15l-3.5-3.5L6 8v2.5h5v-5H8.5z' fill='%23f6c453' stroke='%230b0b0c' stroke-width='1.2' stroke-linejoin='round'/></svg>") 12 12, grab;
+  --cursor-grabbing: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24'><path d='M12 2l3.5 3.5H13v5h5V8l3.5 3.5L18 15v-2.5h-5v5h2.5L12 21l-3.5-3.5H11v-5H6V15l-3.5-3.5L6 8v2.5h5v-5H8.5z' fill='%23ffffff' stroke='%230b0b0c' stroke-width='1.2' stroke-linejoin='round'/></svg>") 12 12, grabbing;
+  --cursor-text: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24'><g fill='none' stroke-linecap='round'><path d='M9 4h6M9 20h6M12 4v16' stroke='%230b0b0c' stroke-width='3.6'/><path d='M9 4h6M9 20h6M12 4v16' stroke='%23f4f2ee' stroke-width='1.6'/></g></svg>") 12 12, text;
+}
+
+/* Touch screens have no cursor to customise. */
+@media (hover: none) {
+  :root {
+    --cursor-default: auto;
+    --cursor-pointer: auto;
+    --cursor-grab: auto;
+    --cursor-grabbing: auto;
+    --cursor-text: auto;
+  }
+}
+
+html {
+  cursor: var(--cursor-default);
+}
+
+html,
+body {
+  background: var(--frame);
+}
+
+button:not(:disabled),
+a[href],
+summary,
+select:not(:disabled),
+label.switch,
+[role='button'],
+[role='radio'],
+[role='tab'],
+input[type='checkbox']:not(:disabled) {
+  cursor: var(--cursor-pointer);
+}
+
+button:disabled,
+select:disabled {
+  cursor: var(--cursor-default);
+}
+
+input[type='text'],
+input[type='search'],
+input[type='number'],
+textarea,
+[contenteditable='true'] {
+  cursor: var(--cursor-text);
+}
+
+/* --- Frame: a margin on every side (safe areas included), the columns as rounded cards ------- */
+
+.studio {
+  gap: var(--frame-gap);
+  padding: max(var(--frame-gap), env(safe-area-inset-top)) max(var(--frame-gap), env(safe-area-inset-right))
+    max(var(--frame-gap), env(safe-area-inset-bottom)) max(var(--frame-gap), env(safe-area-inset-left));
+  background: var(--frame);
+}
+
+.studio > .col,
+.studio > .rail {
+  border: 1px solid var(--border);
+  border-radius: var(--frame-radius);
+}
+
+.studio > .col-center {
+  background: var(--bg);
+}
+
+/* The frame already keeps clear of notches: no second safe-area inset inside the cards. */
+.studio > .col-left,
+.studio > .col-right,
+.studio > .rail {
+  padding-top: 14px;
+}
+
+.studio .topbar {
+  padding-top: 12px;
+}
+
+@media (min-width: 760px) and (max-width: 1099px) {
+  /* Tablet: the takes drawer floats inside the frame too. */
+  .studio > .col-left {
+    inset: var(--frame-gap) auto var(--frame-gap) var(--frame-gap);
+    transform: translateX(calc(-100% - 2 * var(--frame-gap)));
+  }
+
+  .studio.is-drawer-open > .col-left {
+    transform: none;
+  }
+}
+
+@media (max-width: 759px) {
+  :root {
+    --frame-gap: 6px;
+    --frame-radius: 12px;
+  }
+
+  .studio > .col-left,
+  .studio > .col-right {
+    border: 1px solid var(--border);
+  }
+
+  .studio .tabbar {
+    border: 1px solid var(--border);
+    border-radius: var(--frame-radius);
+    padding-bottom: 0;
+    overflow: hidden;
+  }
+}
+
+/* --- Neon scrollbars ---------------------------------------------------------------------------- */
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: #2e2e35 padding-box;
+  min-height: 36px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(246, 196, 83, 0.55) padding-box;
+}
+
+::-webkit-scrollbar-thumb:active {
+  background: var(--accent) padding-box;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Firefox (no ::-webkit-scrollbar): the standard properties. */
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #2e2e35 transparent;
   }
 }

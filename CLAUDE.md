@@ -421,6 +421,13 @@ tests/                    vitest unit tests (dsp, tracker, wav, packing, storage
 - **Collapsible columns** (≥1100 px for Songs/Takes, ≥760 px for the inspector): « / » buttons in the column heads, or **[** / **]**, close a column to a 44 px **rail**.
   - The left rail has an open button plus Songs/Takes buttons; the right rail has an open button and a vertical "Inspector" label.
   - State: `state.layout = { leftCollapsed, rightCollapsed }`, in `localStorage['recorder.layout']`. Classes `.is-left-collapsed` / `.is-right-collapsed` on `#studio` switch the grid, with a short transition. Phones keep the tab bar.
+- **App frame:** the studio has a margin on every side and between its columns (`--frame-gap`: 10 px, 6 px on phones; safe areas included), on a darker `--frame` background. Every column, rail and the phone tab bar is a rounded card (`--frame-radius`). The tablet drawer floats inside the frame too.
+- **Custom cursors everywhere** (CSS variables, neon SVGs with keyword fallbacks, `auto` on touch):
+  - `--cursor-default` (arrow, on `html`) and `--cursor-pointer` (amber arrow: buttons, summaries, selects, switches, chips, tabs);
+  - `--cursor-grab` / `--cursor-grabbing` (4-way move: floating windows, note blobs, drags) and `--cursor-text` (I-beam: text/search/number fields);
+  - plus Phase 16's crosshair / ↔.
+  - No raw `cursor: pointer|default|grab` is left in the CSS. Verified in Chrome: every element kind gets its custom `url(...)` cursor.
+- **Scrollbars:** thin rounded thumbs (`::-webkit-scrollbar`, amber on hover/drag); Firefox gets `scrollbar-width: thin` + colours.
 - **Pop-out sections** (`src/ui/popout.ts`): every inspector section (`details.section[id]`) gets a ⧉ button in its title.
   - It moves the *same* element into a floating `.float-panel` (fixed, draggable by the title, resizable from the corner, click to bring to front), so every panel's bindings keep working.
   - A dashed placeholder with a **Dock** button holds its place in the inspector. The dock icon in the window's title, or the placeholder, puts it back.
@@ -707,4 +714,6 @@ The user asked for more UX work: first a collapsible Songs column, then pop-able
 
 - [x] Songs & Takes column closes to a rail with one click (« / [ ); remembered
 - [x] Inspector closes to a rail too (» / ] ); each section pops out into a floating, draggable, resizable window and docks back with one click; remembered; docked on phones
-- [ ] Feel check (user): rail width, window placement, dragging on a trackpad
+- [x] A margin around the whole app; columns as rounded cards (desktop, tablet, phone)
+- [x] Custom cursors everywhere (arrow, pointer, move, text + the context cursors); neon scrollbars (every range slider was already the Neon slider)
+- [ ] Feel check (user): rail width, window placement, dragging on a trackpad, frame size, cursor size

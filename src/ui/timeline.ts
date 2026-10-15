@@ -292,7 +292,7 @@ export class Timeline {
         const onEdge = !!loop && (this.nearEdge(e.clientX, loop.start) || this.nearEdge(e.clientX, loop.end));
         // Context cursors (style.css): resize on loop edges, draw on the ruler, move on clips.
         if (this.onRuler(e.clientY)) c.style.cursor = onEdge ? 'var(--cursor-ew)' : 'var(--cursor-crosshair)';
-        else c.style.cursor = this.clipAt(e.clientX, e.clientY) ? 'var(--cursor-ew)' : 'pointer';
+        else c.style.cursor = this.clipAt(e.clientX, e.clientY) ? 'var(--cursor-ew)' : 'var(--cursor-pointer)';
         return;
       }
       const rect = c.getBoundingClientRect();
