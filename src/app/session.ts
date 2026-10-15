@@ -19,6 +19,7 @@ import { exportLength, renderMix, renderStems, renderVoice } from '../audio/mixd
 import { cleanupNotes, cleanupSettingsOf, type ProcessSettings } from '../dsp/process';
 import { CLEANUP_OFF, type CleanupAnalysis } from '../dsp/cleanup';
 import type { VoicePlans } from '../dsp/voice-engine';
+import { buildWarp, isNeutralEdit, noteSpan, segmentNotes, warpToOutput, type NoteEdit, type SungNote } from '../dsp/note-edit';
 import {
   alignToBeat,
   clampBpm,
@@ -26,6 +27,7 @@ import {
   countInLead,
   gridOf,
   normalizeDownbeat,
+  snapToGrid,
   TAP_RESET_SECONDS,
   takeOnset,
   tapTempo,
@@ -142,6 +144,10 @@ export class Session {
   private stash: { tuning: TuningPrefs; cleanup: CleanupPrefs } | null = null;
   /** Tap-tempo taps (seconds, performance clock). */
   private taps: number[] = [];
+  /** Sung notes per take (segmented once), and the note being dragged on the roll. */
+  private takeNotes = new Map<string, SungNote[]>();
+  private noteDragBase: { trackId: string; index: number; edit: NoteEdit; span: { start: number; end: number }; key: string } | null = null;
+  private noteDrags = 0;
   private saveTimers = new Map<string, number>();
   /** Undo/redo of the open song (snapshots). */
   private readonly history = new History<Project>();
@@ -189,6 +195,7 @@ export class Session {
     this.liveOrigin = this.player.context.currentTime;
     this.take = record ? { audio: new SampleBuffer(), frames: [], firstTime: null } : null;
     this.roll.start();
+    this.roll.setNotes(null, null);
     this.store.set({ mode: record ? 'recording' : 'listening', recordingSeconds: 0, status: '' });
     this.syncMonitor();
     const song = openProject(this.store.get());
@@ -614,6 +621,8 @@ export class Session {
       mode: 'idle',
       detection: null,
       history: { canUndo: false, canRedo: false },
+      noteMode: false,
+      selectedNote: null,
       ...(stash ? { tuning: stash.tuning, cleanup: { ...stash.cleanup, micFilter: this.store.get().cleanup.micFilter } } : {}),
     });
 
@@ -752,6 +761,8 @@ export class Session {
     const track = project?.tracks.find((t) => t.id === trackId && t.kind === 'vocal') ?? null;
     const base = this.stash ?? { tuning: state.tuning, cleanup: state.cleanup };
     this.store.set({
+      ...(track?.id !== state.selectedTrackId ? { selectedNote: null } : {}),
+      ...(track ? {} : { noteMode: false }),
       selectedTrackId: track?.id ?? null,
       // No track selected: the inspector shows the global defaults (used for new tracks).
       tuning: track ? track.tuning : base.tuning,
@@ -984,6 +995,166 @@ export class Session {
     this.refreshSongView();
   }
 
+  // --- note editing (Phase 18) ------------------------------------------------------------------
+
+  /** The selected vocal track and its take, when there is one to edit. */
+  private editTarget(): { project: Project; track: Track; take: LoadedTake; notes: SungNote[] } | null {
+    const state = this.store.get();
+    const project = openProject(state);
+    const track = project?.tracks.find((t) => t.id === state.selectedTrackId && t.kind === 'vocal');
+    const take = track?.takeId ? this.takes.get(track.takeId) : undefined;
+    if (!project || !track || !take) return null;
+    return { project, track, take, notes: this.notesOf(take) };
+  }
+
+  /** The sung notes of a take (segmented once). */
+  notesOf(take: { meta: RecordingMeta; frames: PitchFrame[] }): SungNote[] {
+    let notes = this.takeNotes.get(take.meta.id);
+    if (!notes) {
+      notes = segmentNotes(take.frames);
+      this.takeNotes.set(take.meta.id, notes);
+    }
+    return notes;
+  }
+
+  /** Take time (s) as sung -> as heard, after the track's note timing edits. */
+  private takeTimeMap(track: Track, take: LoadedTake): (t: number) => number {
+    const edits = track.noteEdits ?? [];
+    if (!edits.some((e) => e.start !== undefined)) return (t) => t;
+    // In milliseconds, so the warp's 1-unit margins are 1 ms.
+    const warp = buildWarp(this.notesOf(take), edits, 1000, take.meta.duration * 1000);
+    return warp ? (t) => warpToOutput(warp, t * 1000) / 1000 : (t) => t;
+  }
+
+  /** Note editing on the roll on/off (N). Needs a vocal track selected in an open song. */
+  toggleNoteMode(on = !this.store.get().noteMode): void {
+    if (on && !this.editTarget()) {
+      this.store.set({ status: 'Select a vocal track to edit its notes.' });
+      return;
+    }
+    this.store.set({ noteMode: on, ...(on ? {} : { selectedNote: null }), status: '' });
+    this.syncNoteBlobs();
+  }
+
+  selectNote(index: number | null): void {
+    const target = this.editTarget();
+    if (index !== null && (!target || index < 0 || index >= target.notes.length)) return;
+    this.store.set({ selectedNote: index });
+    this.syncNoteBlobs();
+  }
+
+  /** Selects the next (+1) or previous (−1) note; the first one when none is selected. */
+  stepNote(dir: 1 | -1): void {
+    const target = this.editTarget();
+    if (!target?.notes.length) return;
+    const cur = this.store.get().selectedNote;
+    const next = cur === null ? (dir > 0 ? 0 : target.notes.length - 1) : Math.min(target.notes.length - 1, Math.max(0, cur + dir));
+    this.selectNote(next);
+    // Bring it into view: put the playhead at its start.
+    const n = target.notes[next];
+    const span = noteSpan(n, this.noteEdit(target.track, n));
+    if (!this.player.playing) this.seek(span.start + target.track.offset);
+  }
+
+  /** The edit stored for a note (if any). */
+  private noteEdit(track: Track, note: SungNote): NoteEdit | undefined {
+    return track.noteEdits?.find((e) => e.from === note.from && e.to === note.to);
+  }
+
+  /** Current edit of a note (neutral when it has none). */
+  noteEditOf(index: number): { note: SungNote; edit: NoteEdit } | null {
+    const target = this.editTarget();
+    const note = target?.notes[index];
+    if (!target || !note) return null;
+    return { note, edit: this.noteEdit(target.track, note) ?? { from: note.from, to: note.to, shift: 0, amount: null } };
+  }
+
+  /** Changes one note's edit (pitch, amount, timing). Undoable; drags coalesce under `historyKey`. */
+  editNote(index: number, patch: Partial<Omit<NoteEdit, 'from' | 'to'>>, historyKey: string | null = null, windowMs?: number): void {
+    const target = this.editTarget();
+    const cur = this.noteEditOf(index);
+    if (!target || !cur) return;
+    const next: NoteEdit = { ...cur.edit, ...patch };
+    if (next.start === undefined || next.end === undefined) {
+      delete next.start;
+      delete next.end;
+    }
+    const others = (target.track.noteEdits ?? []).filter((e) => !(e.from === next.from && e.to === next.to));
+    const noteEdits = isNeutralEdit(next) ? others : [...others, next].sort((a, b) => a.from - b.from);
+    this.mutateProject(target.project.id, (p) => updateTrackModel(p, target.track.id, { noteEdits }), historyKey, windowMs);
+    this.updateTrackVoice(target.track.id);
+    this.refreshSongView();
+  }
+
+  resetNote(index: number): void {
+    this.editNote(index, { shift: 0, amount: null, start: undefined, end: undefined });
+  }
+
+  /** Removes every note edit of the selected track. */
+  resetAllNotes(): void {
+    const target = this.editTarget();
+    if (!target?.track.noteEdits?.length) return;
+    this.mutateProject(target.project.id, (p) => updateTrackModel(p, target.track.id, { noteEdits: [] }));
+    this.updateTrackVoice(target.track.id);
+    this.refreshSongView();
+  }
+
+  /**
+   * A note dragged on the roll: up/down moves its pitch (whole semitones; free with Alt), sideways
+   * moves it in time (snapped to 1/16 of the song's grid; free with Alt), its ends stretch it. It
+   * stays between its neighbours (which give way down to 50 ms). One undo step per drag.
+   */
+  dragNote(drag: { index: number; kind: 'move' | 'start' | 'end'; semitones: number; seconds: number; free: boolean; done: boolean }): void {
+    const target = this.editTarget();
+    const cur = this.noteEditOf(drag.index);
+    if (!target || !cur) return;
+    if (!this.noteDragBase || this.noteDragBase.index !== drag.index || this.noteDragBase.trackId !== target.track.id) {
+      // One undo step per drag, however long it takes.
+      this.noteDragBase = { trackId: target.track.id, index: drag.index, edit: cur.edit, span: noteSpan(cur.note, cur.edit), key: `notedrag:${++this.noteDrags}` };
+    }
+    const base = this.noteDragBase;
+    const key = base.key;
+    if (drag.semitones) {
+      const shift = drag.free ? Math.round((base.edit.shift + drag.semitones) * 100) / 100 : Math.round(base.edit.shift + drag.semitones);
+      if (shift !== cur.edit.shift) this.editNote(drag.index, { shift }, key, Infinity);
+    } else if (drag.seconds) {
+      const { notes, track, take, project } = target;
+      const spanOf = (i: number) => noteSpan(notes[i], this.noteEdit(track, notes[i]));
+      const MIN = 0.05;
+      const lo = drag.index > 0 ? spanOf(drag.index - 1).start + MIN : 0;
+      const hi = drag.index + 1 < notes.length ? spanOf(drag.index + 1).end - MIN : take.meta.duration;
+      const grid = gridOf(project);
+      const snap = (t: number) => (drag.free || !grid ? t : snapToGrid(t + track.offset, grid, 0.25, 0.01) - track.offset);
+      let { start, end } = base.span;
+      if (drag.kind === 'move') {
+        const len = end - start;
+        start = Math.min(hi - len, Math.max(lo, snap(start + drag.seconds)));
+        end = start + len;
+      } else if (drag.kind === 'start') start = Math.min(end - MIN, Math.max(lo, snap(start + drag.seconds)));
+      else end = Math.max(start + MIN, Math.min(hi, snap(end + drag.seconds)));
+      const r = (t: number) => Math.round(t * 1000) / 1000;
+      const sung = cur.note;
+      const asSung = Math.abs(start - sung.start) < 0.0005 && Math.abs(end - sung.end) < 0.0005;
+      this.editNote(drag.index, asSung ? { start: undefined, end: undefined } : { start: r(start), end: r(end) }, key, Infinity);
+    }
+    if (drag.done) this.noteDragBase = null;
+  }
+
+  /** Points the roll's note blobs at the selected track (or hides them). */
+  private syncNoteBlobs(): void {
+    const state = this.store.get();
+    const target = state.noteMode && state.mode === 'playback' ? this.editTarget() : null;
+    if (!target) return this.roll.setNotes(null, null);
+    const at = this.takeTimeMap(target.track, target.take);
+    this.roll.setNotes(
+      target.notes.map((n) => {
+        const edit = this.noteEdit(target.track, n);
+        return { from: n.from, to: n.to, start: at(n.start) + target.track.offset, end: at(n.end) + target.track.offset, edited: !!edit };
+      }),
+      state.selectedNote,
+    );
+  }
+
   undo(): void {
     this.restore((current) => this.history.undo(current));
   }
@@ -1025,10 +1196,10 @@ export class Session {
    * Changes a song. For the open song the change is recorded for undo, unless `historyKey` is false;
    * edits with the same key in quick succession (a drag) become one undo step.
    */
-  private mutateProject(id: string, fn: (p: Project) => Project, historyKey: string | null | false = null): void {
+  private mutateProject(id: string, fn: (p: Project) => Project, historyKey: string | null | false = null, windowMs?: number): void {
     const before = this.store.get().projects.find((p) => p.id === id);
     if (before && historyKey !== false && id === this.store.get().projectId) {
-      this.history.push(before, historyKey);
+      this.history.push(before, historyKey, Date.now(), windowMs);
       this.publishHistory();
     }
     let updated: Project | null = null;
@@ -1068,18 +1239,36 @@ export class Session {
     const state = this.store.get();
     const project = openProject(state);
     if (!project || this.isLive) return;
-    // As heard: shifted by each track's offset and transposed by its pitch + the song's key shift.
+    // As heard: moved by note timing edits, shifted by each track's offset and transposed by its
+    // pitch + the song's key shift.
     const shifted = (t: Track) => {
       const take = t.takeId ? this.takes.get(t.takeId) : undefined;
+      if (!take) return [];
       const st = trackSemitones(t, project);
-      return take ? take.frames.map((f) => ({ ...f, time: f.time + t.offset, midi: f.midi === null ? null : f.midi + st })) : [];
+      const at = this.takeTimeMap(t, take);
+      return take.frames.map((f) => ({ ...f, time: at(f.time) + t.offset, midi: f.midi === null ? null : f.midi + st }));
     };
     this.roll.setTuning(this.rollTuning());
     this.roll.setGrid(gridOf(project));
     this.roll.setScaleHint(project.key ? transposeScale(project.key, project.keyShift) : null);
     const selected = project.tracks.find((t) => t.id === state.selectedTrackId);
-    this.roll.setGhosts(project.tracks.filter((t) => t !== selected && t.kind === 'vocal').map((t) => ({ frames: shifted(t), hue: t.hue })));
-    this.roll.showRecording(selected ? shifted(selected) : [], this.player.duration, this.player.currentTime);
+    // Ghosts show other tracks' pitch edits too (their lines are drawn from the sung pitch).
+    this.roll.setGhosts(
+      project.tracks
+        .filter((t) => t !== selected && t.kind === 'vocal')
+        .map((t) => {
+          const frames = shifted(t);
+          const edits = t.noteEdits ?? [];
+          if (!edits.length) return { frames, hue: t.hue };
+          const moved = frames.map((f) => ({ ...f }));
+          for (const e of edits) for (let i = e.from; i < Math.min(e.to, moved.length); i++) if (moved[i].midi !== null) moved[i].midi! += e.shift;
+          return { frames: moved, hue: t.hue };
+        }),
+    );
+    this.roll.setNoteEdits(selected?.noteEdits ?? []);
+    // While editing notes the view stays put (it would jump as notes move).
+    this.roll.showRecording(selected ? shifted(selected) : [], this.player.duration, this.player.currentTime, state.noteMode);
+    this.syncNoteBlobs();
   }
 
   // --- instrumentals --------------------------------------------------------------------------
@@ -1308,7 +1497,14 @@ export class Session {
         key !== voice.sentKey ? { key, samples: take.samples, sampleRate: take.meta.sampleRate, targetRate: rate, frames: take.frames } : undefined;
       voice.sentKey = key;
       try {
-        const r = await this.renderer.voice(channel, { prepare, tune: settings.tune, semitones: settings.pitch ?? 0, voice: settings.voice, have: voice.version });
+        const r = await this.renderer.voice(channel, {
+          prepare,
+          tune: settings.tune,
+          semitones: settings.pitch ?? 0,
+          voice: settings.voice,
+          notes: settings.notes,
+          have: voice.version,
+        });
         if (!r || !isCurrent()) return; // superseded, removed or closed
         const prepared = r.version !== voice.version;
         if (prepared) {

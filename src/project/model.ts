@@ -3,6 +3,7 @@
 // A project is a song: one optional instrumental (Phase 9) plus any number of vocal tracks. Each
 // vocal track points at a take in the library and carries its own mix and processing settings.
 
+import type { NoteEdit } from '../dsp/note-edit';
 import type { Scale } from '../dsp/scales';
 import type { SongFx, TrackFx } from './fx';
 import type { TrackVoice } from './voice';
@@ -39,6 +40,8 @@ export interface Track {
   fx?: TrackFx;
   /** Voice character: formant, whisper, robot (Phase 15; missing = natural). */
   voice?: TrackVoice;
+  /** Note edits: pitch, correction amount, timing per sung note (Phase 18; missing = none). */
+  noteEdits?: NoteEdit[];
 }
 
 export interface Project {

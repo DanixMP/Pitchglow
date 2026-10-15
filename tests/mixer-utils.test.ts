@@ -38,6 +38,14 @@ describe('History', () => {
     expect(h.canUndo).toBe(false);
   });
 
+  it('keeps a slow gesture (its own key, no time limit) as one step', () => {
+    const h = new History<number>();
+    h.push(0, 'notedrag:1', 0, Infinity);
+    h.push(1, 'notedrag:1', 5000, Infinity); // the user paused mid-drag
+    expect(h.undo(2)).toBe(0);
+    expect(h.canUndo).toBe(false);
+  });
+
   it('does not coalesce different targets or slow edits', () => {
     const h = new History<number>();
     h.push(0, 'gain:a', 0);

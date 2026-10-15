@@ -7,7 +7,7 @@
 // - drag relative to where you grab (the thumb never jumps under the pointer); click the track to
 //   jump there; Shift = fine (a tenth of the speed);
 // - detents: the value snaps to "home" values (0 dB, centre pan, 0 st, data-detents) when close;
-//   hold Alt to place it freely;
+//   hold Alt to place it freely; data-ticks picks which of them get a tick mark (default: all);
 // - data-fill="start" fills from the left even for ranges around 0 (volume faders);
 // - mouse wheel while focused steps the value; double-click resets (forwarded to the input, plus
 //   data-default if set);
@@ -63,7 +63,7 @@ class NeonSlider {
     input.addEventListener('keydown', (e) => {
       if (e.key.startsWith('Arrow') || e.key.startsWith('Page') || e.key === 'Home' || e.key === 'End') this.showBubble(900);
     });
-    new MutationObserver(() => this.layout()).observe(input, { attributes: true, attributeFilter: ['min', 'max', 'step', 'disabled', 'data-detents'] });
+    new MutationObserver(() => this.layout()).observe(input, { attributes: true, attributeFilter: ['min', 'max', 'step', 'disabled', 'data-detents', 'data-ticks'] });
     this.attachPointer();
     this.layout();
   }
@@ -84,8 +84,10 @@ class NeonSlider {
   /** Static parts: detent ticks, fill origin, disabled state. */
   private layout(): void {
     const r = this.range;
+    // `data-ticks` shows fewer marks than there are detents (e.g. a detent on every semitone).
+    const marks = this.input.dataset.ticks !== undefined ? parseDetents(this.input.dataset.ticks, r) : this.detents;
     this.ticks.replaceChildren(
-      ...this.detents.map((d) => {
+      ...marks.map((d) => {
         const t = document.createElement('i');
         t.style.left = `${ratioOf(d, r) * 100}%`;
         return t;

@@ -80,7 +80,7 @@ await page.evaluate(() => {
   window.recorder.store.set((s) => ({ input: { ...s.input, monitor: true }, tuning: { ...s.tuning, harmony: [] } }));
 });
 await sleep(2500);
-await shoot(page, '#controls-col details.section', `${OUT}/hear-myself.png`);
+await shoot(page, '#controls-col details.section:not([hidden])', `${OUT}/hear-myself.png`);
 log('hear myself');
 await page.evaluate(async () => {
   const { store, session } = window.recorder;
@@ -178,6 +178,30 @@ await sleep(300);
 await shoot(page, '#tuning-panel', `${OUT}/autotune-panel.png`);
 await shoot(page, '#tracks', `${OUT}/mixer.png`, 10);
 log('panels');
+
+// Note editing: the lead's notes as blobs, one moved up a semitone and selected.
+const noteEdit = await page.evaluate(async () => {
+  const { store, session } = window.recorder;
+  const song = store.get().projects.find((p) => p.id === store.get().projectId);
+  const lead = song.tracks.find((t) => t.name === 'Lead');
+  session.selectTrack(lead.id);
+  const notes = session.notesOf(session.takes.get(lead.takeId));
+  const t = 5.4 - lead.offset;
+  const index = Math.max(0, notes.findIndex((n) => n.end > t));
+  session.seek(lead.offset + notes[Math.min(notes.length - 1, index + 1)].end);
+  session.toggleNoteMode(true);
+  session.selectNote(index);
+  session.editNote(index, { shift: 1 });
+  await new Promise((r) => setTimeout(r, 1200));
+  return index;
+});
+await shoot(page, '.stage', `${OUT}/note-editing.png`, 0);
+await page.evaluate(() => {
+  const { session } = window.recorder;
+  session.undo();
+  session.toggleNoteMode(false);
+});
+log('note editing', noteEdit);
 
 // --- 5. Phone --------------------------------------------------------------------------------
 const phone = await browser.newPage();

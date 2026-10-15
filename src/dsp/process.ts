@@ -11,6 +11,7 @@ import type { PitchFrame } from '../audio/pitch-tracker';
 import type { TuneSettings } from './autotune';
 import { analyzeCleanup, cleanupTake, type CleanupAnalysis, type CleanupSettings } from './cleanup';
 import type { DenoiseSettings } from './denoise';
+import type { NoteEdit } from './note-edit';
 import { renderPlans } from './harmony';
 import { analyzePsola, type PsolaAnalysis } from './psola';
 import { planVoices, type VoiceCharacter } from './voice-engine';
@@ -27,6 +28,8 @@ export interface ProcessSettings {
   voice?: VoiceCharacter;
   /** De-esser amount 0..1. */
   deess?: number;
+  /** Note edits (Phase 18): pitch, correction amount and timing per sung note. */
+  notes?: NoteEdit[];
 }
 
 export interface ProcessResult {
@@ -62,6 +65,6 @@ export function processRecording(samples: Float32Array, sampleRate: number, fram
   const prepared = prepareVoice(samples, sampleRate, sampleRate, frames);
   const clean = cleanupTake(prepared.source, sampleRate, prepared.cleanup, cleanupSettingsOf(settings));
   // The pitch track and marks (from the original) still describe the cleaned audio: same timing.
-  const plans = planVoices(prepared.analysis, frames, settings.tune, settings.pitch ?? 0, settings.voice);
+  const plans = planVoices(prepared.analysis, frames, settings.tune, settings.pitch ?? 0, settings.voice, settings.notes);
   return { output: plans ? renderPlans(clean, plans, sampleRate) : clean, notes: cleanupNotes(settings, prepared.cleanup) };
 }

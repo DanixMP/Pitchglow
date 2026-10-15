@@ -8,6 +8,7 @@ import { PitchCorrector, correctTrack, type Correction, type TuneSettings } from
 import { isBlackKey, octaveOf, pitchClass, pitchClassName } from '../dsp/notes';
 import { harmonyNote } from '../dsp/harmony';
 import { scaleMask, scaleName, type Scale } from '../dsp/scales';
+import { applyNoteEdits, type NoteEdit } from '../dsp/note-edit';
 import { gridLines, type Grid } from '../project/grid';
 import { laneFill, litColor, theme } from './colors';
 
@@ -34,6 +35,29 @@ const ALL_NOTES = new Array<boolean>(12).fill(true);
 const FONT = 'ui-sans-serif, system-ui, sans-serif';
 
 type Layout = ReturnType<PianoRoll['layout']>;
+
+/** A sung note drawn as a blob in note-editing mode: its frames and where it now sits (roll time). */
+export interface RollNote {
+  from: number;
+  to: number;
+  start: number;
+  end: number;
+  edited: boolean;
+}
+
+/** A note drag in progress: cumulative pitch (semitones) and time (s) moved since it started. */
+export interface NoteDrag {
+  index: number;
+  kind: 'move' | 'start' | 'end';
+  semitones: number;
+  seconds: number;
+  /** Alt held: no snapping. */
+  free: boolean;
+  done: boolean;
+}
+
+/** Pixels at a blob's ends that resize it instead of moving it. */
+const EDGE_PX = 7;
 
 export class PianoRoll {
   private readonly ctx: CanvasRenderingContext2D;
@@ -71,8 +95,17 @@ export class PianoRoll {
   private lit = new Map<number, number>();
   private lastRenderAt = 0;
 
+  /** Note edits (Phase 18) shown on the line; note blobs while editing notes (null = not editing). */
+  private edits: readonly NoteEdit[] = [];
+  private notes: RollNote[] | null = null;
+  private selectedNote: number | null = null;
+  private noteDrag: { pointerId: number; index: number; kind: NoteDrag['kind']; x: number; y: number; axis: 'x' | 'y' | null } | null = null;
+
   /** Called with a new time while the user drags a recording left/right. */
   onScrub: ((time: number) => void) | null = null;
+  /** Note editing: a note was clicked (null = empty space), or is being dragged. */
+  onNoteSelect: ((index: number | null) => void) | null = null;
+  onNoteDrag: ((drag: NoteDrag) => void) | null = null;
   private drag: { pointerId: number; startX: number; startTime: number } | null = null;
 
   constructor(
@@ -119,14 +152,14 @@ export class PianoRoll {
   }
 
   /** Shows a whole recorded pitch track; move through it with `setTime`. */
-  showRecording(frames: readonly PitchFrame[], duration: number, time = duration): void {
+  showRecording(frames: readonly PitchFrame[], duration: number, time = duration, keepView = false): void {
     this.live = false;
     this.frames = frames.map((f) => ({ ...f, target: null, corrected: null, harmony: [] }));
     this.retune();
     this.duration = duration;
     this.latestTime = frames.length ? frames[frames.length - 1].time : 0;
     this.cursor = time;
-    this.viewTarget = this.medianMidi() ?? this.viewTarget;
+    if (!keepView) this.viewTarget = this.medianMidi() ?? this.viewTarget;
   }
 
   /**
@@ -144,6 +177,22 @@ export class PianoRoll {
   setGrid(grid: Grid | null, toSong = 0): void {
     this.grid = grid;
     this.gridToSong = toSong;
+  }
+
+  /** Note edits drawn on the line (the shown frames' indices). */
+  setNoteEdits(edits: readonly NoteEdit[]): void {
+    this.edits = edits;
+    this.retune();
+  }
+
+  /** Note-editing mode: the blobs to draw and hit (null = off) and the selected one. */
+  setNotes(notes: RollNote[] | null, selected: number | null): void {
+    this.notes = notes;
+    this.selectedNote = selected;
+  }
+
+  get editingNotes(): boolean {
+    return this.notes !== null;
   }
 
   /** Empties the roll (e.g. after the shown recording was deleted). */
@@ -209,6 +258,7 @@ export class PianoRoll {
     this.drawLanes(layout);
     if (this.grid) this.drawGrid(layout, now, this.grid);
     this.drawPlayhead(layout);
+    if (this.notes) this.drawNotes(layout, now, this.notes);
     this.drawLines(layout, now);
     this.drawKeyboard(layout);
     if (this.tuning) this.drawTuningChip(layout, this.tuning);
@@ -227,32 +277,40 @@ export class PianoRoll {
   }
 
   private retune(): void {
-    if (!this.tuning) {
+    if (!this.tuning && !this.edits.length) {
       for (const f of this.frames) {
         f.target = f.corrected = null;
         f.harmony = [];
       }
       return;
     }
-    const corrections = correctTrack(this.frames, this.tuning);
+    const base = this.tuning ? correctTrack(this.frames, this.tuning) : this.frames.map((f) => ({ target: null, corrected: f.midi }));
+    const corrections = applyNoteEdits(this.frames, base, this.edits);
     this.frames.forEach((f, i) => {
       Object.assign(f, corrections[i]);
       f.harmony = this.harmonyFor(f.target);
     });
     // Continue live correction from where the shown history ends.
+    if (!this.tuning) return;
     this.corrector = new PitchCorrector(this.tuning);
     for (const f of this.frames.slice(-3)) this.corrector.process(f);
   }
 
+  /** Whether the main line is a corrected curve (auto-tune or note edits) over the faded original. */
+  private get corrected(): boolean {
+    return this.tuning !== null || this.edits.length > 0;
+  }
+
   /** The pitch drawn as the main line. */
   private displayMidi(f: RollFrame): number | null {
-    return this.tuning ? f.corrected : f.midi;
+    return this.corrected ? (f.corrected ?? f.midi) : f.midi;
   }
 
   /** The note whose key and lane light up. */
   private litNote(f: RollFrame): number | null {
     if (this.tuning) return f.target;
-    return f.midi === null ? null : Math.round(f.midi);
+    const m = this.displayMidi(f);
+    return m === null ? null : Math.round(m);
   }
 
   // --- state ---------------------------------------------------------------------------------
@@ -296,24 +354,100 @@ export class PianoRoll {
   private attachScrubbing(): void {
     const c = this.canvas;
     c.addEventListener('pointerdown', (e) => {
+      if (this.notes) {
+        const hit = this.noteHit(e.clientX, e.clientY);
+        this.onNoteSelect?.(hit ? hit.index : null);
+        if (hit) {
+          this.noteDrag = { pointerId: e.pointerId, index: hit.index, kind: hit.kind, x: e.clientX, y: e.clientY, axis: hit.kind === 'move' ? null : 'x' };
+          c.setPointerCapture(e.pointerId);
+          c.classList.add('is-note-dragging');
+          return;
+        }
+      }
       if (!this.scrubbable || !this.onScrub) return;
       this.drag = { pointerId: e.pointerId, startX: e.clientX, startTime: this.cursor };
       c.setPointerCapture(e.pointerId);
       c.classList.add('is-scrubbing');
     });
     c.addEventListener('pointermove', (e) => {
+      const nd = this.noteDrag;
+      if (nd && e.pointerId === nd.pointerId) return this.dragNote(nd, e, false);
+      if (this.notes && !nd) {
+        const hit = this.noteHit(e.clientX, e.clientY);
+        c.classList.toggle('is-note-hover', hit?.kind === 'move');
+        c.classList.toggle('is-note-edge', !!hit && hit.kind !== 'move');
+      }
       if (!this.drag || e.pointerId !== this.drag.pointerId) return;
       const { pxPerSec } = this.layout();
       const t = this.drag.startTime - (e.clientX - this.drag.startX) / pxPerSec;
       this.onScrub?.(Math.min(this.duration, Math.max(0, t)));
     });
     const end = (e: PointerEvent) => {
+      const nd = this.noteDrag;
+      if (nd && e.pointerId === nd.pointerId) {
+        this.noteDrag = null;
+        c.classList.remove('is-note-dragging');
+        return this.dragNote(nd, e, true);
+      }
       if (!this.drag || e.pointerId !== this.drag.pointerId) return;
       this.drag = null;
       c.classList.remove('is-scrubbing');
     };
     c.addEventListener('pointerup', end);
     c.addEventListener('pointercancel', end);
+  }
+
+  /** Cumulative note drag. Moves lock to one axis (pitch or time) once they pass a few pixels. */
+  private dragNote(nd: NonNullable<PianoRoll['noteDrag']>, e: PointerEvent, done: boolean): void {
+    const { pxPerSec, laneH } = this.layout();
+    const dx = e.clientX - nd.x;
+    const dy = e.clientY - nd.y;
+    if (nd.axis === null && Math.hypot(dx, dy) > 5) nd.axis = Math.abs(dy) > Math.abs(dx) ? 'y' : 'x';
+    if (nd.axis === null && !done) return;
+    this.onNoteDrag?.({
+      index: nd.index,
+      kind: nd.kind,
+      semitones: nd.axis === 'y' ? -dy / laneH : 0,
+      seconds: nd.axis === 'x' ? dx / pxPerSec : 0,
+      free: e.altKey,
+      done,
+    });
+  }
+
+  /** The note blob under a point (client coordinates), and whether an end of it was grabbed. */
+  private noteHit(clientX: number, clientY: number): { index: number; kind: NoteDrag['kind'] } | null {
+    const notes = this.notes;
+    if (!notes) return null;
+    const rect = this.canvas.getBoundingClientRect();
+    const x = clientX - rect.left;
+    const y = clientY - rect.top;
+    const L = this.layout();
+    if (x < L.keyW) return null;
+    const xOf = (t: number) => L.playheadX - (this.renderedAt - t) * L.pxPerSec;
+    for (let i = notes.length - 1; i >= 0; i--) {
+      const n = notes[i];
+      const pitch = this.notePitch(n);
+      if (pitch === null) continue;
+      const x0 = xOf(n.start);
+      const x1 = xOf(n.end);
+      if (x < x0 - 2 || x > x1 + 2 || Math.abs(y - L.yOf(pitch)) > L.laneH * 0.6) continue;
+      const edges = x1 - x0 > EDGE_PX * 3;
+      if (edges && x - x0 < EDGE_PX) return { index: i, kind: 'start' };
+      if (edges && x1 - x < EDGE_PX) return { index: i, kind: 'end' };
+      return { index: i, kind: 'move' };
+    }
+    return null;
+  }
+
+  /** Where a note blob sits: the median of the line over its frames. */
+  private notePitch(n: RollNote): number | null {
+    const values: number[] = [];
+    for (let i = n.from; i < Math.min(n.to, this.frames.length); i++) {
+      const m = this.displayMidi(this.frames[i]);
+      if (m !== null) values.push(m);
+    }
+    values.sort((a, b) => a - b);
+    return values.length ? values[values.length >> 1] : null;
   }
 
   private updateView(current: number | null, dt: number): void {
@@ -441,7 +575,9 @@ export class PianoRoll {
 
     const xOf = (t: number) => L.playheadX - (now - t) * L.pxPerSec;
     const from = this.indexAt(now - this.secondsVisible - 0.1);
-    const to = this.indexAt(now + 1e-6);
+    // Editing notes: the whole window, ahead of the playhead too (you edit what comes next).
+    const ahead = this.notes ? (L.w - L.playheadX) / L.pxPerSec + 0.1 : 1e-6;
+    const to = this.indexAt(now + ahead);
 
     // Other tracks of the song: faint lines in their track colours.
     for (const ghost of this.ghosts) {
@@ -449,7 +585,7 @@ export class PianoRoll {
       g.lineWidth = 1.5;
       g.beginPath();
       let prev: PitchFrame | null = null;
-      const end = this.indexAt(now + 1e-6, ghost.frames);
+      const end = this.indexAt(now + ahead, ghost.frames);
       for (let i = this.indexAt(now - this.secondsVisible - 0.1, ghost.frames); i < end; i++) {
         const f = ghost.frames[i];
         if (f.midi === null) {
@@ -464,7 +600,7 @@ export class PianoRoll {
       g.stroke();
     }
 
-    if (this.tuning) {
+    if (this.corrected) {
       // What was actually sung, faded underneath the corrected line.
       g.strokeStyle = theme.originalLine;
       g.lineWidth = 1.75;
@@ -498,7 +634,50 @@ export class PianoRoll {
     }
     g.restore();
 
-    // Older history fades out towards the keyboard.
+    // Older history fades out towards the keyboard (not while editing notes: all of it matters).
+    if (!this.notes) this.fadeHistory(g, L);
+
+    this.ctx.save();
+    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    this.ctx.drawImage(this.layer, 0, 0);
+    this.ctx.restore();
+  }
+
+  /** Note blobs: rounded bars on the notes' lanes, the selected one outlined. */
+  private drawNotes(L: Layout, now: number, notes: RollNote[]): void {
+    const { ctx } = this;
+    const xOf = (t: number) => L.playheadX - (now - t) * L.pxPerSec;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(L.keyW, 0, L.w - L.keyW, L.h);
+    ctx.clip();
+    notes.forEach((n, i) => {
+      const x0 = xOf(n.start);
+      const x1 = xOf(n.end);
+      if (x1 < L.keyW || x0 > L.w) return;
+      const pitch = this.notePitch(n);
+      if (pitch === null) return;
+      const lane = Math.round(pitch);
+      const y = L.yOf(pitch);
+      const h = Math.max(8, L.laneH * 0.82);
+      const selected = i === this.selectedNote;
+      ctx.beginPath();
+      ctx.roundRect(x0, y - h / 2, Math.max(4, x1 - x0), h, Math.min(h / 2, 8));
+      ctx.fillStyle = litColor(lane, selected ? 0.42 : n.edited ? 0.3 : 0.2);
+      ctx.fill();
+      ctx.lineWidth = selected ? 2 : 1;
+      ctx.strokeStyle = selected ? '#ffffff' : litColor(lane, n.edited ? 0.9 : 0.55);
+      if (selected) {
+        ctx.shadowColor = litColor(lane);
+        ctx.shadowBlur = 12;
+      }
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+    });
+    ctx.restore();
+  }
+
+  private fadeHistory(g: CanvasRenderingContext2D, L: Layout): void {
     g.save();
     g.globalCompositeOperation = 'destination-out';
     const fade = g.createLinearGradient(L.keyW, 0, L.keyW + (L.playheadX - L.keyW) * 0.45, 0);
@@ -507,11 +686,6 @@ export class PianoRoll {
     g.fillStyle = fade;
     g.fillRect(L.keyW, 0, (L.playheadX - L.keyW) * 0.45, L.h);
     g.restore();
-
-    this.ctx.save();
-    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
-    this.ctx.drawImage(this.layer, 0, 0);
-    this.ctx.restore();
   }
 
   /**

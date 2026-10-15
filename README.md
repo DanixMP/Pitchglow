@@ -98,6 +98,18 @@ Import a beat (MP3, WAV, M4A, OGG, FLAC), sing over it, and layer takes into tra
   <img src="docs/screenshots/mixer.png" alt="Mixer: timeline with waveforms and a loop region, track strips with mute, solo, pan, fader and meters" width="760" />
 </p>
 
+### ✏️ Edit the notes you sang
+
+Press **Edit notes** (<kbd>N</kbd>) and every sung note shows up as a blob on the piano roll. Drag a
+note up or down to sing it on another pitch (whole semitones; hold <kbd>Alt</kbd> for cents). Drag it
+sideways to move it in time (it snaps to the song's grid), or by its ends to make it longer or shorter.
+The pitch stays put while it stretches. You can also give a note its own correction strength. Every edit is
+non-destructive, can be undone, and is heard straight away while the song plays (and in exports).
+
+<p align="center">
+  <img src="docs/screenshots/note-editing.png" alt="Note editing: sung notes as blobs on the piano roll, one moved up a semitone and selected" width="760" />
+</p>
+
 ### 🎭 Voice character
 
 Turn your voice into someone else's: **Deeper**, **Younger**, **Chipmunk**, **Monster**, **Robot**
@@ -204,6 +216,7 @@ npm run dev:lan
 | <kbd>L</kbd> | Loop on / off (song open) |
 | <kbd>M</kbd> | Click (metronome) on / off (song open) |
 | <kbd>Q</kbd> | Align the selected take's singing to the nearest beat |
+| <kbd>N</kbd> | Edit notes on / off; then <kbd>↑</kbd> <kbd>↓</kbd> pitch (<kbd>Shift</kbd> = 0.1 st), <kbd>←</kbd> <kbd>→</kbd> next note, <kbd>Delete</kbd> reset, <kbd>Esc</kbd> done |
 | <kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> | Undo / redo (song open) |
 | <kbd>←</kbd> <kbd>→</kbd> | Nudge the selected clip (timeline focused; <kbd>Shift</kbd> = ×4) |
 | <kbd>Alt</kbd> + drag | Move clips / loop edges without snapping |
@@ -361,7 +374,8 @@ The microphone needs `localhost` or HTTPS.
   - [x] Clean-up and the beat's key shift live too, plus voice character (formant shift, robot, whisper)
   - [x] "Neon studio" UX: custom sliders with snapping, context cursors, LED meters
   - [x] Metronome & grid: click, count-in on the beat, tap tempo, bar/beat lines, align takes to the beat
-  - [ ] Note editing (drag sung notes), play-the-keys harmony (MIDI keyboard)
+  - [x] Note editing: drag sung notes to new pitches and times, per-note correction
+  - [ ] Play-the-keys harmony (MIDI keyboard)
 
 ## Credits & licenses
 

@@ -1569,6 +1569,51 @@ body {
   background: rgba(246, 196, 83, 0.14);
 }
 
+/* --- Phase 18: note editing ----------------------------------------------------------------------- */
+
+.roll-tool {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(15, 15, 16, 0.82);
+  backdrop-filter: blur(4px);
+}
+
+.roll-tool svg {
+  width: 15px;
+  height: 15px;
+  fill: currentColor;
+}
+
+.roll-tool.is-on {
+  color: #111;
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: var(--glow-accent);
+}
+
+.note-info {
+  margin: 0;
+  font-weight: 700;
+  font-size: 13px;
+}
+
+#roll.is-note-hover {
+  cursor: grab;
+}
+
+#roll.is-note-edge {
+  cursor: var(--cursor-ew);
+}
+
+#roll.is-note-dragging {
+  cursor: grabbing;
+}
+
 /* --- Phase 17: tempo & click ---------------------------------------------------------------------- */
 
 .tempo-row {

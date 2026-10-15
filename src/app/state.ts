@@ -84,6 +84,9 @@ export interface AppState {
   mobileTab: MobileTab;
   /** Tablet layout: takes drawer open. */
   takesDrawerOpen: boolean;
+  /** Note editing on the roll (Phase 18): on/off and the selected note (index into the take's notes). */
+  noteMode: boolean;
+  selectedNote: number | null;
 }
 
 export type AppStore = Store<AppState>;
@@ -115,6 +118,8 @@ export function createAppStore(): AppStore {
     status: '',
     mobileTab: null,
     takesDrawerOpen: false,
+    noteMode: false,
+    selectedNote: null,
   });
 }
 

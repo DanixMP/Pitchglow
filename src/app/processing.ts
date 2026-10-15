@@ -34,8 +34,10 @@ export function trackProcessSettings(track: Track, project: Project): ProcessSet
   const pitch = trackSemitones(track, project);
   const voice = trackVoiceOf(track);
   const neutral = isNeutralVoice(voice);
-  if (!base && !pitch && !fx.gate && !fx.deess && neutral) return null;
+  const notes = track.noteEdits ?? [];
+  if (!base && !pitch && !fx.gate && !fx.deess && neutral && !notes.length) return null;
   return {
+    ...(notes.length ? { notes } : {}),
     tune: base?.tune ?? null,
     denoise: base?.denoise ?? null,
     pitch,
