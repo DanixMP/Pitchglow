@@ -16,7 +16,8 @@ import { downmix } from '../dsp/analyze';
 import type { Scale } from '../dsp/scales';
 import { MixPlayer, type MixTrackSpec } from '../audio/mix-player';
 import { exportLength, renderMix, renderStems, renderVoice } from '../audio/mixdown';
-import type { ProcessSettings } from '../dsp/process';
+import { cleanupNotes, cleanupSettingsOf, type ProcessSettings } from '../dsp/process';
+import { CLEANUP_OFF, type CleanupAnalysis } from '../dsp/cleanup';
 import type { VoicePlans } from '../dsp/voice-engine';
 import { songFxOf, trackFxOf, withPreset, FX_PRESETS, type FxPresetId, type SongFx, type TrackFx } from '../project/fx';
 import { isNeutralVoice, presetPitch, trackVoiceOf, withVoicePreset, type TrackVoice, type VoicePresetId } from '../project/voice';
@@ -80,16 +81,24 @@ interface LoadedTake {
 
 /** A take's voice-engine input: the cleaned source (worker) and the grain plans for its settings. */
 interface Voice {
-  /** Cleaned source at the playback rate (null = not ready / nothing to clean). */
+  /** The take at the playback rate (the take itself when no resampling was needed); null = not prepared. */
   source: Float32Array | null;
-  /** Worker version of `source`. */
+  /** Noise profile + gate map for the live clean-up (null = not prepared). */
+  cleanup: CleanupAnalysis | null;
+  /** Worker version of the preparation. */
   version: number;
-  /** Clean-up input last sent to the worker. */
+  /** Preparation key (take + rate) last sent to the worker. */
   sentKey: string | null;
   plans: VoicePlans | null;
 }
 
-const newVoice = (): Voice => ({ source: null, version: 0, sentKey: null, plans: null });
+const newVoice = (): Voice => ({ source: null, cleanup: null, version: 0, sentKey: null, plans: null });
+
+/** Settings with nothing switched on (used to prepare a take ahead of time). */
+const NOTHING: ProcessSettings = { denoise: null, tune: null };
+
+/** What a voice update changed: the preparation (new audio), the plans, or only clean-up settings. */
+type VoiceChange = 'prepared' | 'plans' | 'cleanup';
 
 export class Session {
   readonly player = new MixPlayer();
@@ -459,7 +468,9 @@ export class Session {
       const label = processedLabelOf(state.tuning, state.cleanup).toLowerCase();
       const { voice, meta } = this.preview;
       const rate = this.player.context.sampleRate;
-      this.run(async () => this.download([await renderVoice(voice.source!, rate, voice.plans)], rate, `${meta.name} (${label})`));
+      const settings = processSettingsOf(state.tuning, state.cleanup);
+      const cleanupSettings = settings ? cleanupSettingsOf(settings) : CLEANUP_OFF;
+      this.run(async () => this.download([await renderVoice(voice.source!, rate, voice.plans, voice.cleanup, cleanupSettings)], rate, `${meta.name} (${label})`));
     }
   }
 
@@ -1201,42 +1212,47 @@ export class Session {
     settingsOf: () => ProcessSettings | null,
     isCurrent: () => boolean,
     setRender: (patch: Partial<RenderState>) => void,
-    onUpdate: (sourceChanged: boolean) => void,
+    onUpdate: (change: VoiceChange) => void,
   ): void {
     const rate = this.player.context.sampleRate;
-    const prepareKey = (s: ProcessSettings) =>
-      JSON.stringify([take.meta.id, s.denoise, s.gate ?? 0, s.deess ?? 0, rate]);
+    const key = JSON.stringify([take.meta.id, rate]);
     const first = settingsOf();
     if (!first) {
-      this.cancelRender(channel);
-      const had = voice.source !== null || voice.plans !== null;
-      voice.source = null;
-      voice.plans = null;
+      const had = voice.plans !== null;
+      voice.plans = null; // the preparation is kept, for when something is switched back on
       setRender({ busy: false, ready: false, notes: [] });
-      if (had) onUpdate(true);
-      return;
+      if (had) onUpdate('plans');
+      onUpdate('cleanup');
+      // Nothing to do yet, but prepare the take quietly so the first change is instant too. (A
+      // preparation already on its way is left to finish: its plans are dropped when it lands.)
+      if (key === voice.sentKey) return;
     }
-    const needsPrepare = prepareKey(first) !== voice.sentKey;
-    if (needsPrepare) setRender({ busy: true });
-    this.debounce(channel, needsPrepare ? 120 : 0, async () => {
-      const settings = settingsOf();
-      if (!settings || !isCurrent()) return;
-      const key = prepareKey(settings);
+    // Clean-up settings go straight to the engine: heard on the next block.
+    if (first && voice.cleanup) {
+      setRender({ notes: cleanupNotes(first, voice.cleanup) });
+      onUpdate('cleanup');
+    }
+    // Only the first request for a take prepares it (a moment); after that only plans are made.
+    if (first && key !== voice.sentKey) setRender({ busy: true });
+    this.debounce(channel, 0, async () => {
+      if (!isCurrent()) return;
+      const settings = settingsOf() ?? NOTHING;
       const prepare =
-        key !== voice.sentKey
-          ? { key, recordingId: take.meta.id, samples: take.samples, sampleRate: take.meta.sampleRate, targetRate: rate, frames: take.frames, settings }
-          : undefined;
+        key !== voice.sentKey ? { key, samples: take.samples, sampleRate: take.meta.sampleRate, targetRate: rate, frames: take.frames } : undefined;
       voice.sentKey = key;
       try {
         const r = await this.renderer.voice(channel, { prepare, tune: settings.tune, semitones: settings.pitch ?? 0, voice: settings.voice, have: voice.version });
         if (!r || !isCurrent()) return; // superseded, removed or closed
-        if (r.source) {
-          voice.source = r.source;
+        const prepared = r.version !== voice.version;
+        if (prepared) {
           voice.version = r.version;
+          voice.source = r.source ?? (take.meta.sampleRate === rate ? take.samples : null);
+          voice.cleanup = r.cleanup ?? voice.cleanup;
         }
-        voice.plans = r.plans;
-        setRender({ ready: true, notes: r.notes });
-        onUpdate(!!r.source);
+        voice.plans = settingsOf() ? r.plans : null;
+        const now = settingsOf();
+        setRender({ ready: true, notes: now && voice.cleanup ? cleanupNotes(now, voice.cleanup) : [] });
+        onUpdate(prepared ? 'prepared' : 'plans');
       } catch (err) {
         console.error(err);
         voice.sentKey = null; // try again from scratch next time
@@ -1262,9 +1278,9 @@ export class Session {
       },
       () => this.preview === rec,
       (patch) => this.setPreviewRender(patch),
-      () => {
+      (change) => {
         this.updatePreviewSource();
-        if (this.playWhenProcessed) {
+        if (change !== 'cleanup' && this.playWhenProcessed) {
           this.playWhenProcessed = false;
           void this.player.play();
         }
@@ -1282,8 +1298,13 @@ export class Session {
     const rec = this.preview;
     if (!rec) return;
     const v = rec.voice;
-    if (wantsProcessed(this.store.get()) && v.source) this.player.swap(v.source, this.player.context.sampleRate, v.plans);
-    else this.player.swap(rec.samples, rec.meta.sampleRate, null);
+    const state = this.store.get();
+    const settings = processSettingsOf(state.tuning, state.cleanup);
+    if (wantsProcessed(state) && settings && v.source) {
+      this.player.swap(v.source, this.player.context.sampleRate, v.plans, v.cleanup, cleanupSettingsOf(settings));
+    } else {
+      this.player.swap(rec.samples, rec.meta.sampleRate, null);
+    }
   }
 
   // --- song tracks ------------------------------------------------------------------------------
@@ -1307,9 +1328,14 @@ export class Session {
       },
       () => this.voices.get(trackId) === voice,
       (patch) => this.setTrackRender(trackId, patch),
-      (sourceChanged) => {
-        if (sourceChanged) this.rebuildMix();
-        else this.player.setPlans(trackId, this.store.get().listenProcessed ? voice.plans : null);
+      (change) => {
+        if (change === 'prepared') return this.rebuildMix();
+        const listen = this.store.get().listenProcessed;
+        if (change === 'plans') return this.player.setPlans(trackId, listen ? voice.plans : null);
+        const p = openProject(this.store.get());
+        const t = p?.tracks.find((x) => x.id === trackId);
+        const settings = p && t ? trackProcessSettings(t, p) : null;
+        this.player.setCleanup(trackId, listen && settings ? cleanupSettingsOf(settings) : CLEANUP_OFF);
       },
     );
   }
@@ -1336,12 +1362,15 @@ export class Session {
       const take = t.takeId ? this.takes.get(t.takeId) : undefined;
       if (!take) continue;
       const voice = this.voices.get(t.id);
-      const processed = listen && trackProcessSettings(t, project) !== null && voice?.source ? voice : null;
+      const settings = trackProcessSettings(t, project);
+      const processed = listen && settings && voice?.source ? voice : null;
       specs.push({
         id: t.id,
         samples: processed ? processed.source! : take.samples,
         sampleRate: processed ? rate : take.meta.sampleRate,
         plans: processed ? processed.plans : null,
+        cleanup: processed ? processed.cleanup : null,
+        cleanupSettings: processed && settings ? cleanupSettingsOf(settings) : CLEANUP_OFF,
         gain: effectiveGain(t, project.tracks),
         pan: t.pan,
         offset: t.offset,

@@ -7,6 +7,7 @@
 
 import type { PitchFrame } from '../audio/pitch-tracker';
 import { correctTrack, type Correction, type TuneSettings } from './autotune';
+import { cleanupActive, CleanupStream, type CleanupAnalysis, type CleanupSettings } from './cleanup';
 import { GrainCache, type GrainVoice } from './grain-shape';
 import { harmonyCorrections } from './harmony';
 import { planGrains, renderGrains, type GrainPlan, type PsolaAnalysis } from './psola';
@@ -95,10 +96,27 @@ export function planVoices(
   };
 }
 
-/** Renders a take (lead + harmonies) block by block. Allocates nothing while rendering. */
+/**
+ * Renders a take block by block: clean-up stream (Phase 15) -> lead + harmonies. Allocates nothing
+ * while rendering (buffers are made when the source, plans or clean-up arrive).
+ */
 export class VoiceRenderer {
   private source: Float32Array = new Float32Array(0);
   private plans: VoicePlans | null = null;
+  // Clean-up: the stream fills `cleaned` (a take-length copy) from just behind the playhead to a few
+  // grains ahead; it restarts (with a short warm-up) when playback jumps (seek, loop wrap).
+  private cleanupAnalysis: CleanupAnalysis | null = null;
+  private stream: CleanupStream | null = null;
+  private cleaned: Float32Array | null = null;
+  private cleaning = false;
+  private covStart = 0;
+  private covValid = false;
+  /** How far around a block grains read (plans' longest grain, formant reach included). */
+  private margin = 0;
+  /** Start of the cleaned range the last block needed. */
+  private lastLo = 0;
+
+  constructor(private readonly sampleRate = 48000) {}
   private readonly voice = new Float32Array(ENGINE_BLOCK);
   private readonly weight = new Float32Array(ENGINE_BLOCK);
   /** Shaped-grain caches, one per voice (made when a plan with a voice character arrives). */
@@ -106,7 +124,28 @@ export class VoiceRenderer {
 
   setSource(samples: Float32Array): void {
     this.source = samples;
+    this.covValid = false;
+    if (this.cleaned && this.cleaned.length !== samples.length) this.cleaned = this.cleaning ? new Float32Array(samples.length) : null;
     for (const c of this.caches) c.clear();
+  }
+
+  /**
+   * Clean-up for this take: the analysis (null = none, e.g. not prepared yet) and the settings. Amount
+   * changes apply from the next block; switching parts on or off restarts the stream there.
+   */
+  setCleanup(analysis: CleanupAnalysis | null, settings: CleanupSettings): void {
+    if (analysis !== this.cleanupAnalysis) {
+      this.cleanupAnalysis = analysis;
+      this.stream = analysis ? new CleanupStream(this.sampleRate, analysis) : null;
+      this.covValid = false;
+    }
+    if (this.stream?.setSettings(settings)) this.covValid = false;
+    // Amounts changed in place: what's already cleaned behind the playhead is stale (a loop or seek
+    // back recomputes it); the stream carries on ahead with the new amounts.
+    else this.covStart = Math.max(this.covStart, this.lastLo);
+    this.cleaning = !!analysis && cleanupActive(settings, analysis);
+    if (this.cleaning && !this.cleaned) this.cleaned = new Float32Array(this.source.length);
+    for (const c of this.caches) c.clear(); // shaped grains came from the old audio
   }
 
   /** Null = play the source unchanged. Plans must match the source's length. */
@@ -114,10 +153,34 @@ export class VoiceRenderer {
     this.plans = plans && plans.lead.length === this.source.length ? plans : null;
     const voices = this.plans ? 1 + this.plans.harmonies.length : 0;
     while (this.caches.length < voices) this.caches.push(new GrainCache());
+    let maxHalf = 0;
+    let formant = 1;
+    for (const p of this.plans ? [this.plans.lead, ...this.plans.harmonies] : []) {
+      maxHalf = Math.max(maxHalf, p.maxHalf);
+      formant = Math.max(formant, p.voice.formant);
+    }
+    this.margin = this.plans ? Math.ceil(maxHalf * (1 + formant)) + 16 : 0;
   }
 
   get length(): number {
     return this.source.length;
+  }
+
+  /** Makes sure the cleaned copy covers what rendering [a, b) reads; returns it. */
+  private clean(a: number, b: number): Float32Array {
+    const stream = this.stream!;
+    const cleaned = this.cleaned!;
+    const lo = Math.max(0, a - this.margin);
+    const hi = Math.min(cleaned.length, b + this.margin);
+    this.lastLo = lo;
+    // A jump back, or far ahead (more than half a second): restart there rather than run through.
+    if (!this.covValid || lo < this.covStart || lo > stream.ready + this.sampleRate / 2) {
+      stream.startAt(lo);
+      this.covStart = lo;
+      this.covValid = true;
+    }
+    if (stream.ready < hi) stream.fill(this.source, cleaned, hi);
+    return cleaned;
   }
 
   /**
@@ -126,10 +189,10 @@ export class VoiceRenderer {
    */
   render(start: number, len: number, out: Float32Array, offset: number): void {
     out.fill(0, offset, offset + len);
-    const src = this.source;
     const a = Math.max(0, start);
-    const b = Math.min(src.length, start + len);
+    const b = Math.min(this.source.length, start + len);
     if (a >= b) return;
+    const src = this.cleaning ? this.clean(a, b) : this.source;
     const at = offset + (a - start);
     const plans = this.plans;
     if (!plans) {

@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { PitchTracker, type PitchFrame } from '../src/audio/pitch-tracker';
 import { denoise } from '../src/dsp/denoise';
-import { renderWithHarmony } from '../src/dsp/harmony';
-import { processRecording, type DenoiseCache } from '../src/dsp/process';
+import { renderPlans, renderWithHarmony } from '../src/dsp/harmony';
+import { processRecording } from '../src/dsp/process';
+import { analyzePsola } from '../src/dsp/psola';
+import { planVoices } from '../src/dsp/voice-engine';
 import { CHROMATIC } from '../src/dsp/scales';
 import { noise, sawtooth } from './signals';
 
@@ -39,24 +41,10 @@ describe('processRecording', () => {
     expect(output[SR]).toBeCloseTo(renderWithHarmony(x, SR, frames, tune)[SR], 6);
   });
 
-  it('chains denoise then tune, and reuses the cached denoise', () => {
-    let computed = 0;
-    let entry: DenoiseCache | undefined;
-    const cache = {
-      get: (k: string) => (entry?.key === k ? entry : undefined),
-      set: (e: DenoiseCache) => {
-        computed++;
-        entry = e;
-      },
-    };
-    const a = processRecording(x, SR, frames, { denoise: den, tune }, cache, 'rec-1');
-    const b = processRecording(x, SR, frames, { denoise: den, tune: { ...tune, retuneMs: 80 } }, cache, 'rec-1');
-    expect(computed).toBe(1); // second render reused the cleaned audio
-    const cleanedThenTuned = renderWithHarmony(denoise(x, SR, den).output, SR, frames, tune);
-    expect(a.output[SR]).toBeCloseTo(cleanedThenTuned[SR], 6);
-    expect(b.output.length).toBe(x.length);
-    processRecording(x, SR, frames, { denoise: den, tune }, cache, 'rec-2');
-    expect(computed).toBe(2); // different recording -> recomputed
+  it('cleans first, then tunes the cleaned audio (with marks from the original)', () => {
+    const a = processRecording(x, SR, frames, { denoise: den, tune });
+    const plans = planVoices(analyzePsola(x, SR, frames), frames, tune, 0)!;
+    expect(a.output).toEqual(renderPlans(denoise(x, SR, den).output, plans, SR));
   });
 
   it('reports when there is too little audio to learn the noise', () => {

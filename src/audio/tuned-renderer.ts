@@ -6,29 +6,28 @@ import type { PitchFrame } from './pitch-tracker';
 import type { AnalysisResult } from '../dsp/analyze';
 import { packFrames } from '../storage/pitch-track';
 import type { TuneSettings } from '../dsp/autotune';
-import type { PrepareSettings } from '../dsp/process';
+import type { CleanupAnalysis } from '../dsp/cleanup';
 import type { VoiceCharacter, VoicePlans } from '../dsp/voice-engine';
 import type { AnalyzeRequest, DropVoiceRequest, RenderResponse, ShiftRequest, VoiceRequest, VoiceResponse } from './render-worker';
 import RenderWorker from './render-worker.ts?worker';
 
 export interface VoiceResult {
-  /** Version of the source audio the plans belong to. */
+  /** Version of the preparation the plans belong to. */
   version: number;
-  /** New source audio (only when it differs from the version the caller has). */
+  /** The take resampled to the playback rate (new version, and only when it had to be resampled). */
   source?: Float32Array;
+  /** Clean-up analysis (new version only). */
+  cleanup?: CleanupAnalysis;
   plans: VoicePlans | null;
-  notes: string[];
 }
 
 export interface VoicePrepare {
-  /** Identifies the clean-up input (take + clean-up settings + rate); a new key re-prepares. */
+  /** Identifies the take and playback rate; a new key re-prepares. */
   key: string;
-  recordingId: string;
   samples: Float32Array;
   sampleRate: number;
   targetRate: number;
   frames: readonly PitchFrame[];
-  settings: PrepareSettings;
 }
 
 export class TunedRenderer {
@@ -64,7 +63,7 @@ export class TunedRenderer {
         have: request.have,
         prepare:
           p && samples
-            ? { key: p.key, recordingId: p.recordingId, samples, sampleRate: p.sampleRate, targetRate: p.targetRate, pitch: packFrames(p.frames), settings: p.settings }
+            ? { key: p.key, samples, sampleRate: p.sampleRate, targetRate: p.targetRate, pitch: packFrames(p.frames) }
             : undefined,
       };
       worker.postMessage(req, samples ? [samples.buffer] : []);
@@ -134,7 +133,7 @@ export class TunedRenderer {
         if (!v) return; // superseded
         this.voicesPending.delete(r.id);
         if (r.error) v.reject(new Error(r.error));
-        else v.resolve({ version: r.version, source: r.source, plans: r.plans, notes: r.notes });
+        else v.resolve({ version: r.version, source: r.source, cleanup: r.cleanup, plans: r.plans });
         return;
       }
       const s = this.shifts.get(e.data.id);

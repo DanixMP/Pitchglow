@@ -1,23 +1,20 @@
-// Processing chain for a recording, in two stages (Phase 13):
-// - prepareVoice (worker, redone only when clean-up settings change): noise reduction -> gate ->
-//   de-esser, resampled to the playback rate. This is the voice engine's source audio.
-// - the voice engine (real time): auto-tune (+ harmony) and pitch shift, see voice-engine.ts.
-// processRecording runs both offline; it is the reference the engine is tested against.
+// Processing chain for a recording (Phases 13-15). Everything that depends on the settings runs in
+// real time in the voice engine; only settings-independent analysis happens up front.
+// - prepareVoice (worker, once per take): resample to the playback rate, PSOLA analysis (marks),
+//   clean-up analysis (noise profile, gate map).
+// - the voice engine, live: clean-up stream (noise reduction -> gate -> de-esser, cleanup.ts), then
+//   auto-tune / harmony / transpose / voice character (voice-engine.ts) on the cleaned audio.
+// processRecording runs the same steps over a whole take; it is the reference the engine is tested
+// against.
 
 import type { PitchFrame } from '../audio/pitch-tracker';
 import type { TuneSettings } from './autotune';
-import { denoise, type DenoiseSettings } from './denoise';
-import { deess, gate } from './dynamics';
-import { renderWithHarmony } from './harmony';
-import { isNeutralVoice, type VoiceCharacter } from './voice-engine';
+import { analyzeCleanup, cleanupTake, type CleanupAnalysis, type CleanupSettings } from './cleanup';
+import type { DenoiseSettings } from './denoise';
+import { renderPlans } from './harmony';
+import { analyzePsola, type PsolaAnalysis } from './psola';
+import { planVoices, type VoiceCharacter } from './voice-engine';
 import { resample } from './vocoder';
-
-/** The clean-up part of the chain (everything that runs before the voice engine). */
-export interface PrepareSettings {
-  denoise: DenoiseSettings | null;
-  gate?: number;
-  deess?: number;
-}
 
 export interface ProcessSettings {
   denoise: DenoiseSettings | null;
@@ -38,71 +35,33 @@ export interface ProcessResult {
   notes: string[];
 }
 
-/** Caches the (slow-ish, rarely changing) noise-reduction step between renders. */
-export interface DenoiseCache {
-  key: string;
-  output: Float32Array;
-  applied: boolean;
+/** The clean-up part of the settings, as the clean-up stream takes it. */
+export function cleanupSettingsOf(s: Pick<ProcessSettings, 'denoise' | 'gate' | 'deess'>): CleanupSettings {
+  return { denoiseDb: s.denoise?.amountDb ?? 0, gate: s.gate ?? 0, deess: s.deess ?? 0 };
 }
 
-export function processRecording(
-  samples: Float32Array,
-  sampleRate: number,
-  frames: readonly PitchFrame[],
-  settings: ProcessSettings,
-  cache?: { get(key: string): DenoiseCache | undefined; set(entry: DenoiseCache): void },
-  cacheKey = '',
-): ProcessResult {
-  const { source, notes } = prepareVoice(samples, sampleRate, sampleRate, frames, settings, cache, cacheKey);
-  // The pitch track (from the original) still describes the cleaned audio: same timing, same voice.
-  const output =
-    settings.tune || settings.pitch || !isNeutralVoice(settings.voice)
-      ? renderWithHarmony(source, sampleRate, frames, settings.tune, settings.pitch ?? 0, settings.voice)
-      : source;
-  return { output, notes };
+/** What couldn't be done with these settings (shown under the transport). */
+export function cleanupNotes(s: Pick<ProcessSettings, 'denoise'>, analysis: CleanupAnalysis): string[] {
+  return s.denoise && s.denoise.amountDb > 0 && !analysis.noise ? ['Too short to learn the noise'] : [];
 }
 
-/**
- * Clean-up stage: noise reduction (cached) -> gate -> de-esser, then resampled to `targetRate` (the
- * playback context's rate) if the take was recorded at another rate. Always returns a new array.
- */
-export function prepareVoice(
-  samples: Float32Array,
-  sampleRate: number,
-  targetRate: number,
-  frames: readonly PitchFrame[],
-  settings: PrepareSettings,
-  cache?: { get(key: string): DenoiseCache | undefined; set(entry: DenoiseCache): void },
-  cacheKey = '',
-): { source: Float32Array; notes: string[] } {
-  const notes: string[] = [];
-  let audio = samples;
-  /** Whether `audio` is ours to hand out (not the caller's samples or the cached denoise output). */
-  let owned = false;
-  if (settings.denoise) {
-    const key = `${cacheKey}|${JSON.stringify(settings.denoise)}`;
-    let entry = cache?.get(key);
-    if (!entry) {
-      const r = denoise(samples, sampleRate, settings.denoise);
-      entry = { key, output: r.output, applied: r.applied };
-      cache?.set(entry);
-    }
-    audio = entry.output;
-    owned = !cache;
-    if (!entry.applied) notes.push('Too short to learn the noise');
-  }
-  if (settings.gate) {
-    audio = gate(audio, sampleRate, frames, settings.gate);
-    owned = true;
-  }
-  // Sibilants are unvoiced, which the pitch shifter passes through unchanged, so de-essing before it
-  // sounds the same as after, and keeps the whole clean-up stage ahead of the real-time engine.
-  if (settings.deess) {
-    audio = deess(audio, sampleRate, settings.deess);
-    owned = true;
-  }
-  if (targetRate !== sampleRate) {
-    return { source: resample(audio, sampleRate / targetRate, Math.floor((audio.length * targetRate) / sampleRate)), notes };
-  }
-  return { source: owned ? audio : audio.slice(), notes };
+/** A take ready for the voice engine: its audio at the playback rate plus the settings-free analysis. */
+export interface PreparedVoice {
+  source: Float32Array;
+  analysis: PsolaAnalysis;
+  cleanup: CleanupAnalysis;
+}
+
+/** Once per take: resample to `targetRate` if needed, then analyse (PSOLA marks, noise profile, gate map). */
+export function prepareVoice(samples: Float32Array, sampleRate: number, targetRate: number, frames: readonly PitchFrame[]): PreparedVoice {
+  const source = targetRate === sampleRate ? samples : resample(samples, sampleRate / targetRate, Math.floor((samples.length * targetRate) / sampleRate));
+  return { source, analysis: analyzePsola(source, targetRate, frames), cleanup: analyzeCleanup(source, targetRate, frames) };
+}
+
+export function processRecording(samples: Float32Array, sampleRate: number, frames: readonly PitchFrame[], settings: ProcessSettings): ProcessResult {
+  const prepared = prepareVoice(samples, sampleRate, sampleRate, frames);
+  const clean = cleanupTake(prepared.source, sampleRate, prepared.cleanup, cleanupSettingsOf(settings));
+  // The pitch track and marks (from the original) still describe the cleaned audio: same timing.
+  const plans = planVoices(prepared.analysis, frames, settings.tune, settings.pitch ?? 0, settings.voice);
+  return { output: plans ? renderPlans(clean, plans, sampleRate) : clean, notes: cleanupNotes(settings, prepared.cleanup) };
 }

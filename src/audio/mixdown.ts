@@ -5,6 +5,7 @@
 //   length (song start to song end) so they line up in any DAW.
 
 import { limit, limitLinked } from '../dsp/limiter';
+import { CLEANUP_OFF, type CleanupAnalysis, type CleanupSettings } from '../dsp/cleanup';
 import type { VoicePlans } from '../dsp/voice-engine';
 import { DEFAULT_SONG_FX, type SongFx } from '../project/fx';
 import { createTrackChain, FxBuses, fxTail, LIMIT_CEILING, MasterChain, type MasterSettings } from './chain';
@@ -71,10 +72,17 @@ export async function renderMix(
  * One take through the voice engine alone (mono), for exporting a processed take. Peak-limited, as
  * harmonies can stack above full scale.
  */
-export async function renderVoice(samples: Float32Array, sampleRate: number, plans: VoicePlans | null): Promise<Float32Array> {
+export async function renderVoice(
+  samples: Float32Array,
+  sampleRate: number,
+  plans: VoicePlans | null,
+  cleanup: CleanupAnalysis | null = null,
+  cleanupSettings: CleanupSettings = CLEANUP_OFF,
+): Promise<Float32Array> {
   const ctx = new OfflineAudioContext({ numberOfChannels: 1, length: Math.max(1, samples.length), sampleRate });
   await loadEngine(ctx);
-  createEngine(ctx, { id: 'take', samples, sampleRate, plans, gain: 1, offset: 0 }, { startFrame: 0, from: 0, loop: null }).connect(ctx.destination);
+  const spec = { id: 'take', samples, sampleRate, plans, cleanup, cleanupSettings, gain: 1, offset: 0 };
+  createEngine(ctx, spec, { startFrame: 0, from: 0, loop: null }).connect(ctx.destination);
   const out = (await ctx.startRendering()).getChannelData(0);
   return limit(out, sampleRate, { ceiling: LIMIT_CEILING });
 }

@@ -11,6 +11,7 @@
 //   follows transport messages (start frame, position, loop). New plans (a knob turned) apply on the
 //   next 128-sample block without interrupting playback.
 
+import { CLEANUP_OFF, type CleanupAnalysis, type CleanupSettings } from '../dsp/cleanup';
 import type { VoicePlans } from '../dsp/voice-engine';
 import { resample } from '../dsp/vocoder';
 import { DEFAULT_SONG_FX, type SongFx, type TrackFx } from '../project/fx';
@@ -42,6 +43,9 @@ export interface MixTrackSpec {
   fx?: TrackFx;
   /** Voice-engine grain plans for `samples` (auto-tune, harmony, transpose); null = play as is. */
   plans?: VoicePlans | null;
+  /** Clean-up analysis of `samples` (null = none) and its live settings (noise reduction, gate, de-ess). */
+  cleanup?: CleanupAnalysis | null;
+  cleanupSettings?: CleanupSettings;
   /** Start position in the song, seconds. */
   offset: number;
 }
@@ -82,9 +86,13 @@ export function atRate(samples: Float32Array, from: number, to: number): Float32
 /** An engine node for a vocal lane; plans only apply to audio already at the context rate. */
 export function createEngine(ctx: BaseAudioContext, spec: MixTrackSpec, transport: EngineTransport | null): AudioWorkletNode {
   const rate = ctx.sampleRate;
+  // Plans and clean-up analysis are made at the playback rate: they only apply to audio at that rate.
+  const native = spec.sampleRate === rate;
   const processorOptions: EngineOptions = {
     samples: atRate(spec.samples, spec.sampleRate, rate),
-    plans: spec.sampleRate === rate ? (spec.plans ?? null) : null,
+    plans: native ? (spec.plans ?? null) : null,
+    cleanup: native ? (spec.cleanup ?? null) : null,
+    cleanupSettings: spec.cleanupSettings ?? CLEANUP_OFF,
     offset: Math.round(spec.offset * rate),
     transport,
   };
@@ -177,10 +185,35 @@ export class MixPlayer {
   }
 
   /** Single-take preview: replace the audio and plans (A/B, new clean-up), keeping position and play state. */
-  swap(samples: Float32Array, sampleRate: number, plans: VoicePlans | null = null): void {
+  swap(
+    samples: Float32Array,
+    sampleRate: number,
+    plans: VoicePlans | null = null,
+    cleanup: CleanupAnalysis | null = null,
+    cleanupSettings: CleanupSettings = CLEANUP_OFF,
+  ): void {
     const lane = this.lanes.get(SINGLE);
-    if (lane && lane.spec.samples === samples && lane.spec.sampleRate === sampleRate) return this.setPlans(SINGLE, plans);
-    this.swapTrack(SINGLE, samples, sampleRate, plans);
+    if (lane?.engine && lane.spec.samples === samples && lane.spec.sampleRate === sampleRate && this.ctx) {
+      // Same audio: only what changed goes to the engine, without interrupting playback.
+      const native = sampleRate === this.ctx.sampleRate;
+      if ((lane.spec.cleanup ?? null) !== cleanup) {
+        lane.spec = { ...lane.spec, cleanup, cleanupSettings };
+        this.post(lane, { type: 'cleanup', analysis: native ? cleanup : null, settings: cleanupSettings });
+      } else {
+        this.setCleanup(SINGLE, cleanupSettings);
+      }
+      return this.setPlans(SINGLE, plans);
+    }
+    const specs = [...this.lanes.values()].map((l) => (l.spec.id === SINGLE ? { ...l.spec, samples, sampleRate, plans, cleanup, cleanupSettings } : l.spec));
+    if (this.lanes.has(SINGLE)) this.setTracks(specs);
+  }
+
+  /** Live clean-up settings for a vocal lane (noise reduction, gate, de-ess); heard on the next block. */
+  setCleanup(id: string, settings: CleanupSettings): void {
+    const lane = this.lanes.get(id);
+    if (!lane?.engine || sameCleanup(lane.spec.cleanupSettings, settings)) return;
+    lane.spec = { ...lane.spec, cleanupSettings: settings };
+    this.post(lane, { type: 'cleanup', settings });
   }
 
   /** Single-take preview: new plans only (a knob turned), seamlessly. */
@@ -227,11 +260,18 @@ export class MixPlayer {
           engine = createEngine(ctx, spec, null);
           engine.connect(chain.input);
         } else {
-          const plans = spec.sampleRate === rate ? (spec.plans ?? null) : null;
+          const native = spec.sampleRate === rate;
+          const plans = native ? (spec.plans ?? null) : null;
+          const cleanup = native ? (spec.cleanup ?? null) : null;
+          const cleanupSettings = spec.cleanupSettings ?? CLEANUP_OFF;
           if (prev!.spec.samples !== spec.samples || prev!.spec.sampleRate !== spec.sampleRate) {
-            engine.port.postMessage({ type: 'source', samples: atRate(spec.samples, spec.sampleRate, rate), plans } satisfies EngineMessage);
-          } else if (prev!.spec.plans !== spec.plans) {
-            engine.port.postMessage({ type: 'plans', plans } satisfies EngineMessage);
+            engine.port.postMessage({ type: 'source', samples: atRate(spec.samples, spec.sampleRate, rate), plans, cleanup, cleanupSettings } satisfies EngineMessage);
+          } else {
+            if (prev!.spec.plans !== spec.plans) engine.port.postMessage({ type: 'plans', plans } satisfies EngineMessage);
+            const analysisChanged = (prev!.spec.cleanup ?? null) !== cleanup;
+            if (analysisChanged || !sameCleanup(prev!.spec.cleanupSettings, cleanupSettings)) {
+              engine.port.postMessage({ type: 'cleanup', ...(analysisChanged ? { analysis: cleanup } : {}), settings: cleanupSettings } satisfies EngineMessage);
+            }
           }
           if (prev!.spec.offset !== spec.offset) engine.port.postMessage({ type: 'offset', offset: Math.round(spec.offset * rate) } satisfies EngineMessage);
         }
@@ -505,6 +545,12 @@ export class MixPlayer {
     }
     this.voices.clear();
   }
+}
+
+function sameCleanup(a: CleanupSettings | undefined, b: CleanupSettings | undefined): boolean {
+  const x = a ?? CLEANUP_OFF;
+  const y = b ?? CLEANUP_OFF;
+  return x.denoiseDb === y.denoiseDb && x.gate === y.gate && x.deess === y.deess;
 }
 
 function disconnectLane(lane: Lane): void {
