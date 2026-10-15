@@ -6,6 +6,7 @@ import type { Session } from '../../app/session';
 import type { AppStore } from '../../app/state';
 import type { InputKind } from '../../audio/audio-input';
 import type { Captions } from '../captions';
+import { confirmDialog } from '../confirm';
 import { $, $$ } from '../dom';
 
 export function mountInputPanel(store: AppStore, session: Session, captions: Captions): void {
@@ -43,11 +44,14 @@ export function mountInputPanel(store: AppStore, session: Session, captions: Cap
   nudge.addEventListener('input', () => store.set((s) => ({ input: { ...s.input, nudgeMs: Number(nudge.value) } })));
   nudge.addEventListener('dblclick', () => store.set((s) => ({ input: { ...s.input, nudgeMs: 0 } })));
   calibrate.addEventListener('click', () => {
-    const ok = confirm(
-      'Latency calibration plays 6 clicks through your speakers and listens with the mic.\n\n' +
+    void confirmDialog({
+      title: 'Calibrate latency',
+      message:
+        'This plays 6 clicks through your speakers and listens with the mic.\n\n' +
         'Use speakers (not headphones), turn the volume up and keep quiet for 3 seconds.',
-    );
-    if (ok) session.calibrateLatency();
+      confirmLabel: 'Start',
+      dontAskKey: 'calibrate',
+    }).then((yes) => yes && session.calibrateLatency());
   });
   calibrateReset.addEventListener('click', () => store.set((s) => ({ input: { ...s.input, calibratedMs: null } })));
 

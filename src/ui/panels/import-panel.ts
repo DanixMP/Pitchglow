@@ -8,6 +8,7 @@ import { scaleName } from '../../dsp/scales';
 import { instrumentalOf } from '../../project/model';
 import { isSongFile } from '../../project/package';
 import type { Captions } from '../captions';
+import { confirmDialog } from '../confirm';
 import { $ } from '../dom';
 
 export function mountImportPanel(store: AppStore, session: Session, captions: Captions): void {
@@ -23,10 +24,16 @@ export function mountImportPanel(store: AppStore, session: Session, captions: Ca
   /** Where the next picked file goes. */
   let pickTarget: 'new' | 'current' = 'new';
 
-  const confirmReplace = (): boolean => {
+  const confirmReplace = (): Promise<boolean> => {
     const song = openProject(store.get());
     const current = song && instrumentalOf(song);
-    return !current || confirm(`Replace the instrumental “${current.name}” in “${song.name}”?`);
+    if (!current) return Promise.resolve(true);
+    return confirmDialog({
+      title: 'Replace the beat?',
+      message: `“${current.name}” in “${song.name}” is replaced by the new file. Undo brings it back.`,
+      confirmLabel: 'Replace',
+      dontAskKey: 'replace-beat',
+    });
   };
 
   const importFile = (file: File, target: 'new' | 'current') => {
@@ -40,9 +47,11 @@ export function mountImportPanel(store: AppStore, session: Session, captions: Ca
     fileInput.click();
   });
   trackImport.addEventListener('click', () => {
-    if (!confirmReplace()) return;
-    pickTarget = 'current';
-    fileInput.click();
+    void confirmReplace().then((yes) => {
+      if (!yes) return;
+      pickTarget = 'current';
+      fileInput.click(); // still within the click's user activation
+    });
   });
   fileInput.addEventListener('change', () => {
     const file = fileInput.files?.[0];
@@ -79,7 +88,7 @@ export function mountImportPanel(store: AppStore, session: Session, captions: Ca
     if (isSongFile(file.name)) {
       importFile(file, 'new');
     } else if (store.get().projectId) {
-      if (confirmReplace()) importFile(file, 'current');
+      void confirmReplace().then((yes) => yes && importFile(file, 'current'));
     } else {
       importFile(file, 'new');
     }

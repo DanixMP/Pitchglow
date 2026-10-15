@@ -2478,3 +2478,105 @@ textarea,
     scrollbar-color: #2e2e35 transparent;
   }
 }
+
+/* --- Confirmation pop-up (src/ui/confirm.ts) --------------------------------------------------- */
+
+.confirm-dialog {
+  width: min(420px, calc(100vw - 32px));
+  padding: 22px 22px 18px;
+  border: 1px solid #34343c;
+  border-radius: 16px;
+  background: #18181b;
+  color: var(--fg);
+  box-shadow:
+    0 24px 70px rgba(0, 0, 0, 0.65),
+    0 0 0 1px rgba(246, 196, 83, 0.06);
+  animation: confirm-in var(--dur) var(--ease);
+}
+
+.confirm-dialog::backdrop {
+  background: rgba(4, 4, 6, 0.6);
+  backdrop-filter: blur(3px);
+  animation: confirm-fade var(--dur) ease;
+}
+
+.confirm-title {
+  margin: 0 0 10px;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.confirm-body p {
+  margin: 0 0 10px;
+  font-size: 14px;
+  line-height: 1.45;
+  color: #c9c7c2;
+}
+
+.confirm-dontask {
+  margin: 14px 0 4px;
+}
+
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.confirm-actions .btn {
+  padding: 9px 18px;
+  font-size: 14px;
+}
+
+.btn-danger {
+  border-color: transparent;
+  background: var(--record);
+  color: #fff;
+}
+
+.btn-danger:hover {
+  background: #ff6e72;
+  box-shadow: var(--glow-record);
+}
+
+.btn-primary {
+  border-color: transparent;
+  background: var(--accent);
+  color: #161616;
+}
+
+.btn-primary:hover {
+  background: #f8cf6e;
+  box-shadow: var(--glow-accent);
+}
+
+.dontask-reset {
+  display: block;
+  margin: 14px auto 0;
+  padding: 4px 8px;
+  border: none;
+  background: none;
+  font: 600 11px var(--font);
+  color: var(--muted);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.dontask-reset:hover {
+  color: var(--fg);
+}
+
+@keyframes confirm-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.97);
+  }
+}
+
+@keyframes confirm-fade {
+  from {
+    opacity: 0;
+  }
+}

@@ -381,6 +381,7 @@ src/
     icons.ts              shared SVG icons, icon buttons, inline name inputs, take drag MIME type
     knob.ts               rotary knob (drag, wheel, arrows, double-click to reset)
     popout.ts             pop-out inspector sections: floating, draggable, resizable windows; dock back; remembered
+    confirm.ts            custom confirmation pop-up (modal dialog) with "Don't ask again"
     slider.ts             Neon slider: enhances every range input in place (detents, fine drag, bubble, wheel)
     slider-math.ts        pure slider maths: positions, steps, detents, fill origin, relative drag
     captions.ts           word-by-word explainer captions over the roll
@@ -427,6 +428,15 @@ tests/                    vitest unit tests (dsp, tracker, wav, packing, storage
   - `--cursor-grab` / `--cursor-grabbing` (4-way move: floating windows, note blobs, drags) and `--cursor-text` (I-beam: text/search/number fields);
   - plus Phase 16's crosshair / ↔.
   - No raw `cursor: pointer|default|grab` is left in the CSS. Verified in Chrome: every element kind gets its custom `url(...)` cursor.
+- **Confirmations** (`src/ui/confirm.ts`, `confirmDialog(opts) → Promise<boolean>`): a custom modal pop-up (native `<dialog>`: focus kept inside, Esc or a click outside cancels) replaces every `window.confirm`.
+  - It's used for: delete take, delete song, replace the beat, calibrate latency.
+  - Destructive questions use a red button and start focused on Cancel.
+  - **"Don't ask again"** switch: the question's key is stored in `localStorage['recorder.dontAsk']` and answered yes from then on. "Ask before deleting again" under the takes list (shown only when something is skipped) turns them all back on.
+  - Verified in Chrome:
+    - the dialog shows with focus on Cancel; Esc keeps the take;
+    - a tick + Delete removes it and skips the next question, which deletes straight away;
+    - the reset link makes it ask again; a backdrop click cancels;
+    - no native dialog at any point.
 - **Scrollbars:** thin rounded thumbs (`::-webkit-scrollbar`, amber on hover/drag); Firefox gets `scrollbar-width: thin` + colours.
 - **Pop-out sections** (`src/ui/popout.ts`): every inspector section (`details.section[id]`) gets a ⧉ button in its title.
   - It moves the *same* element into a floating `.float-panel` (fixed, draggable by the title, resizable from the corner, click to bring to front), so every panel's bindings keep working.
@@ -716,4 +726,5 @@ The user asked for more UX work: first a collapsible Songs column, then pop-able
 - [x] Inspector closes to a rail too (» / ] ); each section pops out into a floating, draggable, resizable window and docks back with one click; remembered; docked on phones
 - [x] A margin around the whole app; columns as rounded cards (desktop, tablet, phone)
 - [x] Custom cursors everywhere (arrow, pointer, move, text + the context cursors); neon scrollbars (every range slider was already the Neon slider)
+- [x] Custom confirmation pop-up for deleting songs/takes (and the other confirmations) with "Don't ask again" (+ a way to turn questions back on)
 - [ ] Feel check (user): rail width, window placement, dragging on a trackpad, frame size, cursor size
