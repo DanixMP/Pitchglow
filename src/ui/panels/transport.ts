@@ -29,6 +29,8 @@ export function mountTransport(store: AppStore, session: Session, roll: PianoRol
   const formatSelect = $<HTMLSelectElement>('export-format');
   const loopBtn = $<HTMLButtonElement>('loop');
   loopBtn.addEventListener('click', () => session.toggleLoop());
+  const clickBtn = $<HTMLButtonElement>('metronome-btn');
+  clickBtn.addEventListener('click', () => store.set((s) => ({ metronome: { ...s.metronome, on: !s.metronome.on } })));
   formatSelect.addEventListener('change', () => store.set({ exportFormat: formatSelect.value === 'mp3' ? 'mp3' : 'wav' }));
   stemsBtn.addEventListener('click', () => session.exportStems());
   const player = session.player;
@@ -56,7 +58,7 @@ export function mountTransport(store: AppStore, session: Session, roll: PianoRol
   );
 
   store.watch(
-    (s) => [s.tuning, s.cleanup, s.listenProcessed, s.render, s.projectId, s.trackRender, s.duration, s.exportFormat, openProject(s)?.loop] as const,
+    (s) => [s.tuning, s.cleanup, s.listenProcessed, s.render, s.projectId, s.trackRender, s.duration, s.exportFormat, openProject(s)?.loop, s.metronome.on] as const,
     () => {
       const v = viewOf(store.get());
       for (const btn of abButtons) {
@@ -76,6 +78,8 @@ export function mountTransport(store: AppStore, session: Session, roll: PianoRol
       const song = openProject(state);
       loopBtn.hidden = !song;
       loopBtn.setAttribute('aria-pressed', String(!!song?.loop?.on));
+      clickBtn.hidden = !song;
+      clickBtn.setAttribute('aria-pressed', String(state.metronome.on));
       stemsBtn.hidden = !song;
       stemsBtn.disabled = !v.exportEnabled;
       renderStatus.textContent = v.status;

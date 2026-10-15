@@ -79,6 +79,9 @@
             <button id="loop" class="icon-btn loop-btn" type="button" aria-pressed="false" aria-label="Loop" title="Loop (L): drag along the timeline ruler to choose the section" hidden>
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v3l4-4-4-4v3H5v6h2zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2z"/></svg>
             </button>
+            <button id="metronome-btn" class="icon-btn loop-btn" type="button" aria-pressed="false" aria-label="Click" title="Click (M): a metronome on the song's tempo" hidden>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path fill-rule="evenodd" d="M9.3 3h5.4l4.6 18H4.7zm1.3 1.8L7 19.2h10L13.4 4.8z"/><path d="m11.2 16.6 5.9-9.3 1.4.9-5.9 9.3z"/><circle cx="12" cy="16.9" r="1.6"/></svg>
+            </button>
           </div>
           <div class="transport-row transport-row-ab">
             <div class="segmented" role="radiogroup" aria-label="Listen to">
@@ -280,6 +283,51 @@
                 </div>
               </div>
               <div id="fx-sliders" class="fx-sliders"></div>
+            </div>
+          </div>
+        </details>
+
+        <details id="tempo-panel" class="section" open>
+          <summary class="section-head">Tempo &amp; click</summary>
+          <div class="section-body">
+            <p id="tempo-hint" class="section-hint">Open a song to set its tempo, see the bars and use the click.</p>
+            <div id="tempo-controls" class="fx-controls">
+              <div class="field-row tempo-row">
+                <div class="field">
+                  <label class="field-label" for="tempo-bpm">BPM</label>
+                  <div class="tempo-bpm">
+                    <input id="tempo-bpm" class="input-number" type="number" min="40" max="240" step="1" inputmode="decimal" placeholder="—" />
+                    <button id="tempo-tap" class="btn btn-small" type="button" title="Tap along with the beat (4+ taps)">Tap</button>
+                  </div>
+                </div>
+                <div class="field">
+                  <label class="field-label" for="tempo-beats">Beats per bar</label>
+                  <select id="tempo-beats" class="select"></select>
+                </div>
+              </div>
+              <div class="calibrate">
+                <button id="tempo-downbeat" class="btn btn-small" type="button" title="Bar 1 starts at the playhead">Bar 1 here</button>
+                <span id="tempo-downbeat-value" class="switch-hint"></span>
+              </div>
+              <label class="switch">
+                <input id="metronome" type="checkbox" role="switch" />
+                <span class="switch-track" aria-hidden="true"></span>
+                <span class="switch-label">Click <span class="switch-hint">while the song plays and while you record · M</span></span>
+              </label>
+              <label class="slider-field">
+                <span class="field-label">Level</span>
+                <input id="metronome-level" type="range" min="-30" max="0" step="1" value="-6" data-detents="-6" data-default="-6" aria-label="Click level" />
+                <span id="metronome-level-value" class="slider-value">−6 dB</span>
+              </label>
+              <label class="switch switch-quiet">
+                <input id="metronome-accent" type="checkbox" role="switch" />
+                <span class="switch-track" aria-hidden="true"></span>
+                <span class="switch-label">Accent bar 1 <span class="switch-hint">a higher click on each bar's first beat</span></span>
+              </label>
+              <div class="calibrate">
+                <button id="align-beat" class="btn btn-small" type="button">Align take to beat</button>
+                <span id="align-beat-hint" class="switch-hint">the selected take's singing starts on the nearest beat · Q</span>
+              </div>
             </div>
           </div>
         </details>

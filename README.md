@@ -84,6 +84,11 @@ Import a beat (MP3, WAV, M4A, OGG, FLAC), sing over it, and layer takes into tra
   look-ahead limiter. Undo/redo for every edit.
 - **Timeline:** waveform clips you can drag (snapping to 1/16 notes); drag along the ruler for a
   **loop region**.
+- **Metronome & grid:** a click on the song's tempo while it plays and while you record (with an
+  accented bar 1 and a count-in on the beat). Bar and beat lines run across the piano roll and the
+  timeline. The tempo *and where the bars start* are detected from the beat. You can also type a BPM,
+  tap it in, or set bar 1 at the playhead. One click (<kbd>Q</kbd>) moves a take so its first note
+  lands on the beat.
 - **Ghost lines:** the other vocal tracks are drawn faintly behind the one you're editing.
 - **Everything is instant:** auto-tune, harmony, pitch, voice character, clean-up and the song's key shift
   are all heard on the **next audio block** while the song plays. Playback never restarts and nothing
@@ -197,6 +202,8 @@ npm run dev:lan
 | <kbd>T</kbd> | Auto-tune on / off |
 | <kbd>A</kbd> | Original ↔ processed |
 | <kbd>L</kbd> | Loop on / off (song open) |
+| <kbd>M</kbd> | Click (metronome) on / off (song open) |
+| <kbd>Q</kbd> | Align the selected take's singing to the nearest beat |
 | <kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> | Undo / redo (song open) |
 | <kbd>←</kbd> <kbd>→</kbd> | Nudge the selected clip (timeline focused; <kbd>Shift</kbd> = ×4) |
 | <kbd>Alt</kbd> + drag | Move clips / loop edges without snapping |
@@ -278,7 +285,11 @@ cycle has arrived, and synthesis runs a fixed 25 ms behind the input.
   noise profile comes from the quietest 15% of frames. About +9 dB SNR while the voice keeps ~97% of
   its level.
 - **Key detection:** a 55 Hz–2 kHz chroma correlated with the 24 Krumhansl–Kessler key profiles.
-- **Tempo:** autocorrelation of a spectral-flux onset envelope, 60–200 BPM, with a tempo prior.
+- **Tempo:** autocorrelation of a spectral-flux onset envelope, 60–200 BPM, with a tempo prior. Bar 1
+  is the beat phase with the strongest comb of onsets, then the strongest of the 4 beats (downbeats
+  hit hardest).
+- **Metronome:** a worklet that clicks on the beats of whatever song position the transport plays, so
+  it stays on the beat through seeks and loop wraps.
 - **Reverb:** impulse responses generated from seeded, filtered, decaying noise, so no sample files ship.
 
 </details>
@@ -288,9 +299,11 @@ cycle has arrived, and synthesis runs a fixed 25 ms behind the input.
 
 The mic and playback share **one `AudioContext` clock**, and the mic worklet stamps every block with its
 context frame. A take's position = song position + (first sample − playback start) − round-trip
-latency + nudge, where the latency is the browser's estimate or a measured loopback calibration (6
-clicks through the speakers, onsets found in the mic signal). In the app, a take recorded after a
-count-in landed within 10 ms of the predicted position.
+latency − mix-chain delay + nudge. The round trip is the browser's estimate or a measured loopback
+calibration (6 clicks through the speakers, onsets found in the mic signal). The mix chain's own delay
+(compressor look-ahead, the limiter's oversampling; about 15 ms in Chrome) is measured once by
+rendering an impulse offline, and the click is delayed by the same amount, so it sits exactly on the
+beat. In the app, a take recorded after a count-in landed within 10 ms of the predicted position.
 
 </details>
 
@@ -347,7 +360,8 @@ The microphone needs `localhost` or HTTPS.
   - [x] Hear yourself live: monitoring with auto-tune, harmony and effects
   - [x] Clean-up and the beat's key shift live too, plus voice character (formant shift, robot, whisper)
   - [x] "Neon studio" UX: custom sliders with snapping, context cursors, LED meters
-  - [ ] Metronome & grid, note editing (drag sung notes), play-the-keys harmony (MIDI keyboard)
+  - [x] Metronome & grid: click, count-in on the beat, tap tempo, bar/beat lines, align takes to the beat
+  - [ ] Note editing (drag sung notes), play-the-keys harmony (MIDI keyboard)
 
 ## Credits & licenses
 

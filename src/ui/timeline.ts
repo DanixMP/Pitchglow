@@ -6,6 +6,7 @@
 // drag its edges to resize it or its middle to move it; a plain click on the ruler seeks.
 
 import { PEAKS_PER_SECOND } from '../audio/peaks';
+import { beatSeconds, gridLines, snapToGrid, type Grid } from '../project/grid';
 import { normalizeLoop, snapOffset, type LoopRegion } from '../project/model';
 import { formatTime } from './format';
 
@@ -47,7 +48,8 @@ const LANE_GAP = 4;
 export class Timeline {
   private readonly ctx: CanvasRenderingContext2D;
   private clips: TimelineClip[] = [];
-  private bpm: number | null = null;
+  /** The song's tempo grid (bar/beat lines, snapping); null = seconds. */
+  private grid: Grid | null = null;
   private songDuration = 0;
   private time = 0;
   private width = 0;
@@ -69,10 +71,10 @@ export class Timeline {
     this.attach();
   }
 
-  setClips(clips: TimelineClip[], songDuration: number, bpm: number | null): void {
+  setClips(clips: TimelineClip[], songDuration: number, grid: Grid | null): void {
     this.clips = clips;
     this.songDuration = songDuration;
-    this.bpm = bpm;
+    this.grid = grid;
     const h = AXIS_H + Math.max(1, clips.length) * (LANE_H + LANE_GAP);
     this.canvas.style.height = `${h}px`;
     this.dirty = true;
@@ -119,17 +121,35 @@ export class Timeline {
       ctx.fillRect(Math.round(lx1) - 1.5, 0, 1.5, AXIS_H - 1);
     }
 
-    // Bars (with a tempo) or seconds grid + labels.
+    // Bar/beat lines with bar numbers (with a tempo), or a seconds grid + labels.
     ctx.font = `600 9px ui-sans-serif, system-ui, sans-serif`;
     ctx.textBaseline = 'top';
-    const step = this.bpm ? (60 / this.bpm) * 4 * Math.max(1, Math.ceil(span / 24 / ((60 / this.bpm) * 4))) : niceStep(span);
-    for (let t = Math.ceil(view.start / step) * step; t <= view.end; t += step) {
-      const gx = Math.round(x(t)) + 0.5;
-      ctx.fillStyle = 'rgba(255,255,255,0.06)';
-      ctx.fillRect(gx, AXIS_H, 1, h - AXIS_H);
-      ctx.fillStyle = loop?.on && t >= loop.start && t < loop.end ? '#2a2208' : '#6a6a70';
-      const label = this.bpm ? `${Math.round(t / ((60 / this.bpm) * 4)) + 1}` : formatTime(t);
-      ctx.fillText(label, gx + 3, 3);
+    const labelColor = (t: number) => (loop?.on && t >= loop.start && t < loop.end ? '#2a2208' : '#6a6a70');
+    if (this.grid) {
+      const pps = w / span;
+      for (const line of gridLines(view.start, view.end, this.grid, 6 / pps)) {
+        const gx = Math.round(x(line.time)) + 0.5;
+        ctx.fillStyle = line.bar !== null ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.03)';
+        ctx.fillRect(gx, AXIS_H, 1, h - AXIS_H);
+      }
+      // Labels at least ~26 px apart.
+      for (const line of gridLines(view.start, view.end, this.grid, 26 / pps)) {
+        if (line.bar === null) continue;
+        const gx = Math.round(x(line.time)) + 0.5;
+        ctx.fillStyle = 'rgba(255,255,255,0.14)';
+        ctx.fillRect(gx, AXIS_H - 5, 1, 5);
+        ctx.fillStyle = labelColor(line.time);
+        ctx.fillText(String(line.bar), gx + 3, 3);
+      }
+    } else {
+      const step = niceStep(span);
+      for (let t = Math.ceil(view.start / step) * step; t <= view.end; t += step) {
+        const gx = Math.round(x(t)) + 0.5;
+        ctx.fillStyle = 'rgba(255,255,255,0.06)';
+        ctx.fillRect(gx, AXIS_H, 1, h - AXIS_H);
+        ctx.fillStyle = labelColor(t);
+        ctx.fillText(formatTime(t), gx + 3, 3);
+      }
     }
     // Song start marker (clips can start before it, e.g. a count-in).
     if (view.start < 0) {
@@ -207,8 +227,7 @@ export class Timeline {
   /** The loop shifted by `dt`, kept inside the song, snapped, and the same length. */
   private movedLoop(start: number, end: number, dt: number, free: boolean): { start: number; end: number } {
     const len = end - start;
-    const grid = free ? 0.001 : this.bpm ? 60 / this.bpm : 0.1;
-    let s0 = Math.round((start + dt) / grid) * grid;
+    let s0 = free ? start + dt : snapToGrid(start + dt, this.grid, 1, 0.1);
     s0 = Math.min(Math.max(0, s0), Math.max(0, this.songDuration - len));
     s0 = Math.round(s0 * 1000) / 1000;
     return { start: s0, end: Math.round((s0 + len) * 1000) / 1000 };
@@ -260,9 +279,9 @@ export class Timeline {
         const t = this.timeAt(e.clientX);
         const { start, end } = ld.orig;
         const dur = this.songDuration;
-        if (ld.mode === 'draw') ld.preview = normalizeLoop(ld.anchor, t, this.bpm, dur, e.altKey);
-        else if (ld.mode === 'start') ld.preview = normalizeLoop(t, end, this.bpm, dur, e.altKey);
-        else if (ld.mode === 'end') ld.preview = normalizeLoop(start, t, this.bpm, dur, e.altKey);
+        if (ld.mode === 'draw') ld.preview = normalizeLoop(ld.anchor, t, this.grid, dur, e.altKey);
+        else if (ld.mode === 'start') ld.preview = normalizeLoop(t, end, this.grid, dur, e.altKey);
+        else if (ld.mode === 'end') ld.preview = normalizeLoop(start, t, this.grid, dur, e.altKey);
         else ld.preview = this.movedLoop(start, end, t - ld.anchor, e.altKey);
         this.dirty = true;
         return;
@@ -280,7 +299,7 @@ export class Timeline {
       const v = this.view();
       const dt = ((e.clientX - d.startX) / rect.width) * (v.end - v.start);
       if (Math.abs(e.clientX - d.startX) > 3) d.moved = true;
-      d.preview = snapOffset(d.startOffset + dt, this.bpm, e.altKey);
+      d.preview = snapOffset(d.startOffset + dt, this.grid, e.altKey);
       c.style.cursor = 'var(--cursor-ew-active)';
       this.dirty = true;
     });
@@ -306,9 +325,9 @@ export class Timeline {
       const clip = this.clips.find((x) => x.selected);
       if (!clip) return;
       e.preventDefault();
-      const grid = this.bpm ? 60 / this.bpm / 4 : 0.01;
-      const delta = (e.key === 'ArrowLeft' ? -1 : 1) * grid * (e.shiftKey ? 4 : 1);
-      this.handlers.onMove(clip.id, snapOffset(clip.offset + delta, this.bpm));
+      const step = this.grid ? beatSeconds(this.grid) / 4 : 0.01;
+      const delta = (e.key === 'ArrowLeft' ? -1 : 1) * step * (e.shiftKey ? 4 : 1);
+      this.handlers.onMove(clip.id, snapOffset(clip.offset + delta, this.grid));
     });
   }
 

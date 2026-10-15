@@ -11,7 +11,7 @@
 import { AudioInput } from '../audio/audio-input';
 import { outputLatency, sharedContext } from '../audio/context';
 import { scheduleClicks } from '../audio/metronome';
-import { alignTake, countInTimes, detectClickLatency } from '../audio/sync';
+import { alignTake, detectClickLatency } from '../audio/sync';
 import { downmix } from '../dsp/analyze';
 import type { Scale } from '../dsp/scales';
 import { MixPlayer, type MixTrackSpec } from '../audio/mix-player';
@@ -19,6 +19,17 @@ import { exportLength, renderMix, renderStems, renderVoice } from '../audio/mixd
 import { cleanupNotes, cleanupSettingsOf, type ProcessSettings } from '../dsp/process';
 import { CLEANUP_OFF, type CleanupAnalysis } from '../dsp/cleanup';
 import type { VoicePlans } from '../dsp/voice-engine';
+import {
+  alignToBeat,
+  clampBpm,
+  clickGridOf,
+  countInLead,
+  gridOf,
+  normalizeDownbeat,
+  TAP_RESET_SECONDS,
+  takeOnset,
+  tapTempo,
+} from '../project/grid';
 import { songFxOf, trackFxOf, withPreset, FX_PRESETS, type FxPresetId, type SongFx, type TrackFx } from '../project/fx';
 import { isNeutralVoice, presetPitch, trackVoiceOf, withVoicePreset, type TrackVoice, type VoicePresetId } from '../project/voice';
 import type { VoiceCharacter } from '../dsp/voice-engine';
@@ -40,6 +51,7 @@ import {
   createProject,
   createVocalTrack,
   defaultLoop,
+  dbToGain,
   duplicateProject as duplicateProjectModel,
   effectiveGain,
   masterOf,
@@ -68,8 +80,6 @@ const MIN_RECORDING_SECONDS = 0.3;
 const MAX_IMPORT_BYTES = 80 * 1024 * 1024;
 const MAX_IMPORT_SECONDS = 15 * 60;
 const IMPORT_EXTENSIONS = /\.(mp3|wav|wave|m4a|aac|mp4|ogg|oga|opus|flac|webm)$/i;
-/** Count-in tempo when the song has no detected BPM. */
-const DEFAULT_BPM = 100;
 const PREVIEW_CHANNEL = 'preview';
 const SAVE_DELAY_MS = 400;
 
@@ -130,6 +140,8 @@ export class Session {
   private renderTimers = new Map<string, number>();
   /** Global settings, stashed while a song's track settings occupy the inspector. */
   private stash: { tuning: TuningPrefs; cleanup: CleanupPrefs } | null = null;
+  /** Tap-tempo taps (seconds, performance clock). */
+  private taps: number[] = [];
   private saveTimers = new Map<string, number>();
   /** Undo/redo of the open song (snapshots). */
   private readonly history = new History<Project>();
@@ -180,7 +192,10 @@ export class Session {
     this.store.set({ mode: record ? 'recording' : 'listening', recordingSeconds: 0, status: '' });
     this.syncMonitor();
     const song = openProject(this.store.get());
-    if (record && song && this.songIsAudible(song)) await this.playAlong(song);
+    this.roll.setGrid(null);
+    const { metronome, input } = this.store.get();
+    // Something to sing along to: the song, the click, or at least a count-in.
+    if (record && song && (this.songIsAudible(song) || metronome.on || input.countIn)) await this.playAlong(song);
   }
 
   /** Whether recording into this song should play it back (something audible to sing along to). */
@@ -199,17 +214,18 @@ export class Session {
     const end = this.player.duration;
     const position = this.player.currentTime >= end - 0.05 ? 0 : this.player.currentTime;
     this.player.seek(position);
-    let startAt = ctx.currentTime + 0.12;
-    if (input.countIn) {
-      const count = countInTimes(startAt, song.bpm ?? DEFAULT_BPM);
-      scheduleClicks(ctx, count.clicks);
-      startAt = count.end;
-    }
-    const playStart = await this.player.play(startAt);
-    const latency = input.calibratedMs !== null ? input.calibratedMs / 1000 : outputLatency(ctx) + this.input.inputLatency;
+    // The count-in clicks on the grid's beats in the bar before the position (the click worklet).
+    const grid = clickGridOf(song);
+    const countIn = input.countIn ? countInLead(position, grid) : 0;
+    const playStart = await this.player.play(ctx.currentTime + 0.12 + countIn, { countIn, recording: true });
+    // Round trip (calibrated, or the browser's estimate), plus the mix chain's own delay: you sing
+    // along to the song as you hear it.
+    const roundTrip = input.calibratedMs !== null ? input.calibratedMs / 1000 : outputLatency(ctx) + this.input.inputLatency;
+    const latency = roundTrip + this.player.mixLatency;
     this.sync = { playStart, songPosition: position, latency };
     // Other tracks as ghosts on the live roll, lined up with what you hear.
-    const toLive = position - (playStart - this.liveOrigin) - outputLatency(ctx);
+    const toLive = position - (playStart - this.liveOrigin) - outputLatency(ctx) - this.player.mixLatency;
+    this.roll.setGrid(gridOf(song), toLive);
     this.roll.setGhosts(
       song.tracks
         .filter((t) => t.kind === 'vocal' && t.takeId && this.takes.has(t.takeId))
@@ -378,6 +394,7 @@ export class Session {
     // Start "at the end" so the last few seconds are visible; Play restarts from the beginning.
     this.player.seek(autoplay ? 0 : take.meta.duration);
     this.roll.setGhosts([]);
+    this.roll.setGrid(null);
     this.roll.showRecording(take.frames, take.meta.duration, this.player.currentTime);
     this.store.set({
       mode: 'playback',
@@ -586,6 +603,7 @@ export class Session {
     this.player.unload();
     this.roll.clear();
     this.roll.setScaleHint(null);
+    this.roll.setGrid(null);
     const stash = this.stash;
     this.stash = null;
     this.store.set({
@@ -598,6 +616,8 @@ export class Session {
       history: { canUndo: false, canRedo: false },
       ...(stash ? { tuning: stash.tuning, cleanup: { ...stash.cleanup, micFilter: this.store.get().cleanup.micFilter } } : {}),
     });
+
+    this.syncMetronome();
   }
 
   renameProject(id: string, name: string): void {
@@ -771,7 +791,7 @@ export class Session {
   setLoopRegion(start: number, end: number): void {
     const project = openProject(this.store.get());
     if (!project) return;
-    const region = normalizeLoop(start, end, project.bpm, this.player.duration, true);
+    const region = normalizeLoop(start, end, gridOf(project), this.player.duration, true);
     if (!region) return;
     this.mutateProject(project.id, (p) => ({ ...p, loop: { ...region, on: true }, updatedAt: Date.now() }), false);
     this.syncLoop();
@@ -783,7 +803,7 @@ export class Session {
     if (!project || this.player.duration <= 0) return;
     let loop = project.loop ? { ...project.loop, on: !project.loop.on } : null;
     if (!loop) {
-      const region = defaultLoop(this.player.currentTime, project.bpm, this.player.duration);
+      const region = defaultLoop(this.player.currentTime, gridOf(project), this.player.duration);
       if (!region) return;
       loop = { ...region, on: true };
     }
@@ -889,6 +909,81 @@ export class Session {
     this.player.setSongFx(fx, project.bpm ?? null);
   }
 
+  // --- tempo & metronome (Phase 17) -------------------------------------------------------------
+
+  /**
+   * Tempo, beats per bar, bar 1. Undoable; the click, echo timing, grid lines and snapping follow.
+   * A BPM of null removes the grid.
+   */
+  setTempo(patch: { bpm?: number | null; beatsPerBar?: number; downbeat?: number }): void {
+    const project = openProject(this.store.get());
+    if (!project) return;
+    const field = Object.keys(patch)[0];
+    this.mutateProject(
+      project.id,
+      (p) => {
+        const next = { ...p, ...patch, updatedAt: Date.now() };
+        if (next.bpm) next.bpm = clampBpm(next.bpm);
+        const g = gridOf(next);
+        // Keep bar 1 inside the first bar (a slower tempo or fewer beats make bars shorter).
+        if (g) next.downbeat = normalizeDownbeat(g.downbeat, g);
+        return next;
+      },
+      `tempo:${field}`,
+    );
+    this.tempoChanged();
+  }
+
+  /** One tap of the Tap button: the tempo follows the taps (one undo step per run of taps). */
+  tapTempo(): void {
+    const now = performance.now() / 1000;
+    const last = this.taps[this.taps.length - 1];
+    if (last !== undefined && now - last > TAP_RESET_SECONDS) this.taps = [];
+    this.taps.push(now);
+    const bpm = tapTempo(this.taps);
+    if (bpm) this.setTempo({ bpm });
+  }
+
+  /** Bar 1 starts at the playhead (sets a tempo first if the song has none). */
+  setDownbeatHere(): void {
+    const project = openProject(this.store.get());
+    if (!project) return;
+    const grid = gridOf(project) ?? clickGridOf(null);
+    this.setTempo({ bpm: grid.bpm, downbeat: normalizeDownbeat(this.player.currentTime, grid) });
+  }
+
+  /** Moves a vocal track so the singing starts on the nearest beat (Q). */
+  alignTrackToBeat(trackId: string): void {
+    const project = openProject(this.store.get());
+    const track = project?.tracks.find((t) => t.id === trackId);
+    if (!project || !track?.takeId) return;
+    const grid = gridOf(project);
+    if (!grid) return this.store.set({ status: 'Set the song’s tempo first (Tempo section).' });
+    const take = this.takes.get(track.takeId);
+    const onset = take ? takeOnset(take.frames) : null;
+    if (onset === null) return this.store.set({ status: 'No singing found in this take.' });
+    const offset = alignToBeat(track.offset, onset, grid);
+    if (offset !== track.offset) this.updateTrackMix(trackId, { offset });
+    this.store.set({ status: '' });
+  }
+
+  /** Points the click at the current prefs and the open song's grid (no song: silent). */
+  syncMetronome(): void {
+    const state = this.store.get();
+    const song = openProject(state);
+    const { on, levelDb, accent } = state.metronome;
+    this.player.setMetronome({ on: on && !!song, gain: dbToGain(levelDb), accent, grid: clickGridOf(song) });
+  }
+
+  private tempoChanged(): void {
+    const project = openProject(this.store.get());
+    if (!project) return;
+    this.player.setSongFx(songFxOf(project), project.bpm ?? null);
+    this.syncMetronome();
+    this.syncLoop();
+    this.refreshSongView();
+  }
+
   undo(): void {
     this.restore((current) => this.history.undo(current));
   }
@@ -980,6 +1075,7 @@ export class Session {
       return take ? take.frames.map((f) => ({ ...f, time: f.time + t.offset, midi: f.midi === null ? null : f.midi + st })) : [];
     };
     this.roll.setTuning(this.rollTuning());
+    this.roll.setGrid(gridOf(project));
     this.roll.setScaleHint(project.key ? transposeScale(project.key, project.keyShift) : null);
     const selected = project.tracks.find((t) => t.id === state.selectedTrackId);
     this.roll.setGhosts(project.tracks.filter((t) => t !== selected && t.kind === 'vocal').map((t) => ({ frames: shifted(t), hue: t.hue })));
@@ -1031,7 +1127,12 @@ export class Session {
         const analysis = await this.renderer.analyze(downmix(channels), buffer.sampleRate);
         const bpm = analysis.tempo && analysis.tempo.confidence > 1.3 ? Math.round(analysis.tempo.bpm) : null;
         const key = analysis.key && analysis.key.confidence > 0.5 ? analysis.key.scale : null;
-        if (bpm) this.mutateProject(project.id, (p) => ({ ...p, bpm, updatedAt: Date.now() }), false);
+        if (bpm) {
+          // The tempo and where the bars start (so the click and grid line up with the beat).
+          const downbeat = normalizeDownbeat(analysis.tempo!.downbeat, { bpm, beatsPerBar: 4, downbeat: 0 });
+          this.mutateProject(project.id, (p) => ({ ...p, bpm, beatsPerBar: 4, downbeat, updatedAt: Date.now() }), false);
+          if (this.store.get().projectId === project.id) this.tempoChanged();
+        }
         if (this.store.get().projectId === project.id) this.store.set({ detection: { projectId: project.id, key, bpm } });
       } finally {
         this.store.set({ importing: false });
@@ -1360,6 +1461,7 @@ export class Session {
     if (!project) return;
     this.player.setMaster(masterOf(project));
     this.player.setSongFx(songFxOf(project), project.bpm ?? null);
+    this.syncMetronome();
     this.player.setTracks(this.mixSpecs(project));
     this.syncLoop();
     this.store.set({ duration: this.player.duration });

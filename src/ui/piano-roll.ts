@@ -8,6 +8,7 @@ import { PitchCorrector, correctTrack, type Correction, type TuneSettings } from
 import { isBlackKey, octaveOf, pitchClass, pitchClassName } from '../dsp/notes';
 import { harmonyNote } from '../dsp/harmony';
 import { scaleMask, scaleName, type Scale } from '../dsp/scales';
+import { gridLines, type Grid } from '../project/grid';
 import { laneFill, litColor, theme } from './colors';
 
 export interface PianoRollOptions {
@@ -53,6 +54,9 @@ export class PianoRoll {
 
   private tuning: TuneSettings | null = null;
   private ghosts: { frames: readonly PitchFrame[]; hue: number }[] = [];
+  /** Tempo grid (bar and beat lines) and the song time of roll time 0. */
+  private grid: Grid | null = null;
+  private gridToSong = 0;
   /** The song's key: shown as the lanes when auto-tune is off (so you see the key while singing). */
   private scaleHint: Scale | null = null;
   private corrector: PitchCorrector | null = null;
@@ -133,6 +137,15 @@ export class PianoRoll {
     this.ghosts = ghosts.map((g) => ({ frames: g.frames, hue: g.hue }));
   }
 
+  /**
+   * Bar and beat lines of the song's tempo grid (null = none). `toSong` = song time at roll time 0
+   * (0 when the roll shows song time; while recording over a song, where the live line started).
+   */
+  setGrid(grid: Grid | null, toSong = 0): void {
+    this.grid = grid;
+    this.gridToSong = toSong;
+  }
+
   /** Empties the roll (e.g. after the shown recording was deleted). */
   clear(): void {
     this.live = false;
@@ -194,6 +207,7 @@ export class PianoRoll {
 
     const layout = this.layout();
     this.drawLanes(layout);
+    if (this.grid) this.drawGrid(layout, now, this.grid);
     this.drawPlayhead(layout);
     this.drawLines(layout, now);
     this.drawKeyboard(layout);
@@ -385,6 +399,26 @@ export class PianoRoll {
       }
       ctx.fillStyle = theme.laneSeparator;
       ctx.fillRect(L.keyW, top, L.w - L.keyW, 1);
+    }
+  }
+
+  /** Beat lines (faint) and bar lines with their numbers, scrolling with the line. */
+  private drawGrid(L: Layout, now: number, grid: Grid): void {
+    const { ctx } = this;
+    const toSong = this.gridToSong;
+    const start = now - (L.playheadX - L.keyW) / L.pxPerSec + toSong;
+    const end = now + (L.w - L.playheadX) / L.pxPerSec + toSong;
+    ctx.font = '600 9px ui-sans-serif, system-ui, sans-serif';
+    ctx.textBaseline = 'top';
+    for (const line of gridLines(start, end, grid, 12 / L.pxPerSec)) {
+      const x = Math.round(L.playheadX + (line.time - toSong - now) * L.pxPerSec);
+      if (x <= L.keyW) continue;
+      ctx.fillStyle = line.bar !== null ? theme.gridBar : theme.gridBeat;
+      ctx.fillRect(x, 0, 1, L.h);
+      if (line.bar !== null && line.bar >= 1) {
+        ctx.fillStyle = theme.gridLabel;
+        ctx.fillText(String(line.bar), x + 4, 6);
+      }
     }
   }
 

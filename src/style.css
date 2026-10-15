@@ -1569,6 +1569,38 @@ body {
   background: rgba(246, 196, 83, 0.14);
 }
 
+/* --- Phase 17: tempo & click ---------------------------------------------------------------------- */
+
+.tempo-row {
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+}
+
+.tempo-bpm {
+  display: flex;
+  gap: 6px;
+}
+
+.input-number {
+  width: 100%;
+  min-width: 0;
+  padding: 7px 10px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--fg);
+  font: 600 13px var(--font);
+  font-variant-numeric: tabular-nums;
+}
+
+.input-number:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.tempo-tap-flash {
+  box-shadow: var(--glow-accent-strong);
+}
+
 .select-small {
   width: auto;
   padding: 5px 26px 5px 10px;

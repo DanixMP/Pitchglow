@@ -19,6 +19,8 @@ export interface TempoEstimate {
   bpm: number;
   /** Peak-to-mean ratio of the weighted autocorrelation; ~1 = no clear beat. */
   confidence: number;
+  /** Seconds of the first bar downbeat (4 beats per bar), within the first bar. */
+  downbeat: number;
 }
 
 export interface AnalysisResult {
@@ -33,6 +35,8 @@ const ANALYSIS_RATE = 11025;
 const KEY_FFT = 4096; // ~0.37 s at ~11 kHz: fine frequency resolution for low notes
 const ONSET_FFT = 512;
 const ONSET_HOP = 128; // ~11.6 ms at 11025 Hz
+/** Onset time within the flux frame that detects it, as a fraction of the window (measured in tests). */
+const DOWNBEAT_BIAS = 0.75;
 
 /** Mono-ises (average of channels) — instrumentals are usually stereo. */
 export function downmix(channels: readonly Float32Array[]): Float32Array {
@@ -157,7 +161,51 @@ export function estimateTempo(x: Float32Array, rate: number): TempoEstimate | nu
   for (let lag = minLag; lag <= maxLag; lag++) mean += scores[lag];
   mean /= maxLag - minLag + 1;
   if (!(b > 0)) return null;
-  return { bpm: 60 / (refined * hopSeconds), confidence: mean > 0 ? b / mean : 0 };
+  const bpm = 60 / (refined * hopSeconds);
+  return { bpm, confidence: mean > 0 ? b / mean : 0, downbeat: estimateDownbeat(env, hopSeconds, bpm, ONSET_FFT / rate) };
+}
+
+/**
+ * Where the bars start (Phase 17): the beat phase whose comb of beats collects the most onset
+ * energy, then the one of 4 beats in a bar whose comb of bars is strongest (downbeats usually hit
+ * hardest). `windowSeconds` = onset FFT length: a hop's flux peaks when an onset is a quarter of
+ * the window in, which is corrected for.
+ */
+export function estimateDownbeat(env: Float64Array, hopSeconds: number, bpm: number, windowSeconds: number, beatsPerBar = 4): number {
+  const beat = 60 / bpm / hopSeconds; // frames
+  const at = (f: number) => {
+    const i = Math.floor(f);
+    if (i < 0 || i + 1 >= env.length) return 0;
+    return env[i] + (env[i + 1] - env[i]) * (f - i);
+  };
+  // Mean (not sum) onset strength along a comb, so combs with one tooth less aren't penalised.
+  const comb = (phase: number, step: number) => {
+    let acc = 0;
+    let n = 0;
+    for (let f = phase; f < env.length - 1; f += step, n++) acc += Math.max(at(f - 1), at(f), at(f + 1));
+    return n ? acc / n : 0;
+  };
+  let phase = 0;
+  let best = -1;
+  for (let p = 0; p < beat; p += 0.25) {
+    const score = comb(p, beat);
+    if (score > best) {
+      best = score;
+      phase = p;
+    }
+  }
+  let bar = 0;
+  best = -1;
+  for (let j = 0; j < beatsPerBar; j++) {
+    const score = comb(phase + j * beat, beat * beatsPerBar);
+    if (score > best + 1e-9) {
+      best = score;
+      bar = j;
+    }
+  }
+  const barSeconds = (60 / bpm) * beatsPerBar;
+  const t = (phase + bar * beat) * hopSeconds + DOWNBEAT_BIAS * windowSeconds;
+  return Math.round((((t % barSeconds) + barSeconds) % barSeconds) * 1000) / 1000;
 }
 
 // --- helpers -----------------------------------------------------------------------------------

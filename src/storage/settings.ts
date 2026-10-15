@@ -128,6 +128,43 @@ export function saveTuning(prefs: TuningPrefs): void {
   }
 }
 
+// --- metronome (Phase 17) ---------------------------------------------------------------------
+
+export interface MetronomePrefs {
+  /** Click while a song plays or a take is recorded into it. */
+  on: boolean;
+  /** Click level, dB. */
+  levelDb: number;
+  /** Higher, louder click on each bar's first beat. */
+  accent: boolean;
+}
+
+export const DEFAULT_METRONOME: MetronomePrefs = { on: false, levelDb: -6, accent: true };
+
+const METRONOME_KEY = 'recorder.metronome';
+
+export function loadMetronome(): MetronomePrefs {
+  try {
+    const raw = JSON.parse(localStorage.getItem(METRONOME_KEY) ?? 'null') as Partial<MetronomePrefs> | null;
+    if (!raw) return { ...DEFAULT_METRONOME };
+    return {
+      on: raw.on === true,
+      levelDb: typeof raw.levelDb === 'number' && raw.levelDb >= -30 && raw.levelDb <= 0 ? raw.levelDb : DEFAULT_METRONOME.levelDb,
+      accent: raw.accent !== false,
+    };
+  } catch {
+    return { ...DEFAULT_METRONOME };
+  }
+}
+
+export function saveMetronome(prefs: MetronomePrefs): void {
+  try {
+    localStorage.setItem(METRONOME_KEY, JSON.stringify(prefs));
+  } catch {
+    // Storage unavailable: settings just won't persist.
+  }
+}
+
 // --- export format ----------------------------------------------------------------------------
 
 const EXPORT_KEY = 'recorder.exportFormat';

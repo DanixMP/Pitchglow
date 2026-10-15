@@ -6,6 +6,7 @@
 import type { Session } from '../../app/session';
 import { openProject, type AppStore } from '../../app/state';
 import type { Level } from '../../audio/mix-player';
+import { gridOf } from '../../project/grid';
 import { panLabel, type Track } from '../../project/model';
 import { $ } from '../dom';
 import { iconButton, nameInput, TAKE_DRAG_TYPE } from '../icons';
@@ -203,10 +204,10 @@ export function mountTracksPanel(store: AppStore, session: Session): { tick(dt: 
     const song = openProject(state);
     if (!song) return;
     timeline.setLoop(song.loop ?? null);
-    const key = JSON.stringify([state.selectedTrackId, state.duration, song.bpm, song.tracks.map((t) => [t.id, t.offset, t.mute, t.solo, t.gainDb])]);
+    const key = JSON.stringify([state.selectedTrackId, state.duration, song.bpm, song.beatsPerBar, song.downbeat, song.tracks.map((t) => [t.id, t.offset, t.mute, t.solo, t.gainDb])]);
     if (key === clipsKey) return;
     clipsKey = key;
-    timeline.setClips(session.timelineClips(), state.duration, song.bpm ?? null);
+    timeline.setClips(session.timelineClips(), state.duration, gridOf(song));
   }
 
   store.subscribe(render);

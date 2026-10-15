@@ -226,6 +226,36 @@ Look: a near-black background (#0f0f10-ish), muted dark lane fills whose hue cyc
     - Arrow keys stepped 0 → 1; the wheel while focused stepped it; double-click reset it.
     - The roll label read E3 / C3 at two heights.
     - Real-Chrome screenshots at 1440, 900 and 390 px (`npm run screenshots`, which now also makes `tablet.png` and shows a value bubble).
+- **Metronome & grid (Phase 17):**
+  - **Grid model** (`src/project/grid.ts`, pure, tested): `Grid { bpm, beatsPerBar, downbeat }` from the song's `bpm`, `beatsPerBar` (default 4) and `downbeat` (song time where a bar starts, normalised into the first bar). There is no grid without a BPM; the click then uses 100 BPM in 4 (`clickGridOf`).
+    - Helpers: `snapToGrid` (anchored at the downbeat), `gridLines` (beats, or only every 2ⁿ-th bar when crowded), `countInLead`, `tapTempo` (taps since the last 2 s pause, last 8, clamped 40–240), `takeOnset` (first frame ≥ 10% of the 95th-percentile RMS, or the first voiced one), `alignToBeat`.
+    - `snapOffset`, `normalizeLoop` and `defaultLoop` take a `Grid` (or a bare BPM, as before), so clips and loops snap to the downbeat-anchored grid.
+  - **Detection:** `estimateTempo` also returns `downbeat` (`estimateDownbeat`):
+    - the beat phase with the strongest *mean* comb of onsets, then the strongest of the 4 bar phases;
+    - a flux frame peaks when an onset is ¾ of the window in, which is corrected for.
+    - Importing a beat sets bpm + downbeat. Tests: within 15 ms at 96–140 BPM; in the app 0.36 s for a beat whose bars start at 0.37 s.
+  - **Click** (`src/dsp/click.ts` `ClickTrack`, `engine/click-worklet.ts` processor `click-engine`):
+    - It renders clicks for whatever song samples the transport (`blockRuns`) plays, so seeks and loop wraps are sample-accurate. Precomputed 45 ms ticks: 1760 Hz accented bar 1, 1175 Hz other beats.
+    - A click continues across blocks and runs; blocks equal one-go rendering (tested).
+    - `MixPlayer` owns one click node → DelayNode → gain → **destination** (never in exports, master meters or the limiter). `setMetronome({ on, gain, accent, grid })` is live: grid/accent are messages; switching on mid-play re-sends the current transport.
+    - Count-in positions can be negative, so the click's transport carries a `bias`, and `before` (song samples) keeps count-in-only clicks silent from the song position on when the metronome is off.
+  - **Count-in** (replaces `countInTimes` + `scheduleClicks`): clicks on the grid's beats in the bar before the position (`countInLead`, accent on bar starts), by the click worklet: `player.play(at, { countIn, recording: true })`.
+    - `recording` keeps the transport (and the click) running past the song's end and allows a song with no tracks. It lasts until `pause()`, so a mix rebuild mid-take keeps it.
+    - Recording into a song now plays along when the song is audible **or** the click or count-in is on (an empty song gets a count-in and a grid-aligned take).
+  - **Mix-chain latency (found while measuring the click):** the track compressor's look-ahead (6 ms) and the master limiter + 2× oversampled clipper (~8.7 ms) delay everything in the mix by **14.7 ms** (6 ms with the limiter off) in Chrome.
+    - `measureChainLatency` (`chain.ts`) renders an impulse through a track chain + master offline once per rate.
+    - The click is delayed by it. `MixPlayer.mixLatency` is added to `currentTime`'s latency (visuals) and to the take alignment (`playAlong`: round trip + mix latency; you sing to the song as you hear it). Before, takes recorded over a song sat ~15 ms late.
+  - **Session:** `setTempo({ bpm?, beatsPerBar?, downbeat? })` is undoable (coalesced per field), re-normalises the downbeat and updates echo sync, the click, the loop and the roll. Also `tapTempo()`, `setDownbeatHere()` (sets 100 BPM if none), `alignTrackToBeat(id)` (undoable clip move) and `syncMetronome()` (on open/close/rebuild/prefs).
+  - **Prefs:** `state.metronome = { on, levelDb (−30…0, default −6), accent }`, in `localStorage['recorder.metronome']`; the click only sounds with a song open.
+  - **UI:**
+    - Inspector **Tempo & click** section (`ui/panels/tempo-panel.ts`): BPM field + Tap, beats per bar, "Bar 1 here", click switch/level/accent, "Align take to beat".
+    - The transport has a click button. Shortcuts: **M** = click on/off (song open), **Q** = align the selected take (playback).
+    - The roll draws beat/bar lines with bar numbers (`PianoRoll.setGrid(grid, toSong)`; while recording over a song `toSong` maps live time to song time). The timeline draws beat + bar lines and bar labels ≥ 26 px apart.
+  - **Verified in the app** (beat at 96 BPM, bars from 0.37 s; click and master captured in the same ScriptProcessor):
+    - every click 10 ms before its kick (= the detection error) with the limiter on and off, and through loop wraps (no double clicks);
+    - switched on mid-play it starts on the next beat, and off it stops;
+    - the count-in clicked at −2.51/−1.885/−1.26/−0.635 s from the first kick exactly as predicted, accent first, silent after;
+    - the take was added as a track, and "Align" put its first note exactly on a beat (undo/redo fine).
 - **Modes** (`AppState.mode`, driven by `Session`): `idle`, `listening` (live line, nothing saved), `recording` (live line + saving), `playback` (a saved recording is open and the roll follows `Player.currentTime`).
 
 ## Architecture
@@ -257,7 +287,8 @@ src/
     cleanup.ts            clean-up as a restartable stream: STFT Wiener (paired frames) -> gate -> de-esser; analysis
     denoise.ts            offline noise reduction (runs the clean-up stream); frameSizeFor
     process.ts            prepareVoice (once per take: rate, PSOLA marks, clean-up analysis) + processRecording (offline reference)
-    analyze.ts            key (chroma + Krumhansl) and tempo (onset autocorrelation) of instrumentals
+    analyze.ts            key (chroma + Krumhansl), tempo (onset autocorrelation) and bar start of instrumentals
+    click.ts              metronome clicks for any song-sample range (accented bar 1), block-exact
     shift-stream.ts       streaming phase vocoder (stereo-packed FFT, per-peak rotation): the beat's key shift, live
     vocoder.ts            pitchShift (offline wrapper of shift-stream) + Catmull-Rom resample
     reverb.ts             generated impulse responses (Room, Plate, Hall, Cathedral)
@@ -271,7 +302,7 @@ src/
     mix-player.ts         multi-track playback: buffer lanes (beats) + voice-engine lanes (takes), live plans/gain/pan/fx, loop, clock
     mixdown.ts            OfflineAudioContext mixdown/stems/processed take through the same graph and engine
     sync.ts               take alignment math, click-loopback latency detection, count-in times
-    metronome.ts          scheduled click sounds
+    metronome.ts          scheduled click sounds (latency calibration)
     render-worker.ts      Web Worker: voice requests (prepare once per take + plans per change), key/tempo
     engine/
       engine-worklet.ts   AudioWorklet 'voice-engine': renders a take from source + plans, follows the transport
@@ -280,6 +311,7 @@ src/
       live-worklet.ts     AudioWorklet 'live-processor': raw blocks + pitch frames + monitored voice (LiveVoice) + CPU load
       live-protocol.ts    live worklet messages
       beat-worklet.ts     AudioWorklet 'beat-engine': a key-shifted beat (ShiftStream), follows the transport
+      click-worklet.ts    AudioWorklet 'click-engine': the metronome + count-in, follows the transport
     tuned-renderer.ts     main-thread client for the worker (voice: per-channel latest-wins; analyze; shift)
     wav.ts                16-bit PCM WAV encoder (mono or interleaved multi-channel); float WAV encode + WAV decode (song files)
     encode.ts             export encoding: WAV, or MP3 via mp3-worker.ts (LAME, LGPL, own chunk)
@@ -288,6 +320,7 @@ src/
   project/
     model.ts              Project/Track types + pure helpers (create, duplicate, update, effective gain, scheduling, transpose)
     fx.ts                 TrackFx / SongFx, presets, echo timing
+    grid.ts               tempo grid: snapping, beat/bar lines, count-in, tap tempo, take onset + align to beat
     voice.ts              TrackVoice + voice presets (Natural, Deeper, Younger, Chipmunk, Monster, Robot, Whisper)
     history.ts            undo/redo snapshots with drag coalescing
     package.ts            .recsong song files: pack/unpack (project + takes + beat), import id/name handling
@@ -323,6 +356,7 @@ src/
       fx-panel.ts         Voice (presets, formant, whisper), Effects (track) and Song FX (key shift, reverb, echo) sections
       onboarding.ts       one-time studio tips (captions) when features first come up
       roll-hover.ts       note label under the pointer on the roll (with the crosshair cursor)
+      tempo-panel.ts      Tempo & click section: BPM + tap, beats per bar, bar 1, click, align take
 public/                   manifest, icon.svg, icons/*.png (generated)
 scripts/make-icons.mjs    procedural icon renderer (no deps)
 vite.config.ts            base './', LAN HTTPS mode, build-time service worker
@@ -340,7 +374,7 @@ tests/                    vitest unit tests (dsp, tracker, wav, packing, storage
 Data flow: mic → live AudioWorklet (`PitchTracker` inside `LiveVoice`: downsample, YIN, median filter) → `PitchFrame { time, freq, midi, clarity, rms }` posted with its context frame → `Session.onFrame` → `PianoRoll.push()` → canvas drawn on each `requestAnimationFrame`. With "Hear myself" on, the same worklet's output (the processed voice) → monitor track chain → master.
 While recording, the same blocks and frames are also collected into a take. On Stop the take is saved to IndexedDB and opened in playback mode.
 
-Shortcuts: **R** = record/stop, **T** = auto-tune on/off, **Space** = play/pause and **A** = original/tuned (playback mode), **L** = loop on/off (song open), **Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y** = undo/redo (song open).
+Shortcuts: **R** = record/stop, **T** = auto-tune on/off, **Space** = play/pause and **A** = original/tuned (playback mode), **L** = loop on/off (song open), **M** = click on/off (song open), **Q** = align the selected take to the beat (playback), **Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y** = undo/redo (song open).
 
 ## Commands
 
@@ -581,10 +615,12 @@ The user asked for every setting to work in real time: hearing your voice proces
 - [x] Inspector/mixer/transport polish (faders fill from the left, brighter rails), touch targets ≥ 40 px on phones; checked at 1440/900/390 px in real Chrome
 - [ ] Feel check (user): slider snapping strength, bubble placement, cursors on your mouse/trackpad
 
-### Phase 17 — Metronome & grid
-- [ ] Click track (playback and recording, accent, volume), tap tempo / set BPM
-- [ ] Bar/beat grid on the roll and timeline; snap clips and loop to the grid
-- [ ] Quantize a take's start to the nearest beat
+### Phase 17 — Metronome & grid — branch `realtime-engine`
+- [x] Click track (playback and recording, accent, volume), tap tempo / set BPM, beats per bar, bar 1 here; downbeat detected on import; count-in on the grid's beats
+- [x] Bar/beat grid on the roll and timeline; snap clips and loop to the grid (anchored at bar 1)
+- [x] Quantize a take's start to the nearest beat ("Align take to beat", Q; first sung onset)
+- [x] Found and fixed: the mix chain's ~15 ms delay (compressor look-ahead + limiter) wasn't compensated, so takes recorded over a song sat late; it's measured now, and the click and take alignment use it
+- [ ] Real-world check (user): click against real beats (detected bar 1), tap tempo feel, count-in + align on a real take
 
 ### Phase 18 — Note editing
 - [ ] Segment the pitch track into notes (stable pitch regions); draw note blobs on the roll
