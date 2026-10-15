@@ -9,7 +9,7 @@ import { CLEANUP_OFF, type CleanupAnalysis, type CleanupSettings } from '../dsp/
 import type { VoicePlans } from '../dsp/voice-engine';
 import { DEFAULT_SONG_FX, type SongFx } from '../project/fx';
 import { createTrackChain, FxBuses, fxTail, LIMIT_CEILING, MasterChain, type MasterSettings } from './chain';
-import { createEngine, loadEngine, type MixTrackSpec } from './mix-player';
+import { createBeatEngine, createEngine, loadEngine, type MixTrackSpec } from './mix-player';
 
 export interface Rendered {
   channels: Float32Array[];
@@ -47,12 +47,15 @@ export async function renderMix(
   const chain = new MasterChain(ctx, { gain: master.gain, limiter: false });
   chain.output.connect(ctx.destination);
   const buses = new FxBuses(ctx, chain.input, song.fx, song.bpm);
-  if (specs.some((s) => !s.buffer)) await loadEngine(ctx);
+  if (specs.some((s) => !s.buffer || s.shift)) await loadEngine(ctx);
 
   for (const spec of specs) {
     if (spec.gain === 0 || lengthOf(spec) === 0) continue;
     const track = createTrackChain(ctx, spec.gain, spec.pan ?? 0, chain.input, spec.fx, buses);
-    if (spec.buffer) {
+    if (spec.buffer && spec.shift) {
+      // Key-shifted beat: the same beat engine as playback.
+      createBeatEngine(ctx, spec.buffer, spec.shift, spec.offset, { startFrame: 0, from: 0, loop: null }).connect(track.input);
+    } else if (spec.buffer) {
       const source = new AudioBufferSourceNode(ctx, { buffer: spec.buffer });
       source.connect(track.input);
       // A negative offset (take started before the song, e.g. a count-in) skips the take's head.

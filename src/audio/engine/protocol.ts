@@ -24,3 +24,22 @@ export interface EngineOptions {
   offset: number;
   transport: EngineTransport | null;
 }
+
+// --- beat engine (instrumental key shift, Phase 15) ---------------------------------------------
+
+export const BEAT_PROCESSOR = 'beat-engine';
+
+export type BeatMessage =
+  | { type: 'shift'; semitones: number }
+  | { type: 'offset'; offset: number }
+  | { type: 'play'; transport: EngineTransport }
+  | { type: 'stop' };
+
+export interface BeatOptions {
+  /** The decoded beat (1 or 2 channels) at the context rate. */
+  channels: Float32Array[];
+  semitones: number;
+  /** Where the beat starts in the song, samples. */
+  offset: number;
+  transport: EngineTransport | null;
+}

@@ -120,8 +120,6 @@ export class Session {
   private blockSink: ((block: Float32Array, time: number) => void) | null = null;
   /** Decoded instrumentals by asset id. */
   private assets = new Map<string, AudioBuffer>();
-  /** Key-shifted instrumentals by `assetId|semitones` (phase vocoder in the worker). */
-  private shiftedAssets = new Map<string, AudioBuffer>();
 
   /** Take preview (no song open). */
   private preview: (LoadedTake & { voice: Voice }) | null = null;
@@ -566,10 +564,7 @@ export class Session {
     this.selectTrack(first?.id ?? null);
     this.rebuildMix();
     this.player.seek(0);
-    for (const t of project.tracks) {
-      this.updateTrackVoice(t.id);
-      if (t.kind === 'instrumental' && t.assetId) this.scheduleInstrumentalShift(t.id, t.assetId, project.keyShift);
-    }
+    for (const t of project.tracks) this.updateTrackVoice(t.id);
   }
 
   closeProject(): void {
@@ -868,7 +863,10 @@ export class Session {
     this.refreshSongView();
   }
 
-  /** Master key shift: transposes the instrumental (phase vocoder) and every vocal (PSOLA). */
+  /**
+   * Master key shift, live: the instrumental through the streaming phase vocoder (beat engine) and
+   * every vocal through new plans (PSOLA). Nothing is re-rendered and playback doesn't stop.
+   */
   setKeyShift(semitones: number): void {
     const project = openProject(this.store.get());
     if (!project) return;
@@ -877,9 +875,9 @@ export class Session {
     const updated = openProject(this.store.get())!;
     for (const t of updated.tracks) {
       if (t.kind === 'vocal') this.updateTrackVoice(t.id);
-      else if (t.assetId) this.scheduleInstrumentalShift(t.id, t.assetId, semitones);
+      else this.player.setShift(t.id, semitones);
     }
-    this.rebuildMix();
+    this.refreshSongView();
   }
 
   updateSongFx(patch: { reverb?: Partial<SongFx['reverb']>; echo?: Partial<SongFx['echo']> }): void {
@@ -889,35 +887,6 @@ export class Session {
     const fx: SongFx = { reverb: { ...cur.reverb, ...patch.reverb }, echo: { ...cur.echo, ...patch.echo } };
     this.mutateProject(project.id, (p) => ({ ...p, fx, updatedAt: Date.now() }), `songfx:${Object.keys(patch.reverb ?? patch.echo ?? {}).join(',')}`);
     this.player.setSongFx(fx, project.bpm ?? null);
-  }
-
-  /** The instrumental at the song's key shift (the original until the shifted render is ready). */
-  private instrumentalBuffer(assetId: string, semitones: number): AudioBuffer | undefined {
-    if (semitones === 0) return this.assets.get(assetId);
-    return this.shiftedAssets.get(`${assetId}|${semitones}`) ?? this.assets.get(assetId);
-  }
-
-  private scheduleInstrumentalShift(trackId: string, assetId: string, semitones: number): void {
-    const key = `${assetId}|${semitones}`;
-    if (semitones === 0 || this.shiftedAssets.has(key)) return;
-    this.debounce(`shift:${assetId}`, 300, async () => {
-      const source = this.assets.get(assetId);
-      if (!source) return;
-      this.setTrackRender(trackId, { busy: true });
-      try {
-        const channels = Array.from({ length: source.numberOfChannels }, (_, c) => source.getChannelData(c));
-        const shifted = await this.renderer.shiftInstrumental(channels, semitones);
-        const buffer = this.player.context.createBuffer(shifted.length, shifted[0].length, source.sampleRate);
-        shifted.forEach((ch, c) => buffer.copyToChannel(ch as Float32Array<ArrayBuffer>, c));
-        this.shiftedAssets.set(key, buffer);
-        // Only apply if the song still wants this shift.
-        if (openProject(this.store.get())?.keyShift === semitones) this.rebuildMix();
-      } catch (err) {
-        this.store.set({ status: describeError(err) });
-      } finally {
-        this.setTrackRender(trackId, { busy: false });
-      }
-    });
   }
 
   undo(): void {
@@ -949,10 +918,7 @@ export class Session {
         if (t.assetId) await this.loadAsset(t.assetId);
       }
       this.rebuildMix();
-      for (const t of restored.tracks) {
-        this.updateTrackVoice(t.id);
-        if (t.kind === 'instrumental' && t.assetId) this.scheduleInstrumentalShift(t.id, t.assetId, restored.keyShift);
-      }
+      for (const t of restored.tracks) this.updateTrackVoice(t.id);
     });
   }
 
@@ -1353,9 +1319,18 @@ export class Session {
     const specs: MixTrackSpec[] = [];
     for (const t of project.tracks) {
       if (t.kind === 'instrumental') {
-        const buffer = t.assetId ? this.instrumentalBuffer(t.assetId, project.keyShift) : undefined;
+        const buffer = t.assetId ? this.assets.get(t.assetId) : undefined;
         if (buffer) {
-          specs.push({ id: t.id, samples: EMPTY, sampleRate: buffer.sampleRate, buffer, gain: effectiveGain(t, project.tracks), pan: t.pan, offset: t.offset });
+          specs.push({
+            id: t.id,
+            samples: EMPTY,
+            sampleRate: buffer.sampleRate,
+            buffer,
+            shift: project.keyShift,
+            gain: effectiveGain(t, project.tracks),
+            pan: t.pan,
+            offset: t.offset,
+          });
         }
         continue;
       }

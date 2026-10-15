@@ -4,14 +4,13 @@
 //   the current tuning / transpose / voice character. Requests for a channel that arrive while one
 //   is queued are merged, so a knob drag only plans the latest position. (Clean-up settings don't
 //   come here at all: the engine applies them live.)
-// - analyze: key + tempo of an instrumental; shift: phase-vocoder key shift of an instrumental.
+// - analyze: key + tempo of an instrumental. (The beat's key shift is live: see beat-worklet.ts.)
 
 import { analyzeInstrumental, type AnalysisResult } from '../dsp/analyze';
 import type { TuneSettings } from '../dsp/autotune';
 import type { CleanupAnalysis } from '../dsp/cleanup';
 import { prepareVoice, type PreparedVoice } from '../dsp/process';
 import { planVoices, type VoiceCharacter, type VoicePlans } from '../dsp/voice-engine';
-import { pitchShift } from '../dsp/vocoder';
 import { unpackFrames, type PackedPitchTrack } from '../storage/pitch-track';
 import type { PitchFrame } from './pitch-tracker';
 
@@ -59,18 +58,9 @@ export interface AnalyzeRequest {
   sampleRate: number;
 }
 
-/** Phase-vocoder pitch shift of an instrumental (each channel). */
-export interface ShiftRequest {
-  kind: 'shift';
-  id: number;
-  channels: Float32Array[];
-  semitones: number;
-}
-
 export interface RenderResponse {
   id: number;
   output?: Float32Array;
-  channels?: Float32Array[];
   notes?: string[];
   analysis?: AnalysisResult;
   error?: string;
@@ -138,21 +128,11 @@ function runVoice(req: VoiceRequest): void {
   }
 }
 
-self.onmessage = (e: MessageEvent<AnalyzeRequest | ShiftRequest | VoiceRequest | DropVoiceRequest>) => {
+self.onmessage = (e: MessageEvent<AnalyzeRequest | VoiceRequest | DropVoiceRequest>) => {
   if (e.data.kind === 'voice') return queueVoice(e.data);
   if (e.data.kind === 'drop') {
     voices.delete(e.data.channel);
     queued.delete(e.data.channel);
-    return;
-  }
-  if (e.data.kind === 'shift') {
-    const { id, channels, semitones } = e.data;
-    try {
-      const out = channels.map((ch) => pitchShift(ch, semitones));
-      (self as unknown as Worker).postMessage({ id, channels: out } satisfies RenderResponse, out.map((c) => c.buffer));
-    } catch (err) {
-      (self as unknown as Worker).postMessage({ id, error: err instanceof Error ? err.message : String(err) } satisfies RenderResponse);
-    }
     return;
   }
   if (e.data.kind === 'analyze') {

@@ -18,9 +18,10 @@ import { DEFAULT_SONG_FX, type SongFx, type TrackFx } from '../project/fx';
 import { loopPosition, scheduleTrack } from '../project/model';
 import { applyTrackFx, clampPan, createTrackChain, disconnectChain, FxBuses, MasterChain, type MasterSettings, type TrackChain } from './chain';
 import { sharedContext } from './context';
-import { ENGINE_PROCESSOR, type EngineMessage, type EngineOptions } from './engine/protocol';
+import { BEAT_PROCESSOR, ENGINE_PROCESSOR, type BeatMessage, type BeatOptions, type EngineMessage, type EngineOptions } from './engine/protocol';
 import type { EngineTransport } from './engine/transport';
 import engineWorkletUrl from './engine/engine-worklet.ts?worker&url';
+import beatWorkletUrl from './engine/beat-worklet.ts?worker&url';
 
 export interface Level {
   /** Linear peak and RMS over the analyser window (~21 ms). */
@@ -43,6 +44,8 @@ export interface MixTrackSpec {
   fx?: TrackFx;
   /** Voice-engine grain plans for `samples` (auto-tune, harmony, transpose); null = play as is. */
   plans?: VoicePlans | null;
+  /** Key shift of a buffer (beat) lane, semitones; played through the beat engine when non-zero. */
+  shift?: number;
   /** Clean-up analysis of `samples` (null = none) and its live settings (noise reduction, gate, de-ess). */
   cleanup?: CleanupAnalysis | null;
   cleanupSettings?: CleanupSettings;
@@ -54,8 +57,10 @@ interface Lane {
   spec: MixTrackSpec;
   /** Buffer lanes (instrumentals). */
   buffer: AudioBuffer | null;
-  /** Engine lanes (vocals). */
+  /** Engine lanes (vocals), or the beat engine (key-shifted instrumentals). */
   engine: AudioWorkletNode | null;
+  /** Whether `engine` is the beat engine. */
+  beat: boolean;
   /** Length in seconds. */
   duration: number;
   chain: TrackChain;
@@ -68,8 +73,24 @@ const engineLoaded = new WeakSet<BaseAudioContext>();
 /** Loads the voice-engine worklet module into a context (once). */
 export async function loadEngine(ctx: BaseAudioContext): Promise<void> {
   if (engineLoaded.has(ctx)) return;
-  await ctx.audioWorklet.addModule(engineWorkletUrl);
+  await Promise.all([ctx.audioWorklet.addModule(engineWorkletUrl), ctx.audioWorklet.addModule(beatWorkletUrl)]);
   engineLoaded.add(ctx);
+}
+
+/** A beat lane with the key shift applied live (phase vocoder in the beat-engine worklet). */
+export function createBeatEngine(ctx: BaseAudioContext, buffer: AudioBuffer, semitones: number, offset: number, transport: EngineTransport | null): AudioWorkletNode {
+  const processorOptions: BeatOptions = {
+    channels: Array.from({ length: Math.min(2, buffer.numberOfChannels) }, (_, c) => buffer.getChannelData(c)),
+    semitones,
+    offset: Math.round(offset * ctx.sampleRate),
+    transport,
+  };
+  return new AudioWorkletNode(ctx, BEAT_PROCESSOR, {
+    numberOfInputs: 0,
+    numberOfOutputs: 1,
+    outputChannelCount: [processorOptions.channels.length],
+    processorOptions,
+  });
 }
 
 /** Take audio at the context's rate (resampled copies are cached per array). */
@@ -208,6 +229,19 @@ export class MixPlayer {
     if (this.lanes.has(SINGLE)) this.setTracks(specs);
   }
 
+  /** Live key shift of a beat lane (no restart once the lane runs through the beat engine). */
+  setShift(id: string, semitones: number): void {
+    const lane = this.lanes.get(id);
+    if (!lane || (lane.spec.shift ?? 0) === semitones) return;
+    if (lane.beat && lane.engine) {
+      lane.spec = { ...lane.spec, shift: semitones };
+      lane.engine.port.postMessage({ type: 'shift', semitones } satisfies BeatMessage);
+      return;
+    }
+    // First shift of a plain beat lane: switch it to the beat engine (keeps position and play state).
+    this.setTracks([...this.lanes.values()].map((l) => (l.spec.id === id ? { ...l.spec, shift: semitones } : l.spec)));
+  }
+
   /** Live clean-up settings for a vocal lane (noise reduction, gate, de-ess); heard on the next block. */
   setCleanup(id: string, settings: CleanupSettings): void {
     const lane = this.lanes.get(id);
@@ -235,6 +269,8 @@ export class MixPlayer {
     const wasPlaying = this._playing;
     const time = this.currentTime;
     this.stopSources();
+    // Stopped: so the play() below really restarts (it returns early while "playing").
+    this._playing = false;
 
     const next = new Map<string, Lane>();
     const rate = ctx.sampleRate;
@@ -254,6 +290,7 @@ export class MixPlayer {
 
       let buffer: AudioBuffer | null = null;
       let engine: AudioWorkletNode | null = null;
+      let beat = false;
       if (wantsEngine) {
         engine = prev?.engine ?? null;
         if (!engine) {
@@ -276,14 +313,28 @@ export class MixPlayer {
           if (prev!.spec.offset !== spec.offset) engine.port.postMessage({ type: 'offset', offset: Math.round(spec.offset * rate) } satisfies EngineMessage);
         }
       } else {
-        if (prev?.engine) {
+        const shift = spec.shift ?? 0;
+        // A beat runs through the beat engine once it has been key-shifted (and stays there, so
+        // later shifts are just a message); otherwise it is a plain buffer lane.
+        const keepBeat = prev?.beat && prev.spec.buffer === spec.buffer;
+        if (prev?.engine && !keepBeat) {
           prev.engine.disconnect();
           prev.engine.port.close();
         }
-        buffer = prev?.buffer && prev.spec.buffer === spec.buffer ? prev.buffer : spec.buffer!;
+        if (keepBeat || shift !== 0) {
+          engine = keepBeat ? prev!.engine : createBeatEngine(ctx, spec.buffer!, shift, spec.offset, null);
+          if (!keepBeat) engine!.connect(chain.input);
+          else {
+            if ((prev!.spec.shift ?? 0) !== shift) engine!.port.postMessage({ type: 'shift', semitones: shift } satisfies BeatMessage);
+            if (prev!.spec.offset !== spec.offset) engine!.port.postMessage({ type: 'offset', offset: Math.round(spec.offset * rate) } satisfies BeatMessage);
+          }
+          beat = true;
+        } else {
+          buffer = prev?.buffer && prev.spec.buffer === spec.buffer ? prev.buffer : spec.buffer!;
+        }
       }
-      const duration = buffer ? buffer.duration : spec.samples.length / spec.sampleRate;
-      next.set(spec.id, { spec, buffer, engine, duration, chain, meter });
+      const duration = spec.buffer ? spec.buffer.duration : spec.samples.length / spec.sampleRate;
+      next.set(spec.id, { spec, buffer, engine, beat, duration, chain, meter });
     }
     for (const [id, lane] of this.lanes) if (!next.has(id)) disconnectLane(lane);
     this.lanes = next;

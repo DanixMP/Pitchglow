@@ -25,6 +25,9 @@ export class GrainShaper {
   /** The last shaped grain: out[k + half] for k = -half … half. */
   readonly out = new Float32Array(2 * SHAPE_MAX_HALF + 1);
   private readonly noise = new Float32Array(2 * SHAPE_MAX_HALF + 1);
+  /** The grain windowed (for the LPC analysis) and the window itself. */
+  private readonly wg = new Float64Array(2 * SHAPE_MAX_HALF + 1);
+  private readonly w = new Float64Array(2 * SHAPE_MAX_HALF + 1);
   private readonly r = new Float64Array(ORDER + 1);
   private readonly a = new Float64Array(ORDER + 1);
   private readonly tmp = new Float64Array(ORDER + 1);
@@ -54,10 +57,16 @@ export class GrainShaper {
   private whisper(len: number, half: number, amount: number, seed: number): void {
     const out = this.out;
     const r = this.r;
-    // Autocorrelation of the Hann-windowed grain.
+    // Window once (a cosine per sample, not per sample per lag), then autocorrelate.
+    const w = this.w;
+    const wg = this.wg;
+    for (let j = 0; j < len; j++) {
+      w[j] = 0.5 + 0.5 * Math.cos((Math.PI * (j - half)) / (half + 1));
+      wg[j] = out[j] * w[j];
+    }
     for (let lag = 0; lag <= ORDER; lag++) {
       let s = 0;
-      for (let j = lag; j < len; j++) s += out[j] * win(j, half) * out[j - lag] * win(j - lag, half);
+      for (let j = lag; j < len; j++) s += wg[j] * wg[j - lag];
       r[lag] = s;
     }
     if (r[0] <= 1e-12) return;
@@ -93,17 +102,13 @@ export class GrainShaper {
     let ev = 0;
     let en = 0;
     for (let j = 0; j < len; j++) {
-      const w = win(j, half);
-      ev += out[j] * out[j] * w * w;
-      en += y[j] * y[j] * w * w;
+      const ww = w[j] * w[j];
+      ev += out[j] * out[j] * ww;
+      en += y[j] * y[j] * ww;
     }
     const g = en > 0 ? Math.sqrt(ev / en) : 0;
     for (let j = 0; j < len; j++) out[j] = (1 - amount) * out[j] + amount * g * y[j];
   }
-}
-
-function win(j: number, half: number): number {
-  return 0.5 + 0.5 * Math.cos((Math.PI * (j - half)) / (half + 1));
 }
 
 /**
