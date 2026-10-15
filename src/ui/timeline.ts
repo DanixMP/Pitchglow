@@ -271,8 +271,9 @@ export class Timeline {
       if (!d || e.pointerId !== d.pointerId) {
         const loop = this.loop;
         const onEdge = !!loop && (this.nearEdge(e.clientX, loop.start) || this.nearEdge(e.clientX, loop.end));
-        if (this.onRuler(e.clientY)) c.style.cursor = onEdge ? 'ew-resize' : 'text';
-        else c.style.cursor = this.clipAt(e.clientX, e.clientY) ? 'grab' : 'pointer';
+        // Context cursors (style.css): resize on loop edges, draw on the ruler, move on clips.
+        if (this.onRuler(e.clientY)) c.style.cursor = onEdge ? 'var(--cursor-ew)' : 'var(--cursor-crosshair)';
+        else c.style.cursor = this.clipAt(e.clientX, e.clientY) ? 'var(--cursor-ew)' : 'pointer';
         return;
       }
       const rect = c.getBoundingClientRect();
@@ -280,7 +281,7 @@ export class Timeline {
       const dt = ((e.clientX - d.startX) / rect.width) * (v.end - v.start);
       if (Math.abs(e.clientX - d.startX) > 3) d.moved = true;
       d.preview = snapOffset(d.startOffset + dt, this.bpm, e.altKey);
-      c.style.cursor = 'grabbing';
+      c.style.cursor = 'var(--cursor-ew-active)';
       this.dirty = true;
     });
     const end = (e: PointerEvent) => {

@@ -138,6 +138,7 @@ export function mountTracksPanel(store: AppStore, session: Session): { tick(dt: 
     fader.max = String(FADER_MAX);
     fader.step = '0.5';
     fader.setAttribute('aria-label', `Volume ${track.name}`);
+    fader.dataset.fill = 'start'; // a volume fills from the left (0 dB is still a detent)
     fader.addEventListener('input', () => session.updateTrackMix(track.id, { gainDb: Number(fader.value) }));
     fader.addEventListener('dblclick', () => session.updateTrackMix(track.id, { gainDb: 0 }));
 
@@ -249,7 +250,7 @@ export function mountTracksPanel(store: AppStore, session: Session): { tick(dt: 
     const db = level && level.peak > 0 ? 20 * Math.log10(level.peak) : -Infinity;
     m.held = Math.max(db, m.held - PEAK_FALL_DB * dt);
     const t = Number.isFinite(m.held) ? Math.min(1, Math.max(0, (m.held - METER_FLOOR_DB) / -METER_FLOOR_DB)) : 0;
-    m.fill.style.transform = `scaleX(${t.toFixed(3)})`;
+    m.fill.style.setProperty('--level', t.toFixed(3)); // LED meter (style.css)
     m.fill.classList.toggle('is-hot', m.held > -6);
     m.fill.classList.toggle('is-clip', m.held >= -0.1);
   }

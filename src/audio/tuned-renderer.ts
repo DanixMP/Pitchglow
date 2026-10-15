@@ -1,34 +1,33 @@
-// Main-thread side of the render worker: voice-engine inputs (cleaned source + grain plans), key/tempo
-// analysis and instrumental key shift. Voice requests are grouped into channels (one per track):
+// Main-thread side of the render worker: voice-engine inputs (prepared take + grain plans) and key/tempo
+// analysis. Voice requests are grouped into channels (one per track):
 // within a channel the latest request wins and older pending ones resolve to null.
 
 import type { PitchFrame } from './pitch-tracker';
 import type { AnalysisResult } from '../dsp/analyze';
 import { packFrames } from '../storage/pitch-track';
 import type { TuneSettings } from '../dsp/autotune';
-import type { PrepareSettings } from '../dsp/process';
-import type { VoicePlans } from '../dsp/voice-engine';
-import type { AnalyzeRequest, DropVoiceRequest, RenderResponse, ShiftRequest, VoiceRequest, VoiceResponse } from './render-worker';
+import type { CleanupAnalysis } from '../dsp/cleanup';
+import type { VoiceCharacter, VoicePlans } from '../dsp/voice-engine';
+import type { AnalyzeRequest, DropVoiceRequest, RenderResponse, VoiceRequest, VoiceResponse } from './render-worker';
 import RenderWorker from './render-worker.ts?worker';
 
 export interface VoiceResult {
-  /** Version of the source audio the plans belong to. */
+  /** Version of the preparation the plans belong to. */
   version: number;
-  /** New source audio (only when it differs from the version the caller has). */
+  /** The take resampled to the playback rate (new version, and only when it had to be resampled). */
   source?: Float32Array;
+  /** Clean-up analysis (new version only). */
+  cleanup?: CleanupAnalysis;
   plans: VoicePlans | null;
-  notes: string[];
 }
 
 export interface VoicePrepare {
-  /** Identifies the clean-up input (take + clean-up settings + rate); a new key re-prepares. */
+  /** Identifies the take and playback rate; a new key re-prepares. */
   key: string;
-  recordingId: string;
   samples: Float32Array;
   sampleRate: number;
   targetRate: number;
   frames: readonly PitchFrame[];
-  settings: PrepareSettings;
 }
 
 export class TunedRenderer {
@@ -39,7 +38,10 @@ export class TunedRenderer {
    * Source + grain plans for a track's voice engine. `prepare` (new clean-up input) is needed the
    * first time and whenever the take or its clean-up settings change. Latest request per channel wins.
    */
-  voice(channel: string, request: { prepare?: VoicePrepare; tune: TuneSettings | null; semitones: number; have: number }): Promise<VoiceResult | null> {
+  voice(
+    channel: string,
+    request: { prepare?: VoicePrepare; tune: TuneSettings | null; semitones: number; voice?: VoiceCharacter; have: number },
+  ): Promise<VoiceResult | null> {
     const worker = this.ensureWorker();
     const id = this.nextId++;
     for (const [oldId, p] of this.voicesPending) {
@@ -57,10 +59,11 @@ export class TunedRenderer {
         channel,
         tune: request.tune,
         semitones: request.semitones,
+        voice: request.voice,
         have: request.have,
         prepare:
           p && samples
-            ? { key: p.key, recordingId: p.recordingId, samples, sampleRate: p.sampleRate, targetRate: p.targetRate, pitch: packFrames(p.frames), settings: p.settings }
+            ? { key: p.key, samples, sampleRate: p.sampleRate, targetRate: p.targetRate, pitch: packFrames(p.frames) }
             : undefined,
       };
       worker.postMessage(req, samples ? [samples.buffer] : []);
@@ -80,19 +83,6 @@ export class TunedRenderer {
 
   private nextId = 1;
   private analyses = new Map<number, { resolve: (r: AnalysisResult) => void; reject: (err: Error) => void }>();
-  private shifts = new Map<number, { resolve: (c: Float32Array[]) => void; reject: (err: Error) => void }>();
-
-  /** Pitch-shifts an instrumental's channels (copied; the originals stay usable). */
-  shiftInstrumental(channels: readonly Float32Array[], semitones: number): Promise<Float32Array[]> {
-    const worker = this.ensureWorker();
-    const id = this.nextId++;
-    return new Promise((resolve, reject) => {
-      this.shifts.set(id, { resolve, reject });
-      const copies = channels.map((c) => c.slice());
-      const req: ShiftRequest = { kind: 'shift', id, channels: copies, semitones };
-      worker.postMessage(req, copies.map((c) => c.buffer));
-    });
-  }
 
   /** Detects key and tempo of an instrumental (mono samples are transferred, not copied). */
   analyze(samples: Float32Array, sampleRate: number): Promise<AnalysisResult> {
@@ -130,14 +120,7 @@ export class TunedRenderer {
         if (!v) return; // superseded
         this.voicesPending.delete(r.id);
         if (r.error) v.reject(new Error(r.error));
-        else v.resolve({ version: r.version, source: r.source, plans: r.plans, notes: r.notes });
-        return;
-      }
-      const s = this.shifts.get(e.data.id);
-      if (s) {
-        this.shifts.delete(e.data.id);
-        if (e.data.channels) s.resolve(e.data.channels);
-        else s.reject(new Error(e.data.error ?? 'Key shift failed'));
+        else v.resolve({ version: r.version, source: r.source, cleanup: r.cleanup, plans: r.plans });
         return;
       }
       const a = this.analyses.get(e.data.id);

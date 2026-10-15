@@ -139,7 +139,7 @@ The visual and UX reference is **`Goal.mp4`** (vertical video, 1:45) in the proj
     - The preview autoplays once its first plans arrive (~170 ms).
   - **Export = same engine:** `renderMix`/`renderStems` load the worklet into the `OfflineAudioContext` and create engine nodes with the transport at 0; `renderVoice` exports a processed take. Export rate = the context rate (the plans' rate).
     - Verified in the app: the engine export of a take (0 ms auto-tune + a harmony + limiter) is **identical** (max difference 0) to the offline reference `processRecording`.
-  - **CPU** (OfflineAudioContext, 8 tracks): the mix chain alone is 31% of a core. Engine lanes add ~0.6% per track for the lead and ~0.4% per harmony voice, so 8 tracks × lead + 3 harmonies ≈ 46% in total.
+  - **CPU** (OfflineAudioContext, 8 tracks, measured in the app's browser pane, which is ~5–7× slower than Chrome; see Phase 15 for real-Chrome figures): the mix chain alone is 31% of a core. Engine lanes add ~0.6% per track for the lead and ~0.4% per harmony voice, so 8 tracks × lead + 3 harmonies ≈ 46% in total.
   - **Dev hook:** `window.recorder = { store, session }` in `npm run dev` only, for console checks.
 - **Hear yourself live (Phase 14):**
   - **`LiveVoice`** (`src/dsp/live-voice.ts`, pure, tested) is the causal PSOLA for the mic:
@@ -162,6 +162,55 @@ The visual and UX reference is **`Goal.mp4`** (vertical video, 1:45) in the proj
   - Grains used to be `max(analysis period, synthesis period)` long and were normalised by the summed window weight. **Exactly an octave down, that rebuilt the input unchanged**, so the "Oct ↓" harmony and track pitch −12 had silently done nothing since they were added.
   - Grains are now two analysis periods long (classic TD-PSOLA), and the normalisation stops at a weight of 0.5 (`normalizeGrain`), so the envelope that carries the lower pitch survives.
   - The lead blends towards the source only below a weight of 0.1. There is a regression test for −12/−7 (new fundamental, level 0.5–1.3), and all the older accuracy/level tests still pass.
+- **Everything live + voice character (Phase 15):**
+  - **Voice character** (`src/dsp/grain-shape.ts`, `src/project/voice.ts`):
+    - `GrainShaper` builds a grain's content before it is windowed. **Formant shift** reads the grain faster or slower around its centre: the pitch (grain spacing) stays and the vowel colour moves. **Whisper** keeps the grain's LPC envelope (order 24, Levinson) and excites it with seeded noise at the same windowed energy.
+    - Only voiced grains are shaped. It is shared by the offline renderer, the playback engine (a `GrainCache` per voice, keyed by grain index, so blocks stay bit-exact) and `LiveVoice` (ring-buffer mode; a formant shift up may use a mark a cycle further back).
+    - **Robot** = `monotoneCorrections`: each phrase is held on its first note (snapped to the scale when auto-tune is on). It uses past frames only, so live and playback match.
+    - Presets (`VOICE_PRESETS`) set the character *and* the track pitch: Natural, Deeper (−3 st, formant −2.5), Younger (+3, +3), Chipmunk (+7, +6), Monster (−8, −5), Robot, Whisper.
+    - It's in the inspector's **Voice** section (chips + Formant/Whisper sliders); undoable. Monitoring uses the selected track's voice (plus its preset's pitch), and new recordings copy it.
+    - Measured: formant +5 st moves the spectral centroid ×1.36 (theory ×1.33), −5 st ×0.78; whisper keeps the centroid (×1.07) with 0% pitched frames; in-app Chipmunk 192 → 290 Hz (288 expected), Monster 122 Hz (121).
+  - **Live clean-up** (`src/dsp/cleanup.ts`):
+    - `CleanupStream` runs noise reduction → gate → de-esser as a restartable stream:
+      - **noise reduction:** STFT Wiener on a fixed frame grid; frame *pairs* share one complex FFT (one in the real part, one in the imaginary);
+      - **gate:** from a precomputed per-frame open map;
+      - **de-esser:** a complementary split, low = 2nd-order low-pass at 5.5 kHz and high = input − low, so it adds no delay and sums back exactly.
+    - Only the settings-free parts are precomputed (`analyzeCleanup`: noise profile, gate map). The offline `denoise`/`gate`/`deess` run the same stream, so their old quality tests (+9 dB SNR, gate depth, de-ess) cover it.
+    - The worker's `prepareVoice` now runs **once per take** (resample, PSOLA marks on the raw take, clean-up analysis). Clean-up settings go straight to the engine (`MixPlayer.setCleanup`, `cleanup` message), so **no re-render is left for vocals**.
+    - `VoiceRenderer` keeps a cleaned copy valid from a margin behind the playhead to a margin ahead. It restarts (warm-up 2 frames) on seeks; loop passes reuse it; an amount change invalidates what's behind the playhead, so a loop picks up the new amount. Playing from 0 equals `processRecording` bit for bit (tested), and the processed-take export matched it exactly in the app.
+    - Takes are prepared quietly when a song opens, even with nothing switched on, so the first change is instant.
+    - Fix: switching everything off no longer cancels a preparation in flight (that used to leave the take stuck unprepared).
+  - **Live beat key shift** (`src/dsp/shift-stream.ts`, `src/audio/engine/beat-worklet.ts`):
+    - `ShiftStream` is the phase vocoder as a generator: time-stretch, then a Catmull-Rom read-out r× faster. Stereo is packed into one complex FFT.
+    - Identity phase locking is done as **one rotation per peak**: atan2 of X·conj(X_prev), cos/sin only per peak; the other bins take one complex multiply. Finished hops are normalised once.
+    - A beat lane switches to the beat-engine worklet on its first non-zero shift and stays there, so later shifts are a `shift` message with no restart. Exports use the same worklet; offline `pitchShift` wraps the stream.
+    - The old worker key-shift render and its cache are gone (no fallback needed). In the app: +2 st put the bass at 123.25 Hz (123.47 expected), +4 st at 138 Hz (138.6); loop passes are identical.
+  - **Fixed (present since Phase 8):** `MixPlayer.setTracks` stopped the sources but left `_playing` true, so its `play()` returned early. A mix rebuild during playback went **silent** and the clock jumped (e.g. when a track's render arrived mid-play, or on the first key shift).
+  - **FFT:** twiddles hoisted out of the butterfly loop and the first two stages special-cased, 1.5× faster; direct-DFT + round-trip tests. Whisper: each grain is windowed once (it was a cosine per sample per LPC lag).
+  - **CPU, measured in real Chrome** (headless, `OfflineAudioContext`, 8 tracks): nothing on 9%; auto-tune 9%; + 3 harmonies 11%; formant 10%; whisper 16%; full clean-up 17%. A stereo beat with key shift adds ~3.8%; live monitoring ~3.5%.
+    - **The desktop app's built-in browser pane runs this JS ~5–7× slower than Chrome** (FFT pair 0.71 ms vs 0.11 ms), so CPU figures measured there (Phases 13–14 below) overstate real use.
+    - Benchmark scripts were run with puppeteer-core against `npm run dev` (see `scripts/screenshots.mjs` for the setup).
+- **Neon studio UX (Phase 16):**
+  - **Design tokens** sit at the end of `style.css`:
+    - glow `--glow-accent`/`--glow-fg`/`--glow-record`, `--led-green`;
+    - radius `--radius-sm/md/pill`, motion `--dur-fast`/`--dur`/`--ease`;
+    - context cursors `--cursor-crosshair`, `--cursor-ew`, `--cursor-ew-active` (neon SVG data URIs with a keyword fallback; `auto` on `hover: none`).
+    - `prefers-reduced-motion` turns transitions and animations off.
+  - **Neon slider** (`src/ui/slider.ts`, maths in `slider-math.ts`, tested). `watchSliders(document.body)` in `main.ts` enhances every `<input type="range">` in place, including the ones created later (MutationObserver).
+    - The native input stays as the source of truth (focus, keyboard, ARIA; panels keep their `input`/`change`/`dblclick` listeners). It moves inside a wrapper `.ns` that takes over its classes (so the layout CSS still applies) and draws track, fill, detent ticks, thumb and value bubble.
+    - `input.value = …` from code is caught by a per-instance setter, so the picture follows.
+    - Pointer: drag relative to the grab point (no jump); clicking the track jumps there; **Shift = fine** (×0.1); **detents** snap within 2.5% of the range (default: the 0 of a range that crosses it; `data-detents="…"`, empty = none); **Alt = free**.
+    - Wheel steps only while the slider is focused (so columns still scroll). Double-click resets (forwarded to the input, plus `data-default`). `touch-action: pan-y`, so panels still scroll on phones.
+    - Fill from the centre for bipolar ranges; `data-fill="start"` for volume faders. The bubble shows `aria-valuetext`, the field's `.slider-value` text, or the value.
+  - **Controls:** a glowing knob arc, switch, segmented control, chips, active M/S/LIM and the playing Play button; a red glow on Record.
+  - **LED meters:** the fill is a fixed green→amber→red gradient revealed by `clip-path` from `--level` (set by `tracks-panel`), segmented with a mask.
+  - **Context cursors:** a crosshair on the roll plus a **note label under the pointer** (`ui/panels/roll-hover.ts`, `PianoRoll.noteAt`, mouse/pen only); ↔ on clips, loop edges and sliders; a crosshair on the ruler to draw a loop; active ↔ while dragging.
+  - **Touch (`pointer: coarse`):** taller sliders with bigger thumbs, 40 px icon/track buttons and chips; the mixer's grid columns grow to match.
+  - **Verified:**
+    - Real-pointer drag in the browser: Formant 0 → +3.5 st (model updated, preset → custom, bubble "+3.5 st"); dragged back near 0, it snapped to exactly 0 with the detent lit.
+    - Arrow keys stepped 0 → 1; the wheel while focused stepped it; double-click reset it.
+    - The roll label read E3 / C3 at two heights.
+    - Real-Chrome screenshots at 1440, 900 and 390 px (`npm run screenshots`, which now also makes `tablet.png` and shows a value bubble).
 - **Modes** (`AppState.mode`, driven by `Session`): `idle`, `listening` (live line, nothing saved), `recording` (live line + saving), `playback` (a saved recording is open and the roll follows `Player.currentTime`).
 
 ## Architecture
@@ -184,17 +233,20 @@ src/
     scales.ts             scale types, masks, nearest in-scale note
     autotune.ts           PitchCorrector: target note + retune-speed glide
     psola.ts              TD-PSOLA: analysis (marks) -> grain plan -> range render (shared by offline and the engine)
+    grain-shape.ts        voice character per grain: formant shift (read rate) + whisper (LPC envelope, noise); grain cache
     voice-engine.ts       voice plans (lead + harmonies) + VoiceRenderer: block rendering for the real-time engine
     live-voice.ts         causal PSOLA for monitoring: tracker + corrector + live marks + 25 ms-delayed synthesis
     harmony.ts            diatonic harmony voices + mixed render (renderWithHarmony)
     limiter.ts            look-ahead peak limiter
     fft.ts                radix-2 complex FFT
-    denoise.ts            STFT Wiener noise reduction (noise profile from quiet frames)
-    process.ts            prepareVoice (denoise -> gate -> de-ess -> rate) + processRecording (offline reference)
+    cleanup.ts            clean-up as a restartable stream: STFT Wiener (paired frames) -> gate -> de-esser; analysis
+    denoise.ts            offline noise reduction (runs the clean-up stream); frameSizeFor
+    process.ts            prepareVoice (once per take: rate, PSOLA marks, clean-up analysis) + processRecording (offline reference)
     analyze.ts            key (chroma + Krumhansl) and tempo (onset autocorrelation) of instrumentals
-    vocoder.ts            phase-vocoder pitch shift (identity phase locking) for instrumentals
+    shift-stream.ts       streaming phase vocoder (stereo-packed FFT, per-peak rotation): the beat's key shift, live
+    vocoder.ts            pitchShift (offline wrapper of shift-stream) + Catmull-Rom resample
     reverb.ts             generated impulse responses (Room, Plate, Hall, Cathedral)
-    dynamics.ts           offline noise gate (pitch-tracker driven) and split-band de-esser
+    dynamics.ts           offline gate / de-esser (run the clean-up stream)
     resample.ts           low-pass + decimate to the analysis rate
   audio/
     context.ts            the shared AudioContext (mic + playback on one clock) + output latency
@@ -205,13 +257,14 @@ src/
     mixdown.ts            OfflineAudioContext mixdown/stems/processed take through the same graph and engine
     sync.ts               take alignment math, click-loopback latency detection, count-in times
     metronome.ts          scheduled click sounds
-    render-worker.ts      Web Worker: voice requests (clean-up + analysis + plans per track), key/tempo, key shift
+    render-worker.ts      Web Worker: voice requests (prepare once per take + plans per change), key/tempo
     engine/
       engine-worklet.ts   AudioWorklet 'voice-engine': renders a take from source + plans, follows the transport
       protocol.ts         engine messages + construction options (shared with the main thread)
       transport.ts        pure: context frame -> song position, loop runs, loop fades
       live-worklet.ts     AudioWorklet 'live-processor': raw blocks + pitch frames + monitored voice (LiveVoice) + CPU load
       live-protocol.ts    live worklet messages
+      beat-worklet.ts     AudioWorklet 'beat-engine': a key-shifted beat (ShiftStream), follows the transport
     tuned-renderer.ts     main-thread client for the worker (voice: per-channel latest-wins; analyze; shift)
     wav.ts                16-bit PCM WAV encoder (mono or interleaved multi-channel); float WAV encode + WAV decode (song files)
     encode.ts             export encoding: WAV, or MP3 via mp3-worker.ts (LAME, LGPL, own chunk)
@@ -220,6 +273,7 @@ src/
   project/
     model.ts              Project/Track types + pure helpers (create, duplicate, update, effective gain, scheduling, transpose)
     fx.ts                 TrackFx / SongFx, presets, echo timing
+    voice.ts              TrackVoice + voice presets (Natural, Deeper, Younger, Chipmunk, Monster, Robot, Whisper)
     history.ts            undo/redo snapshots with drag coalescing
     package.ts            .recsong song files: pack/unpack (project + takes + beat), import id/name handling
   storage/
@@ -233,6 +287,8 @@ src/
     recordings-list.ts    takes list items (play, rename, export, delete; + / drag into the open song)
     icons.ts              shared SVG icons, icon buttons, inline name inputs, take drag MIME type
     knob.ts               rotary knob (drag, wheel, arrows, double-click to reset)
+    slider.ts             Neon slider: enhances every range input in place (detents, fine drag, bubble, wheel)
+    slider-math.ts        pure slider maths: positions, steps, detents, fill origin, relative drag
     captions.ts           word-by-word explainer captions over the roll
     colors.ts             lane/key color palette
     format.ts             time formatting
@@ -249,8 +305,9 @@ src/
       import-panel.ts     Import beat buttons, file drop overlay, key/BPM detection banner
       tuning-panel.ts     Auto-tune + Harmony sections
       cleanup-panel.ts    Noise reduction section
-      fx-panel.ts         Effects (track) and Song FX (key shift, reverb, echo) sections
+      fx-panel.ts         Voice (presets, formant, whisper), Effects (track) and Song FX (key shift, reverb, echo) sections
       onboarding.ts       one-time studio tips (captions) when features first come up
+      roll-hover.ts       note label under the pointer on the roll (with the crosshair cursor)
 public/                   manifest, icon.svg, icons/*.png (generated)
 scripts/make-icons.mjs    procedural icon renderer (no deps)
 vite.config.ts            base './', LAN HTTPS mode, build-time service worker
@@ -436,7 +493,7 @@ The user asked for pitch and reverb effects, a remix-studio style mixer, importi
 - [x] Echo/delay: tempo-synced (1/4, 1/8, dotted 1/8, 1/16), feedback, filtered repeats, per-track send
 - [x] Vocal chain per track: high-pass, noise gate, de-esser, compressor, 3-band EQ; presets Clean pop / Radio / Dreamy / Robot
 - [x] Effects work live in the mix and are rendered identically in export (shared chain + tails); browser-verified
-- [ ] Speed-up: pack stereo into one complex FFT in the phase vocoder (~2×); key shift of a 4-min beat currently takes ~1 min
+- [x] Speed-up: stereo packed into one complex FFT — done in Phase 15, where the key shift became live (streaming phase vocoder)
 - [ ] Listening test on real material (user): preset voicings, reverb levels, gate/de-ess amounts
 
 ### Phase 12 — Polish
@@ -494,17 +551,20 @@ The user asked for every setting to work in real time: hearing your voice proces
 - [x] Found and fixed: PSOLA octave-down was a no-op (grain length); recording into a key-shifted song shifted the take twice
 - [ ] Real check (user): wired headphones + real mic: latency feel, feedback-free, harmonies/FX while singing
 
-### Phase 15 — Everything live + voice character
-- [ ] Streaming noise reduction (profile from offline analysis), gate and de-esser in the engine; no re-render left for vocals
-- [ ] Streaming phase vocoder for instrumental key shift (stereo-packed FFT, ~2×), with fallback to the cached render
-- [ ] Voice character: formant shift + presets (Deeper, Younger, Chipmunk, Monster, Robot, Whisper)
+### Phase 15 — Everything live + voice character — branch `realtime-engine`
+- [x] Streaming noise reduction (profile from offline analysis), gate and de-esser in the engine; no re-render left for vocals (engine == offline reference bit for bit; first change instant, 3 ms to the engine)
+- [x] Streaming phase vocoder for instrumental key shift (stereo-packed FFT, per-peak rotation); measured cheap enough (~3.8% of a core in Chrome) that the cached-render fallback was dropped
+- [x] Voice character: formant shift + presets (Deeper, Younger, Chipmunk, Monster, Robot, Whisper); live in playback, export and monitoring
+- [x] Found and fixed: silent mix rebuilds during playback (since Phase 8); clean-up preparation stuck when everything was switched off; whisper LPC cost
+- [ ] Listening test (user): voice presets on real vocals, clean-up amounts while playing, key-shifted beats (artefacts beyond ±4 st)
 
-### Phase 16 — UX overhaul ("Neon studio")
-- [ ] Design tokens (colour, glow, radius, motion) + reduced-motion support
-- [ ] `Slider` component: detents/snap, Alt free, Shift fine, value bubble, wheel, keys, double-click reset, ARIA; replaces every range input
-- [ ] Neon knobs, toggles, segmented controls, LED meters; consistent hover/active/focus states
-- [ ] Context cursors: roll crosshair + note label, clip grab/grabbing, loop/slider resize; none on touch
-- [ ] Inspector/mixer/transport polish, touch targets ≥ 40 px on phones; checked at 1440/900/390 px
+### Phase 16 — UX overhaul ("Neon studio") — branch `realtime-engine`
+- [x] Design tokens (colour, glow, radius, motion) + reduced-motion support
+- [x] `Slider` component: detents/snap, Alt free, Shift fine, value bubble, wheel, keys, double-click reset, ARIA; replaces every range input (24 in a song, all enhanced; tests for the maths)
+- [x] Neon knobs, toggles, segmented controls, LED meters; consistent hover/active/focus states
+- [x] Context cursors: roll crosshair + note label, clip grab/grabbing, loop/slider resize; none on touch
+- [x] Inspector/mixer/transport polish (faders fill from the left, brighter rails), touch targets ≥ 40 px on phones; checked at 1440/900/390 px in real Chrome
+- [ ] Feel check (user): slider snapping strength, bubble placement, cursors on your mouse/trackpad
 
 ### Phase 17 — Metronome & grid
 - [ ] Click track (playback and recording, accent, volume), tap tempo / set BPM

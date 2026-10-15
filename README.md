@@ -85,12 +85,29 @@ Import a beat (MP3, WAV, M4A, OGG, FLAC), sing over it, and layer takes into tra
 - **Timeline:** waveform clips you can drag (snapping to 1/16 notes); drag along the ruler for a
   **loop region**.
 - **Ghost lines:** the other vocal tracks are drawn faintly behind the one you're editing.
-- **Instant changes:** auto-tune, harmony, pitch and key-shift changes are heard on the **next audio
-  block** while the song plays. Playback never restarts and you never wait for a re-render.
+- **Everything is instant:** auto-tune, harmony, pitch, voice character, clean-up and the song's key shift
+  are all heard on the **next audio block** while the song plays. Playback never restarts and nothing
+  is ever re-rendered.
 
 <p align="center">
   <img src="docs/screenshots/mixer.png" alt="Mixer: timeline with waveforms and a loop region, track strips with mute, solo, pan, fader and meters" width="760" />
 </p>
+
+### 🎭 Voice character
+
+Turn your voice into someone else's: **Deeper**, **Younger**, **Chipmunk**, **Monster**, **Robot**
+(each phrase held on one note) or **Whisper** (your vowels, no pitch). Under the hood a **formant shift**
+moves the vowel colour without changing the pitch, so a voice can sound bigger or smaller and still sing
+the same notes. It works during playback, in exports and live in your headphones.
+
+### 🎚️ Neon controls
+
+Every slider is a custom control. It snaps to "home" values like 0 dB or centre pan (hold
+<kbd>Alt</kbd> to place it freely), goes ten times finer with <kbd>Shift</kbd>, shows its value in a
+bubble while you drag, and resets with a double-click. The meters are LED-style, and on desktop the
+cursor changes with what's under it: a crosshair with the **note name** over the piano roll, ↔ on
+clips, loop edges and sliders. Everything stays keyboard- and screen-reader-friendly, and on phones
+the controls grow to finger size.
 
 ### ✨ Effects
 
@@ -110,8 +127,9 @@ Import a beat (MP3, WAV, M4A, OGG, FLAC), sing over it, and layer takes into tra
 - Reverb: *Room*, *Plate*, *Hall* or *Cathedral*
 - Tempo-synced echo (1/4, 1/8, dotted 1/8, 1/16)
 
-**Clean up**
+**Clean up**, live like everything else
 - Spectral noise reduction (the noise profile is learned from your pauses)
+- Noise gate and de-esser
 - The browser's live mic noise filter
 
 </td>
@@ -252,7 +270,10 @@ cycle has arrived, and synthesis runs a fixed 25 ms behind the input.
 <summary><b>Instrumental key shift, noise reduction, key & tempo detection</b></summary>
 
 - **Phase vocoder** with identity phase locking (2048/512 STFT) time-stretches the beat, then a
-  Catmull-Rom resample brings it back to length at the new pitch. Accurate to ~5 cents on chords.
+  Catmull-Rom read-out brings it back to length at the new pitch, streamed live in a worklet. Stereo
+  shares one complex FFT, and phase locking is a rotation per peak. Accurate to ~5 cents on chords.
+- **Voice character:** grains are read faster or slower (formants move, pitch doesn't), or replaced
+  by noise shaped by their own LPC envelope (whisper).
 - **Noise reduction:** an STFT Wiener filter (43 ms Hann frames, 75% overlap, decision-directed). The
   noise profile comes from the quietest 15% of frames. About +9 dB SNR while the voice keeps ~97% of
   its level.
@@ -324,8 +345,8 @@ The microphone needs `localhost` or HTTPS.
 - [ ] **v3 "Real-time & Neon studio"**
   - [x] Real-time voice engine: every change instant during playback
   - [x] Hear yourself live: monitoring with auto-tune, harmony and effects
-  - [ ] Clean-up and beat key shift live too, plus voice character (formant shift: deeper, younger, robot, whisper…)
-  - [ ] "Neon studio" UX: custom sliders with snapping, context cursors, LED meters
+  - [x] Clean-up and the beat's key shift live too, plus voice character (formant shift, robot, whisper)
+  - [x] "Neon studio" UX: custom sliders with snapping, context cursors, LED meters
   - [ ] Metronome & grid, note editing (drag sung notes), play-the-keys harmony (MIDI keyboard)
 
 ## Credits & licenses

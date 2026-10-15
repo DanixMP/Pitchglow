@@ -17,12 +17,17 @@ import { mountLayout } from './ui/panels/layout';
 import { mountLiveControls } from './ui/panels/live-controls';
 import { mountOnboarding } from './ui/panels/onboarding';
 import { mountReadout } from './ui/panels/readout';
+import { mountRollHover } from './ui/panels/roll-hover';
+import { watchSliders } from './ui/slider';
 import { mountSongsPanel } from './ui/panels/songs-panel';
 import { mountTakesPanel } from './ui/panels/takes-panel';
 import { mountTracksPanel } from './ui/panels/tracks-panel';
 import { mountTransport } from './ui/panels/transport';
 import { mountTuningPanel } from './ui/panels/tuning-panel';
 import { PianoRoll } from './ui/piano-roll';
+
+// Neon sliders replace every range input, including the ones panels create later.
+watchSliders(document.body);
 
 const store = createAppStore();
 const roll = new PianoRoll($<HTMLCanvasElement>('roll'));
@@ -43,6 +48,7 @@ mountFxPanel(store, session);
 const transport = mountTransport(store, session, roll, captions);
 const readout = mountReadout(store, roll, session.player);
 mountOnboarding(store, captions);
+mountRollHover(roll, $<HTMLCanvasElement>('roll'));
 
 // Inspector settings changed: apply them (to the take, or the selected track of the open song),
 // then persist the *global* defaults (a track's own settings are saved with its song).

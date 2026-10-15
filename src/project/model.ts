@@ -5,6 +5,7 @@
 
 import type { Scale } from '../dsp/scales';
 import type { SongFx, TrackFx } from './fx';
+import type { TrackVoice } from './voice';
 import { DEFAULT_TUNING, type CleanupPrefs, type TuningPrefs } from '../storage/settings';
 
 export type TrackKind = 'vocal' | 'instrumental';
@@ -35,6 +36,8 @@ export interface Track {
   hue: number;
   /** Vocal chain + sends (Phase 11; missing = defaults). */
   fx?: TrackFx;
+  /** Voice character: formant, whisper, robot (Phase 15; missing = natural). */
+  voice?: TrackVoice;
 }
 
 export interface Project {

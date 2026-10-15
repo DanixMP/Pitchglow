@@ -268,6 +268,17 @@ export class PianoRoll {
     return voiced.length ? voiced[voiced.length >> 1] : null;
   }
 
+  /** The note lane under a point (client coordinates), and whether it is over the keyboard. */
+  noteAt(clientX: number, clientY: number): { midi: number; onKeys: boolean } | null {
+    const rect = this.canvas.getBoundingClientRect();
+    const x = clientX - rect.left;
+    const y = clientY - rect.top;
+    if (x < 0 || y < 0 || x > rect.width || y > rect.height) return null;
+    const L = this.layout();
+    const midi = Math.round(this.viewCenter + (L.h / 2 - y) / L.laneH);
+    return { midi, onKeys: x < L.keyW };
+  }
+
   private attachScrubbing(): void {
     const c = this.canvas;
     c.addEventListener('pointerdown', (e) => {

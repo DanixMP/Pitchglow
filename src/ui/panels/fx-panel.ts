@@ -1,5 +1,6 @@
-// Effects (selected vocal track: preset, pitch, sends, high-pass, compressor, EQ, gate, de-esser) and
-// Song FX (key shift, reverb bus, echo bus) sections of the inspector.
+// Voice (selected vocal track: character presets, formant, whisper), Effects (preset, pitch, sends,
+// high-pass, compressor, EQ, gate, de-esser) and Song FX (key shift, reverb bus, echo bus) sections.
+// Every control is live: changes are heard on the next audio block.
 
 import type { Session } from '../../app/session';
 import { openProject, selectedTrack, type AppStore } from '../../app/state';
@@ -7,6 +8,7 @@ import { REVERB_PRESETS, type ReverbPreset } from '../../dsp/reverb';
 import { scaleName } from '../../dsp/scales';
 import { DEFAULT_SONG_FX, DEFAULT_TRACK_FX, FX_PRESETS, songFxOf, trackFxOf, type EchoDivision, type FxPresetId, type SongFx, type TrackFx } from '../../project/fx';
 import { transposeScale } from '../../project/model';
+import { NATURAL_TRACK_VOICE, trackVoiceOf, VOICE_PRESETS, type TrackVoice, type VoicePresetId } from '../../project/voice';
 import { $ } from '../dom';
 
 interface SliderSpec<T> {
@@ -33,6 +35,19 @@ const TRACK_SLIDERS: Record<string, SliderSpec<TrackFx> & { patch(n: number, fx:
   eqHigh: { label: 'High', min: -12, max: 12, step: 0.5, get: (f) => f.eq.high, format: dbText, patch: (n, f) => ({ eq: { ...f.eq, high: n } }) },
   gate: { label: 'Gate', min: 0, max: 100, step: 1, get: (f) => f.gate * 100, format: pct, patch: (n) => ({ gate: n / 100 }) },
   deess: { label: 'De-ess', min: 0, max: 100, step: 1, get: (f) => f.deess * 100, format: pct, patch: (n) => ({ deess: n / 100 }) },
+};
+
+const VOICE_SLIDERS: Record<string, SliderSpec<TrackVoice> & { patch(n: number): Partial<TrackVoice> }> = {
+  formant: {
+    label: 'Formant',
+    min: -8,
+    max: 8,
+    step: 0.5,
+    get: (v) => v.formant,
+    format: (n) => (n === 0 ? 'Natural' : `${n > 0 ? '+' : '−'}${Math.abs(n)} st`),
+    patch: (n) => ({ formant: n }),
+  },
+  whisper: { label: 'Whisper', min: 0, max: 100, step: 1, get: (v) => v.whisper * 100, format: pct, patch: (n) => ({ whisper: n / 100 }) },
 };
 
 const SONG_SLIDERS: Record<string, SliderSpec<SongFx> & { patch(n: number): Parameters<Session['updateSongFx']>[0] }> = {
@@ -124,6 +139,43 @@ export function mountFxPanel(store: AppStore, session: Session): void {
     ]),
   );
 
+  // --- voice character ---
+  const voiceHint = $('voice-hint');
+  const voiceControls = $('voice-controls');
+  const voiceChips = new Map<VoicePresetId, HTMLButtonElement>();
+  for (const [id, p] of Object.entries(VOICE_PRESETS) as [VoicePresetId, (typeof VOICE_PRESETS)[VoicePresetId]][]) {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'chip';
+    chip.textContent = p.label;
+    chip.setAttribute('aria-pressed', 'false');
+    chip.title = p.pitch ? `${p.label}: pitch ${p.pitch > 0 ? '+' : '−'}${Math.abs(p.pitch)} st` : p.label;
+    chip.addEventListener('click', () => {
+      const id2 = trackId();
+      if (id2) session.applyVoicePreset(id2, id);
+    });
+    $('voice-presets').append(chip);
+    voiceChips.set(id, chip);
+  }
+  const voiceSliders = Object.fromEntries(
+    Object.entries(VOICE_SLIDERS).map(([key, spec]) => [
+      key,
+      buildSlider(
+        $('voice-sliders'),
+        key,
+        spec as SliderSpec<never>,
+        (n) => {
+          const id = trackId();
+          if (id) session.setTrackVoice(id, spec.patch(n));
+        },
+        () => {
+          const id = trackId();
+          if (id) session.setTrackVoice(id, spec.patch(spec.get(NATURAL_TRACK_VOICE)));
+        },
+      ),
+    ]),
+  );
+
   // --- song effects ---
   const songHint = $('songfx-hint');
   const songControls = $('songfx-controls');
@@ -160,6 +212,16 @@ export function mountFxPanel(store: AppStore, session: Session): void {
     const vocal = !!track && track.kind === 'vocal';
     hint.hidden = vocal;
     controls.hidden = !vocal;
+    voiceHint.hidden = vocal;
+    voiceControls.hidden = !vocal;
+    if (vocal) {
+      const v = trackVoiceOf(track);
+      for (const [id, chip] of voiceChips) chip.setAttribute('aria-pressed', String(v.preset === id));
+      for (const [key, spec] of Object.entries(VOICE_SLIDERS)) {
+        const n = spec.get(v);
+        setSlider(voiceSliders[key], n, spec.format(n));
+      }
+    }
     if (vocal) {
       const fx = trackFxOf(track);
       preset.value = fx.preset ?? '';

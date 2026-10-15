@@ -5,7 +5,7 @@ import type { PitchFrame } from '../audio/pitch-tracker';
 import type { Correction, TuneSettings } from './autotune';
 import { limit } from './limiter';
 import { analyzePsola, renderGrains } from './psola';
-import { planVoices } from './voice-engine';
+import { planVoices, type VoiceCharacter, type VoicePlans } from './voice-engine';
 import { nearestInScale, scaleMask, type Scale } from './scales';
 import { pitchClass } from './notes';
 
@@ -62,18 +62,22 @@ export function renderWithHarmony(
   frames: readonly PitchFrame[],
   settings: TuneSettings | null,
   semitones = 0,
+  character?: VoiceCharacter,
 ): Float32Array {
-  const analysis = analyzePsola(samples, sampleRate, frames);
-  const plans = planVoices(analysis, frames, settings, semitones);
-  if (!plans) return samples.slice();
-  const n = samples.length;
+  const plans = planVoices(analyzePsola(samples, sampleRate, frames), frames, settings, semitones, character);
+  return plans ? renderPlans(samples, plans, sampleRate) : samples.slice();
+}
+
+/** Renders a whole take through its voice plans (lead + harmonies), peak-limited when harmonies stack. */
+export function renderPlans(src: Float32Array, plans: VoicePlans, sampleRate: number): Float32Array {
+  const n = src.length;
   const out = new Float32Array(n);
   const voice = new Float32Array(n);
   const weight = new Float32Array(n);
-  renderGrains(samples, plans.lead, 0, n, out, weight);
+  renderGrains(src, plans.lead, 0, n, out, weight);
   if (plans.harmonies.length === 0) return out;
   for (const h of plans.harmonies) {
-    renderGrains(samples, h, 0, n, voice, weight);
+    renderGrains(src, h, 0, n, voice, weight);
     for (let i = 0; i < n; i++) out[i] += plans.harmonyGain * voice[i];
   }
   // Only the loudest moments are turned down; the rest of the take keeps its level.

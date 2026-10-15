@@ -157,9 +157,22 @@ await page.screenshot({ path: `${OUT}/studio.png` });
 log('studio');
 
 // Inspector sections.
-await page.evaluate(() => document.getElementById('fx-panel').scrollIntoView());
+await page.evaluate(() => {
+  document.getElementById('fx-panel').scrollIntoView();
+  // Show one slider's value bubble, as while dragging.
+  const ns = document.getElementById('fx-eqHigh').closest('.ns');
+  ns.classList.add('show-bubble', 'is-dragging');
+  ns.querySelector('.ns-bubble').textContent = ns.nextElementSibling.textContent;
+});
 await sleep(300);
-await shoot(page, '#fx-panel', `${OUT}/effects.png`);
+await shoot(page, '#fx-panel', `${OUT}/effects.png`, 26);
+await page.evaluate(() => document.getElementById('fx-eqHigh').closest('.ns').classList.remove('show-bubble', 'is-dragging'));
+// Tablet: centre + inspector, takes in a drawer.
+await page.setViewport({ width: 900, height: 1000, deviceScaleFactor: 2 });
+await sleep(600);
+await page.screenshot({ path: `${OUT}/tablet.png` });
+await page.setViewport({ width: 1440, height: 1080, deviceScaleFactor: 2 });
+await sleep(400);
 await page.evaluate(() => document.getElementById('tuning-panel').scrollIntoView());
 await sleep(300);
 await shoot(page, '#tuning-panel', `${OUT}/autotune-panel.png`);

@@ -4,6 +4,7 @@
 // from the next 128-sample block. Nothing is allocated while rendering.
 
 import { ENGINE_BLOCK, VoiceRenderer } from '../../dsp/voice-engine';
+import type { CleanupAnalysis } from '../../dsp/cleanup';
 import { ENGINE_PROCESSOR, type EngineMessage, type EngineOptions } from './protocol';
 import { blockRuns, LOOP_FADE_SECONDS, loopFade, type EngineTransport } from './transport';
 
@@ -17,7 +18,8 @@ declare const currentFrame: number;
 declare const sampleRate: number;
 
 class VoiceEngineProcessor extends AudioWorkletProcessor {
-  private readonly renderer = new VoiceRenderer();
+  private readonly renderer = new VoiceRenderer(sampleRate);
+  private cleanupAnalysis: CleanupAnalysis | null = null;
   private transport: EngineTransport | null = null;
   private offset = 0;
   private readonly runs = new Float64Array(16);
@@ -28,6 +30,8 @@ class VoiceEngineProcessor extends AudioWorkletProcessor {
     const o = options.processorOptions as EngineOptions | undefined;
     if (o) {
       this.renderer.setSource(o.samples);
+      this.cleanupAnalysis = o.cleanup;
+      this.renderer.setCleanup(o.cleanup, o.cleanupSettings);
       this.renderer.setPlans(o.plans);
       this.offset = o.offset;
       this.transport = o.transport;
@@ -39,7 +43,13 @@ class VoiceEngineProcessor extends AudioWorkletProcessor {
     switch (m.type) {
       case 'source':
         this.renderer.setSource(m.samples);
+        this.cleanupAnalysis = m.cleanup;
+        this.renderer.setCleanup(m.cleanup, m.cleanupSettings);
         this.renderer.setPlans(m.plans);
+        break;
+      case 'cleanup':
+        if (m.analysis !== undefined) this.cleanupAnalysis = m.analysis;
+        this.renderer.setCleanup(this.cleanupAnalysis, m.settings);
         break;
       case 'plans':
         this.renderer.setPlans(m.plans);

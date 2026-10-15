@@ -1592,3 +1592,404 @@ body {
 .tracks-actions .btn {
   white-space: nowrap;
 }
+
+/* ===========================================================================================
+   Phase 16 — "Neon studio": design tokens, neon controls, LED meters, context cursors
+   =========================================================================================== */
+
+:root {
+  /* Glow */
+  --glow-accent: 0 0 10px rgba(246, 196, 83, 0.45);
+  --glow-accent-strong: 0 0 6px rgba(246, 196, 83, 0.7), 0 0 18px rgba(246, 196, 83, 0.35);
+  --glow-fg: 0 0 10px rgba(244, 242, 238, 0.3);
+  --glow-record: 0 0 14px rgba(255, 90, 95, 0.55);
+  --led-green: #3ddc84;
+  /* Shape */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-pill: 999px;
+  /* Motion */
+  --dur-fast: 120ms;
+  --dur: 180ms;
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  /* Context cursors (neon on dark; the keyword after each is the fallback) */
+  --cursor-crosshair: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24'><g fill='none' stroke-linecap='round'><path d='M12 2v6M12 16v6M2 12h6M16 12h6' stroke='%23000' stroke-width='3.5'/><path d='M12 2v6M12 16v6M2 12h6M16 12h6' stroke='%23f6c453' stroke-width='1.6'/></g><circle cx='12' cy='12' r='2' fill='%23fff' stroke='%23000'/></svg>") 12 12, crosshair;
+  --cursor-ew: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24'><g fill='none' stroke-linecap='round' stroke-linejoin='round'><path d='M3 12h18M7 8l-4 4 4 4M17 8l4 4-4 4' stroke='%23000' stroke-width='4.5'/><path d='M3 12h18M7 8l-4 4 4 4M17 8l4 4-4 4' stroke='%23f6c453' stroke-width='2'/></g></svg>") 12 12, ew-resize;
+  --cursor-ew-active: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24'><g fill='none' stroke-linecap='round' stroke-linejoin='round'><path d='M3 12h18M7 8l-4 4 4 4M17 8l4 4-4 4' stroke='%23000' stroke-width='4.5'/><path d='M3 12h18M7 8l-4 4 4 4M17 8l4 4-4 4' stroke='%23fff' stroke-width='2'/></g></svg>") 12 12, ew-resize;
+}
+
+/* Touch screens have no cursor to customise. */
+@media (hover: none) {
+  :root {
+    --cursor-crosshair: auto;
+    --cursor-ew: auto;
+    --cursor-ew-active: auto;
+  }
+}
+
+/* --- Neon slider (src/ui/slider.ts) -------------------------------------------------------- */
+
+.ns {
+  --ns-color: var(--accent);
+  --ns-glow: rgba(246, 196, 83, 0.45);
+  --ns-t: 0;
+  position: relative;
+  display: block;
+  height: 22px;
+  min-width: 0;
+  width: 100%;
+  cursor: var(--cursor-ew);
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.ns-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.ns-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 4px;
+  margin-top: -2px;
+  border-radius: var(--radius-pill);
+  background: #34343c;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+
+.ns-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: inherit;
+  background: var(--ns-color);
+  box-shadow: 0 0 8px var(--ns-glow);
+}
+
+.ns-ticks i {
+  position: absolute;
+  top: -4px;
+  width: 2px;
+  height: 12px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: rgba(255, 255, 255, 0.22);
+  transition: background var(--dur-fast), box-shadow var(--dur-fast);
+}
+
+.ns.is-home .ns-ticks i {
+  background: var(--ns-color);
+  box-shadow: 0 0 6px var(--ns-glow);
+}
+
+.ns-thumb {
+  position: absolute;
+  top: 50%;
+  left: calc(var(--ns-t) * 100%);
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--ns-color) 35%, transparent),
+    0 0 10px var(--ns-glow);
+  transition: transform var(--dur-fast) var(--ease), box-shadow var(--dur-fast);
+}
+
+.ns:hover .ns-thumb {
+  transform: scale(1.15);
+}
+
+.ns.is-dragging {
+  cursor: var(--cursor-ew-active);
+}
+
+.ns.is-dragging .ns-thumb {
+  transform: scale(1.25);
+  box-shadow:
+    0 0 0 4px color-mix(in srgb, var(--ns-color) 50%, transparent),
+    0 0 16px var(--ns-glow);
+}
+
+.ns-input:focus-visible ~ .ns-thumb {
+  outline: 2px solid var(--ns-color);
+  outline-offset: 3px;
+}
+
+.ns-bubble {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: calc(var(--ns-t) * 100%);
+  z-index: 5;
+  padding: 3px 7px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--ns-color);
+  background: #0b0b0c;
+  color: var(--fg);
+  font: 700 11px var(--font);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  box-shadow: 0 0 12px var(--ns-glow);
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, 4px);
+  transition: opacity var(--dur-fast), transform var(--dur-fast) var(--ease);
+}
+
+.ns.show-bubble .ns-bubble {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.ns.is-disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.ns.is-disabled .ns-thumb {
+  transform: none;
+}
+
+/* Per-control colours. */
+.ns.track-fader {
+  --ns-color: var(--fg);
+  --ns-glow: rgba(244, 242, 238, 0.32);
+  height: 18px;
+}
+
+.ns.track-pan {
+  --ns-color: #a7a7b0;
+  --ns-glow: rgba(167, 167, 176, 0.3);
+  height: 18px;
+}
+
+.ns.track-pan .ns-thumb,
+.ns.track-fader .ns-thumb {
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+}
+
+.ns.seek {
+  flex: 1;
+  height: 26px;
+}
+
+/* --- Knob, switches, segmented control, chips, buttons -------------------------------------- */
+
+.knob-arc {
+  filter: drop-shadow(0 0 3px rgba(246, 196, 83, 0.8));
+}
+
+.knob-body {
+  fill: #26262c;
+  stroke: #3d3d45;
+  transition: fill var(--dur-fast);
+}
+
+.knob:hover .knob-body,
+.knob.is-dragging .knob-body {
+  fill: #2f2f36;
+}
+
+.switch-track {
+  transition: background var(--dur), box-shadow var(--dur);
+}
+
+.switch-track::after {
+  transition: transform var(--dur) var(--ease), background var(--dur);
+}
+
+.switch input:checked + .switch-track {
+  box-shadow: var(--glow-accent);
+}
+
+.seg {
+  transition: background var(--dur-fast), color var(--dur-fast), box-shadow var(--dur-fast);
+}
+
+.seg:not(.is-on):not(:disabled):hover {
+  color: var(--fg);
+}
+
+.seg.is-on {
+  box-shadow: var(--glow-fg);
+}
+
+.seg[data-ab='tuned'].is-on {
+  box-shadow: var(--glow-accent);
+}
+
+.chip {
+  transition: background var(--dur-fast), color var(--dur-fast), border-color var(--dur-fast), box-shadow var(--dur-fast);
+}
+
+.chip:not(:disabled):hover {
+  color: var(--fg);
+  border-color: #3a3a42;
+}
+
+.chip.is-on {
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06), var(--glow-fg);
+}
+
+.harmony-voices .chip[aria-pressed='true'] {
+  box-shadow: var(--glow-accent);
+}
+
+.btn-record.is-active,
+.btn-record:hover {
+  box-shadow: var(--glow-record);
+}
+
+.btn:not(.btn-record):not(:disabled):hover {
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.05), 0 0 12px rgba(244, 242, 238, 0.1);
+}
+
+.track-btn {
+  transition: color var(--dur-fast), background var(--dur-fast), box-shadow var(--dur-fast), border-color var(--dur-fast);
+}
+
+.track-mute[aria-pressed='true'],
+.track-solo[aria-pressed='true'],
+.track-lim[aria-pressed='true'] {
+  box-shadow: var(--glow-accent);
+}
+
+#play {
+  transition: box-shadow var(--dur), transform var(--dur-fast);
+}
+
+#play.is-playing {
+  box-shadow: var(--glow-accent-strong);
+}
+
+/* --- LED meters (tracks-panel sets --level 0..1) -------------------------------------------- */
+
+.meter {
+  height: 5px;
+  border-radius: 1px;
+  background: repeating-linear-gradient(90deg, #24242a 0 4px, transparent 4px 5px);
+}
+
+.meter-stereo {
+  height: 11px;
+}
+
+.meter-fill,
+.meter-fill.is-hot,
+.meter-fill.is-clip {
+  transform: none;
+  background: linear-gradient(90deg, var(--led-green) 0%, var(--led-green) 62%, var(--accent) 80%, var(--record) 96%);
+  clip-path: inset(0 calc((1 - var(--level, 0)) * 100%) 0 0);
+  -webkit-mask-image: repeating-linear-gradient(90deg, #000 0 4px, transparent 4px 5px);
+  mask-image: repeating-linear-gradient(90deg, #000 0 4px, transparent 4px 5px);
+  filter: drop-shadow(0 0 2px rgba(61, 220, 132, 0.55));
+}
+
+.meter-fill.is-clip {
+  filter: drop-shadow(0 0 3px rgba(255, 90, 95, 0.8));
+}
+
+/* --- Context cursors --------------------------------------------------------------------------- */
+
+#roll {
+  cursor: var(--cursor-crosshair);
+}
+
+#roll.is-scrubbing {
+  cursor: var(--cursor-ew-active);
+}
+
+/* Note under the pointer, on the roll (src/ui/panels/roll-hover.ts). */
+.roll-hover {
+  position: absolute;
+  z-index: 3;
+  padding: 2px 7px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(246, 196, 83, 0.8);
+  background: rgba(11, 11, 12, 0.88);
+  color: #fff;
+  font: 700 11px var(--font);
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  white-space: nowrap;
+  box-shadow: var(--glow-accent);
+  transform: translate(14px, -50%);
+}
+
+/* --- Touch: bigger targets ------------------------------------------------------------------- */
+
+@media (pointer: coarse) {
+  .ns {
+    height: 34px;
+  }
+
+  .ns.track-fader,
+  .ns.track-pan {
+    height: 30px;
+  }
+
+  .ns-thumb {
+    width: 20px;
+    height: 20px;
+    margin: -10px 0 0 -10px;
+  }
+
+  .ns.track-pan .ns-thumb,
+  .ns.track-fader .ns-thumb {
+    width: 18px;
+    height: 18px;
+    margin: -9px 0 0 -9px;
+  }
+
+  .icon-btn {
+    width: 40px;
+    height: 40px;
+  }
+
+  .track-btn {
+    width: 40px;
+    height: 36px;
+  }
+
+  .chip,
+  .seg {
+    min-height: 40px;
+  }
+}
+
+/* --- Reduced motion ------------------------------------------------------------------------------ */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+/* Touch: the mixer's mute/solo/remove columns grow with their buttons. */
+@media (pointer: coarse) {
+  .track {
+    grid-template-columns: 10px minmax(70px, 1fr) 10px 40px 40px 56px minmax(80px, 140px) 56px 40px;
+  }
+}
+
+@media (pointer: coarse) and (max-width: 1299px) and (min-width: 1100px), (pointer: coarse) and (max-width: 899px) {
+  .track {
+    grid-template-columns: 10px 56px minmax(0, 1fr) 10px 40px 40px 56px 40px;
+  }
+}

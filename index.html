@@ -74,7 +74,7 @@
               <svg viewBox="0 0 24 24" aria-hidden="true"><path class="i-play" d="M8 5.5v13l11-6.5z"/><path class="i-pause" d="M7 5h4v14H7zm6 0h4v14h-4z"/></svg>
             </button>
             <span id="time-current" class="time">0:00</span>
-            <input id="seek" class="seek" type="range" min="0" max="1" step="0.01" value="0" aria-label="Playback position" />
+            <input id="seek" class="seek" type="range" min="0" max="1" step="0.01" value="0" data-detents="" aria-label="Playback position" />
             <span id="time-total" class="time">0:00</span>
             <button id="loop" class="icon-btn loop-btn" type="button" aria-pressed="false" aria-label="Loop" title="Loop (L): drag along the timeline ruler to choose the section" hidden>
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v3l4-4-4-4v3H5v6h2zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2z"/></svg>
@@ -132,7 +132,7 @@
             <span class="track-name master-name">Master</span>
             <button id="master-limiter" class="track-btn track-lim" type="button" aria-pressed="true" title="Limiter: keeps the mix below −1 dBFS">LIM</button>
             <div class="fader-cell">
-              <input id="master-fader" class="track-fader" type="range" min="-24" max="6" step="0.5" value="0" aria-label="Master volume" />
+              <input id="master-fader" class="track-fader" type="range" min="-24" max="6" step="0.5" value="0" data-fill="start" aria-label="Master volume" />
               <div class="meter meter-stereo" aria-hidden="true"><i class="meter-fill"></i><i class="meter-fill"></i></div>
             </div>
             <span id="master-db" class="track-db">0.0 dB</span>
@@ -231,7 +231,7 @@
             <div id="harmony-voices" class="harmony-voices" role="group" aria-label="Harmony voices"></div>
             <label class="slider-field">
               <span class="field-label">Mix</span>
-              <input id="harmony-mix" type="range" min="0" max="100" step="1" value="60" aria-label="Harmony mix" />
+              <input id="harmony-mix" type="range" min="0" max="100" step="1" value="60" data-detents="60" aria-label="Harmony mix" />
               <span id="harmony-mix-value" class="slider-value">60%</span>
             </label>
           </div>
@@ -247,9 +247,20 @@
             </label>
             <label class="slider-field" id="denoise-amount-field">
               <span class="field-label">Amount</span>
-              <input id="denoise-amount" type="range" min="3" max="30" step="1" value="12" aria-label="Noise reduction amount" />
+              <input id="denoise-amount" type="range" min="3" max="30" step="1" value="12" data-detents="12" aria-label="Noise reduction amount" />
               <span id="denoise-amount-value" class="slider-value">12 dB</span>
             </label>
+          </div>
+        </details>
+
+        <details id="voice-panel" class="section" open>
+          <summary class="section-head">Voice</summary>
+          <div class="section-body">
+            <p id="voice-hint" class="section-hint">Open a song and select a vocal track to change its voice.</p>
+            <div id="voice-controls" class="fx-controls">
+              <div id="voice-presets" class="harmony-voices" role="group" aria-label="Voice character"></div>
+              <div id="voice-sliders" class="fx-sliders"></div>
+            </div>
           </div>
         </details>
 
