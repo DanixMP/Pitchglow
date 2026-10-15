@@ -3,6 +3,7 @@
 import type { Session } from '../../app/session';
 import type { AppStore } from '../../app/state';
 import type { Project } from '../../project/model';
+import { confirmDialog } from '../confirm';
 import { $ } from '../dom';
 import { iconButton, nameInput } from '../icons';
 
@@ -47,7 +48,13 @@ export function mountSongsPanel(store: AppStore, session: Session): void {
     dup.addEventListener('click', () => session.duplicateProject(p.id));
     const del = iconButton('trash', `Delete ${p.name}`);
     del.addEventListener('click', () => {
-      if (confirm(`Delete the song “${p.name}”? Its takes stay in your library.`)) session.deleteProject(p.id);
+      void confirmDialog({
+        title: `Delete the song “${p.name}”?`,
+        message: 'Its tracks, mix and effects are removed. The takes stay in your library, and a saved .recsong file can bring the song back.',
+        confirmLabel: 'Delete song',
+        danger: true,
+        dontAskKey: 'delete-song',
+      }).then((yes) => yes && session.deleteProject(p.id));
     });
 
     li.append(dot, info, save, dup, del);

@@ -16,6 +16,49 @@
   </head>
   <body>
     <div id="studio" class="studio">
+      <!-- Top bar: workspace modes -->
+      <header id="modebar" class="modebar">
+        <div class="modebar-brand" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M3 15c2.5 0 2.5-6 5-6s2.5 8 5 8 2.5-12 5-12 2 5 3 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>Recorder</span>
+        </div>
+        <nav class="modebar-modes" aria-label="Workspace mode">
+          <button class="mode-btn mode-studio" type="button" data-workspace="studio" aria-pressed="false" title="Studio mode (1)">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h7v7H4zm9 0h7v7h-7zM4 13h7v7H4zm9 0h7v7h-7z"/></svg><span>Studio</span>
+          </button>
+          <button class="mode-btn mode-record" type="button" data-workspace="record" aria-pressed="false" title="Record mode (2)">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="6.5"/></svg><span>Record</span>
+          </button>
+          <button class="mode-btn mode-remix" type="button" data-workspace="remix" aria-pressed="false" title="Remix mode (3)">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h2v8.2A2.5 2.5 0 1 1 5 12zm6 0h2v2.2A2.5 2.5 0 1 1 11 6zm0 9h2v7h-2zm6-9h2v12.2A2.5 2.5 0 1 1 17 16zM5 17h2v3H5zm6-6h2v1h-2z"/></svg><span>Remix</span>
+          </button>
+          <button class="mode-btn mode-edit" type="button" data-workspace="edit" aria-pressed="false" title="Edit mode (4)">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17.3V20h2.7l8.1-8.1-2.7-2.7zM20.7 7a1 1 0 0 0 0-1.4l-2.3-2.3a1 1 0 0 0-1.4 0L15.2 5.1l2.7 2.7z"/></svg><span>Edit</span>
+          </button>
+          <button class="mode-btn mode-fun" type="button" data-workspace="fun" aria-pressed="false" title="Fun mode (5)">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2.6 5.6 6.1.7-4.5 4.2 1.2 6L12 16.5 6.6 19.5l1.2-6L3.3 9.3l6.1-.7z"/></svg><span>Fun</span>
+          </button>
+        </nav>
+        <span id="modebar-song" class="modebar-song" hidden></span>
+        <button id="about-open" class="profile-btn" type="button" aria-haspopup="dialog" aria-controls="about" title="About, profile, privacy and license">
+          <span id="about-avatar" class="avatar avatar-sm" aria-hidden="true">D</span>
+          <span class="profile-btn-label">About</span>
+        </button>
+      </header>
+
+      <!-- Left rail: what stays of Songs/Takes when that column is closed (desktop) -->
+      <nav id="rail-left" class="rail rail-left" aria-label="Songs and takes (closed)">
+        <button id="left-open" class="icon-btn rail-btn" type="button" aria-label="Open songs and takes" aria-controls="takes-col" aria-expanded="false" title="Open songs and takes ( [ )">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.4 7.4 7.8 6l6 6-6 6-1.4-1.4L11 12zm6 0L13.8 6l6 6-6 6-1.4-1.4L17 12z"/></svg>
+        </button>
+        <button class="icon-btn rail-btn" type="button" data-rail-open="songs" aria-label="Songs" title="Songs">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3z"/></svg>
+        </button>
+        <button class="icon-btn rail-btn" type="button" data-rail-open="takes" aria-label="Takes" title="Takes">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11z"/></svg>
+        </button>
+      </nav>
+
       <!-- Left column: songs + takes library (desktop), drawer (tablet), tab panel (phone) -->
       <aside id="takes-col" class="col col-left" aria-label="Songs and takes">
         <section class="side-section" aria-labelledby="songs-title">
@@ -29,6 +72,9 @@
               <button id="song-new" class="btn btn-small" type="button">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></svg>
                 <span>New song</span>
+              </button>
+              <button id="left-collapse" class="icon-btn col-collapse" type="button" aria-label="Close songs and takes" aria-controls="takes-col" aria-expanded="true" title="Close this column ( [ )">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.6 7.4 16.2 6l-6 6 6 6 1.4-1.4-4.6-4.6zM11.6 7.4 10.2 6l-6 6 6 6 1.4-1.4L7 12z"/></svg>
               </button>
               <button id="takes-close" class="icon-btn drawer-close" type="button" aria-label="Close panel">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19l5.6-5.6 5.6 5.6 1.4-1.4-5.6-5.6L19 6.4 17.6 5 12 10.6z"/></svg>
@@ -44,6 +90,7 @@
           </div>
           <input id="takes-search" class="search" type="search" placeholder="Search takes" aria-label="Search takes" />
           <ul id="recordings" class="rec-list"></ul>
+          <button id="dontask-reset" class="dontask-reset" type="button" hidden>Ask before deleting again</button>
         </section>
       </aside>
 
@@ -168,6 +215,12 @@
 
       <!-- Right column: inspector (desktop/tablet), tab panel (phone) -->
       <aside id="controls-col" class="col col-right" aria-label="Controls">
+        <div class="col-head inspector-head">
+          <h2 class="col-title">Inspector</h2>
+          <button id="right-collapse" class="icon-btn col-collapse" type="button" aria-label="Close the inspector" aria-controls="controls-col" aria-expanded="true" title="Close this column ( ] ); pop single sections out with their ⧉ button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.4 7.4 7.8 6l6 6-6 6-1.4-1.4L11 12zm6 0L13.8 6l6 6-6 6-1.4-1.4L17 12z"/></svg>
+          </button>
+        </div>
         <details id="note-panel" class="section" open hidden>
           <summary class="section-head">Note</summary>
           <div class="section-body">
@@ -198,7 +251,7 @@
           </div>
         </details>
 
-        <details class="section" open>
+        <details id="input-panel" class="section" open>
           <summary class="section-head">Input</summary>
           <div class="section-body">
             <div class="source" role="radiogroup" aria-label="Input">
@@ -426,7 +479,133 @@
           <span>Controls</span>
         </button>
       </nav>
+      <!-- Right rail: what stays of the inspector when it is closed -->
+      <nav id="rail-right" class="rail rail-right" aria-label="Inspector (closed)">
+        <button id="right-open" class="icon-btn rail-btn" type="button" aria-label="Open the inspector" aria-controls="controls-col" aria-expanded="false" title="Open the inspector ( ] )">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.6 7.4 16.2 6l-6 6 6 6 1.4-1.4-4.6-4.6zM11.6 7.4 10.2 6l-6 6 6 6 1.4-1.4L7 12z"/></svg>
+        </button>
+        <span class="rail-label" aria-hidden="true">Inspector</span>
+      </nav>
+
       <div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
+
+      <!-- About: profile, purpose, how it works, privacy, license (ui/panels/about.ts) -->
+      <dialog id="about" class="about-sheet" aria-labelledby="about-title">
+        <header class="about-head">
+          <h2 id="about-title" class="about-title">About Recorder <span id="about-version" class="about-version"></span></h2>
+          <button id="about-close" class="icon-btn" type="button" aria-label="Close">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19l5.6-5.6 5.6 5.6 1.4-1.4-5.6-5.6L19 6.4 17.6 5 12 10.6z"/></svg>
+          </button>
+        </header>
+        <nav class="about-tabs" role="tablist" aria-label="About">
+          <button class="about-tab is-on" type="button" role="tab" aria-selected="true" aria-controls="about-profile" data-about-tab="profile">Profile</button>
+          <button class="about-tab" type="button" role="tab" aria-selected="false" aria-controls="about-purpose" data-about-tab="purpose">Purpose</button>
+          <button class="about-tab" type="button" role="tab" aria-selected="false" aria-controls="about-how" data-about-tab="how">How it works</button>
+          <button class="about-tab" type="button" role="tab" aria-selected="false" aria-controls="about-privacy" data-about-tab="privacy">Privacy</button>
+          <button class="about-tab" type="button" role="tab" aria-selected="false" aria-controls="about-license" data-about-tab="license">License</button>
+        </nav>
+
+        <section id="about-profile" class="about-page" role="tabpanel" aria-label="Profile">
+          <div class="profile-card">
+            <span id="profile-avatar" class="avatar avatar-lg" aria-hidden="true">D</span>
+            <div class="profile-main">
+              <p id="profile-name" class="profile-name">DanixMP</p>
+              <a class="profile-handle" href="https://github.com/DanixMP" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.9 1.52 2.34 1.08 2.91.83.09-.65.35-1.08.63-1.33-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02a9.6 9.6 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10 10 0 0 0 12 2z"/></svg><span>@DanixMP</span></a>
+              <p id="profile-bio" class="profile-bio" hidden></p>
+            </div>
+          </div>
+          <dl id="profile-stats" class="profile-stats" hidden>
+            <div><dt>Repositories</dt><dd id="profile-repos"></dd></div>
+            <div><dt>Followers</dt><dd id="profile-followers"></dd></div>
+            <div><dt>Following</dt><dd id="profile-following"></dd></div>
+            <div><dt>Joined</dt><dd id="profile-since"></dd></div>
+          </dl>
+          <p id="profile-extra" class="profile-extra" hidden></p>
+          <div class="profile-links">
+            <a class="btn btn-small" href="https://github.com/DanixMP" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.9 1.52 2.34 1.08 2.91.83.09-.65.35-1.08.63-1.33-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02a9.6 9.6 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10 10 0 0 0 12 2z"/></svg><span>GitHub profile</span></a>
+            <a class="btn btn-small btn-ghost" href="https://github.com/DanixMP/Recorder" target="_blank" rel="noopener noreferrer"><span>Project repository</span></a>
+          </div>
+          <div class="profile-load">
+            <p id="profile-load-note" class="section-hint">Your avatar, name and bio come from GitHub. Loading them contacts github.com from your browser (see Privacy); they are then kept on this device only.</p>
+            <div class="calibrate">
+              <button id="profile-load" class="btn btn-small btn-primary" type="button">Load from GitHub</button>
+              <button id="profile-forget" class="btn btn-small btn-ghost" type="button" hidden>Forget the loaded details</button>
+              <span id="profile-status" class="switch-hint" aria-live="polite"></span>
+            </div>
+          </div>
+        </section>
+
+        <section id="about-purpose" class="about-page" role="tabpanel" aria-label="Purpose" hidden>
+          <p class="about-lead">Sing, <b>see</b> your voice, and make it sound the way you hear it in your head.</p>
+          <p>Recorder draws your voice as a glowing line moving across piano-key lanes, so you can see exactly which note you are singing and how far off it is. Then it can <b>auto-tune</b> the take to the notes of any scale, from a gentle nudge to the robotic "Believe" effect.</p>
+          <p>Around that grew a small studio: songs with a beat and several vocal tracks, harmonies (from intervals or from keys you play), voice characters, clean-up, effects, a mixer, a metronome and note editing. Everything you change is heard straight away, and exports sound exactly like what you heard.</p>
+          <p>It's made for practising singing, writing and sketching songs, and for having fun with your voice, with no studio software, account or upload needed. It runs in the browser and can be installed as an app.</p>
+        </section>
+
+        <section id="about-how" class="about-page" role="tabpanel" aria-label="How it works" hidden>
+          <ol class="how-flow" aria-label="From your voice to the speakers">
+            <li><b>Mic</b><span>your voice into an AudioWorklet</span></li>
+            <li><b>Pitch</b><span>YIN finds the period of each wave (100 times a second)</span></li>
+            <li><b>Roll</b><span>the pitch line on piano-key lanes</span></li>
+            <li><b>Auto-tune</b><span>a correction curve pulls each note to the scale</span></li>
+            <li><b>Voice engine</b><span>PSOLA moves single waves to the new pitch</span></li>
+            <li><b>Mix</b><span>effects, mixer and limiter, then speakers or a file</span></li>
+          </ol>
+          <h3>Seeing your pitch</h3>
+          <p>The pitch detector (YIN) compares the sound with a slightly delayed copy of itself. The delay where they match best is the length of one wave: 11.4 ms is a lower note than 7.8 ms. Each lane on the roll is one key of a piano, so the line shows the note you sing.</p>
+          <h3>Auto-tune</h3>
+          <p>For every moment, auto-tune picks the nearest note in your scale and adds a correction to your pitch. The retune speed decides how fast that correction moves: at 0 ms it jumps (the robot sound), slower settings glide and let vibrato through.</p>
+          <h3>Changing the pitch without chipmunks</h3>
+          <p>TD-PSOLA cuts the voice into one-wave grains and plays them closer together (higher) or further apart (lower). The grains themselves aren't stretched, so your vowels keep their colour. Harmonies, voice characters and note edits all work this way.</p>
+          <h3>Real time</h3>
+          <p>A voice engine runs inside the browser's audio thread. While you sing it processes your voice with 25 ms of delay; during playback it renders each track from its grain plan, so every knob is heard on the next block and exports are identical to playback.</p>
+          <h3>Your songs</h3>
+          <p>Takes, songs and imported beats live in your browser's own database, and the settings in its local storage. Nothing is uploaded.</p>
+        </section>
+
+        <section id="about-privacy" class="about-page" role="tabpanel" aria-label="Privacy" hidden>
+          <p class="about-lead">Your voice stays on your device.</p>
+          <ul class="about-list">
+            <li><b>No accounts, no tracking.</b> No analytics, ads, cookies or third-party scripts.</li>
+            <li><b>Recordings stay local.</b> The microphone is only used while you press Listen or Record. Takes, songs and imported beats are stored in this browser's database (IndexedDB); settings in its local storage. Nothing is uploaded.</li>
+            <li><b>Files leave only when you export them</b> (WAV, MP3, stems or a .recsong file), to wherever you save them.</li>
+            <li><b>One optional network request:</b> "Load from GitHub" on the Profile page asks api.github.com for the author's public profile and avatar. GitHub then sees your IP address, like any website visit. The result is kept on this device, and "Forget the loaded details" removes it.</li>
+            <li><b>MIDI and microphone</b> access are asked for by your browser and used only inside the page.</li>
+            <li><b>Offline:</b> the installed app keeps its own files in the browser's cache so it works without a connection.</li>
+          </ul>
+          <p class="about-storage"><span id="about-storage">Checking storage…</span></p>
+          <p class="section-hint">To delete everything, delete your songs and takes in the app, or clear this site's data in your browser settings.</p>
+        </section>
+
+        <section id="about-license" class="about-page" role="tabpanel" aria-label="License" hidden>
+          <p class="about-lead">Recorder is open source under the <b>MIT License</b>.</p>
+          <p>You may use, copy, change, merge, publish, share, sublicense and sell it, as long as the copyright notice and this permission notice are kept.</p>
+          <pre class="license-text">MIT License
+
+Copyright (c) 2026 DanixMP
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.</pre>
+          <h3>Third-party software</h3>
+          <p><b>LAME</b> (MP3 export) via <a href="https://www.npmjs.com/package/@breezystack/lamejs" target="_blank" rel="noopener noreferrer">@breezystack/lamejs</a>, licensed under the <b>GNU LGPL v3.0</b>. It is used unmodified, in its own worker file that loads only when you export an MP3, and can be replaced with your own build.</p>
+          <p class="section-hint">Everything else (pitch detection, PSOLA, the phase vocoder, noise reduction, reverbs, the UI) is written for this project.</p>
+        </section>
+      </dialog>
     </div>
     <input id="beat-file" type="file" accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg,.oga,.opus,.flac,.webm,.recsong" hidden />
     <div id="file-drop" class="file-drop" hidden><p>Drop the beat to import it</p></div>

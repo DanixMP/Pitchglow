@@ -3,10 +3,17 @@
 import type { Session } from '../../app/session';
 import { openProject, type AppStore } from '../../app/state';
 import { projectsUsingTake } from '../../project/model';
+import { confirmDialog, onDontAskChange, resetDontAsk, skippedQuestions } from '../confirm';
 import { $ } from '../dom';
 import { RecordingsList } from '../recordings-list';
 
 export function mountTakesPanel(store: AppStore, session: Session): void {
+  // Questions switched off with "Don't ask again" can be turned back on here.
+  const askAgain = $<HTMLButtonElement>('dontask-reset');
+  const syncAskAgain = () => (askAgain.hidden = skippedQuestions().length === 0);
+  askAgain.addEventListener('click', () => resetDontAsk());
+  onDontAskChange(syncAskAgain);
+  syncAskAgain();
   const search = $<HTMLInputElement>('takes-search');
   const count = $('takes-count');
 
@@ -31,7 +38,13 @@ export function mountTakesPanel(store: AppStore, session: Session): void {
       const warning = used.length
         ? `\n\nIt’s used in ${used.length === 1 ? `“${used[0].name}”` : `${used.length} songs`}; those tracks will be removed too.`
         : '';
-      if (confirm(`Delete “${meta.name}”? This can’t be undone.${warning}`)) session.deleteRecording(id);
+      void confirmDialog({
+        title: `Delete “${meta.name}”?`,
+        message: `The recording is removed from this device. This can’t be undone.${warning}`,
+        confirmLabel: 'Delete take',
+        danger: true,
+        dontAskKey: 'delete-take',
+      }).then((yes) => yes && session.deleteRecording(id));
     },
   });
 

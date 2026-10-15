@@ -198,6 +198,55 @@ export function saveKeys(prefs: KeysPrefs): void {
   }
 }
 
+// --- workspace mode (top bar) ----------------------------------------------------------------------
+
+export type Workspace = 'studio' | 'record' | 'remix' | 'edit' | 'fun';
+const WORKSPACE_KEY = 'recorder.workspace';
+
+export function loadWorkspace(): Workspace {
+  try {
+    const v = localStorage.getItem(WORKSPACE_KEY);
+    return v === 'record' || v === 'remix' || v === 'edit' || v === 'fun' ? v : 'studio';
+  } catch {
+    return 'studio';
+  }
+}
+
+export function saveWorkspace(w: Workspace): void {
+  try {
+    localStorage.setItem(WORKSPACE_KEY, w);
+  } catch {
+    // Storage unavailable: the mode just won't be remembered.
+  }
+}
+
+// --- layout -------------------------------------------------------------------------------------
+
+/** Desktop columns closed to a rail (remembered per browser). */
+export interface LayoutPrefs {
+  leftCollapsed: boolean;
+  rightCollapsed: boolean;
+}
+
+const LAYOUT_KEY = 'recorder.layout';
+
+export function loadLayout(): LayoutPrefs {
+  try {
+    const raw = JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? 'null') as Partial<LayoutPrefs> | null;
+    return { leftCollapsed: raw?.leftCollapsed === true, rightCollapsed: raw?.rightCollapsed === true };
+  } catch {
+    return { leftCollapsed: false, rightCollapsed: false };
+  }
+}
+
+export function saveLayout(prefs: LayoutPrefs): void {
+  try {
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify(prefs));
+  } catch {
+    // Storage unavailable: the layout just won't be remembered.
+  }
+}
+
 // --- export format ----------------------------------------------------------------------------
 
 const EXPORT_KEY = 'recorder.exportFormat';
