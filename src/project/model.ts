@@ -3,10 +3,13 @@
 // A project is a song: one optional instrumental (Phase 9) plus any number of vocal tracks. Each
 // vocal track points at a take in the library and carries its own mix and processing settings.
 
+import type { KeyEvent, Voicing } from '../dsp/keys';
+import type { NoteEdit } from '../dsp/note-edit';
 import type { Scale } from '../dsp/scales';
 import type { SongFx, TrackFx } from './fx';
 import type { TrackVoice } from './voice';
 import { DEFAULT_TUNING, type CleanupPrefs, type TuningPrefs } from '../storage/settings';
+import { asGrid, barSeconds, snapToGrid, type Grid } from './grid';
 
 export type TrackKind = 'vocal' | 'instrumental';
 
@@ -38,6 +41,15 @@ export interface Track {
   fx?: TrackFx;
   /** Voice character: formant, whisper, robot (Phase 15; missing = natural). */
   voice?: TrackVoice;
+  /** Note edits: pitch, correction amount, timing per sung note (Phase 18; missing = none). */
+  noteEdits?: NoteEdit[];
+  /** Keys played while the take was sung (Phase 19): harmony voices on them; missing = none. */
+  keys?: TrackKeys;
+}
+
+export interface TrackKeys {
+  events: KeyEvent[];
+  voicing: Voicing;
 }
 
 export interface Project {
@@ -54,6 +66,10 @@ export interface Project {
   /** Musical key (detected from the instrumental, or chosen); applied to new tracks' auto-tune. */
   key?: Scale | null;
   bpm?: number | null;
+  /** Beats per bar (Phase 17; missing = 4). */
+  beatsPerBar?: number;
+  /** Song time where a bar starts (Phase 17; missing = 0), within the first bar. */
+  downbeat?: number;
   /** Reverb/echo buses (Phase 11; missing = defaults). */
   fx?: SongFx;
   /** Loop region (Phase 12): set by dragging along the timeline ruler, toggled with Loop / L. */
@@ -216,13 +232,12 @@ export function masterOf(p: Project): { gain: number; limiter: boolean } {
 }
 
 /**
- * Snaps a clip position: to 1/16 notes when the song has a tempo, otherwise to 10 ms. `free` (e.g.
- * Alt held while dragging) only rounds to the millisecond.
+ * Snaps a clip position: to 1/16 notes on the song's grid (a Grid, or just a BPM), otherwise to
+ * 10 ms. `free` (e.g. Alt held while dragging) only rounds to the millisecond.
  */
-export function snapOffset(offset: number, bpm: number | null | undefined, free = false): number {
-  if (free) return Math.round(offset * 1000) / 1000 || 0;
-  const grid = bpm ? 60 / bpm / 4 : 0.01;
-  return Math.round(Math.round(offset / grid) * grid * 1000) / 1000 || 0; // `|| 0`: no -0
+export function snapOffset(offset: number, grid: Grid | number | null | undefined, free = false): number {
+  if (free) return Math.round(offset * 1000) / 1000 || 0; // `|| 0`: no -0
+  return snapToGrid(offset, asGrid(grid), 0.25, 0.01);
 }
 
 /** Pan as shown on a strip: "C", "L35", "R100". */
@@ -280,23 +295,26 @@ export function loopPosition(from: number, elapsed: number, loop: { start: numbe
 export function normalizeLoop(
   a: number,
   b: number,
-  bpm: number | null | undefined,
+  grid: Grid | number | null | undefined,
   duration: number,
   free = false,
 ): { start: number; end: number } | null {
-  const grid = free ? 0.001 : bpm ? 60 / bpm : 0.1;
-  const snap = (t: number) => Math.round(Math.round(t / grid) * grid * 1000) / 1000 || 0;
+  const g = asGrid(grid);
+  const snap = (t: number) => (free ? Math.round(t * 1000) / 1000 || 0 : snapToGrid(t, g, 1, 0.1));
   const start = Math.max(0, snap(Math.min(a, b)));
   const end = Math.min(duration, snap(Math.max(a, b)));
   return end - start >= MIN_LOOP_SECONDS ? { start, end } : null;
 }
 
 /** A first loop around the playhead: the bar it's in plus the next one (with a tempo), else 4 s. */
-export function defaultLoop(time: number, bpm: number | null | undefined, duration: number): { start: number; end: number } | null {
-  const len = bpm ? (60 / bpm) * 8 : 4;
-  let start = bpm ? Math.floor(time / ((60 / bpm) * 4)) * ((60 / bpm) * 4) : Math.floor(time);
+export function defaultLoop(time: number, grid: Grid | number | null | undefined, duration: number): { start: number; end: number } | null {
+  const g = asGrid(grid);
+  const bar = g ? barSeconds(g) : 0;
+  const len = g ? bar * 2 : 4;
+  let start = g ? g.downbeat + Math.floor((time - g.downbeat) / bar) * bar : Math.floor(time);
+  if (start < 0) start += bar;
   if (start + len > duration) start = Math.max(0, duration - len);
-  return normalizeLoop(start, start + len, bpm, duration, true);
+  return normalizeLoop(start, start + len, g, duration, true);
 }
 
 /** The loop playback should follow (on, and still inside the song), or null. */

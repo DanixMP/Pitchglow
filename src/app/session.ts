@@ -11,7 +11,7 @@
 import { AudioInput } from '../audio/audio-input';
 import { outputLatency, sharedContext } from '../audio/context';
 import { scheduleClicks } from '../audio/metronome';
-import { alignTake, countInTimes, detectClickLatency } from '../audio/sync';
+import { alignTake, detectClickLatency } from '../audio/sync';
 import { downmix } from '../dsp/analyze';
 import type { Scale } from '../dsp/scales';
 import { MixPlayer, type MixTrackSpec } from '../audio/mix-player';
@@ -19,6 +19,21 @@ import { exportLength, renderMix, renderStems, renderVoice } from '../audio/mixd
 import { cleanupNotes, cleanupSettingsOf, type ProcessSettings } from '../dsp/process';
 import { CLEANUP_OFF, type CleanupAnalysis } from '../dsp/cleanup';
 import type { VoicePlans } from '../dsp/voice-engine';
+import { addKeyEvent, keysAt, type KeyEvent, type Voicing } from '../dsp/keys';
+import { MidiInput } from '../audio/midi-input';
+import { buildWarp, isNeutralEdit, noteSpan, segmentNotes, warpToOutput, type NoteEdit, type SungNote } from '../dsp/note-edit';
+import {
+  alignToBeat,
+  clampBpm,
+  clickGridOf,
+  countInLead,
+  gridOf,
+  normalizeDownbeat,
+  snapToGrid,
+  TAP_RESET_SECONDS,
+  takeOnset,
+  tapTempo,
+} from '../project/grid';
 import { songFxOf, trackFxOf, withPreset, FX_PRESETS, type FxPresetId, type SongFx, type TrackFx } from '../project/fx';
 import { isNeutralVoice, presetPitch, trackVoiceOf, withVoicePreset, type TrackVoice, type VoicePresetId } from '../project/voice';
 import type { VoiceCharacter } from '../dsp/voice-engine';
@@ -40,6 +55,7 @@ import {
   createProject,
   createVocalTrack,
   defaultLoop,
+  dbToGain,
   duplicateProject as duplicateProjectModel,
   effectiveGain,
   masterOf,
@@ -50,6 +66,7 @@ import {
   nextProjectName,
   removeTrack as removeTrackModel,
   titleFromFileName,
+  type TrackKeys,
   updateTrack as updateTrackModel,
   withInstrumental,
   withoutTake,
@@ -58,7 +75,7 @@ import {
 } from '../project/model';
 import { packFrames, unpackFrames } from '../storage/pitch-track';
 import { RecordingStore, type Asset, type RecordingMeta } from '../storage/recording-store';
-import type { CleanupPrefs, TuningPrefs } from '../storage/settings';
+import type { CleanupPrefs, KeysPrefs, TuningPrefs } from '../storage/settings';
 import type { PianoRoll } from '../ui/piano-roll';
 import { processedLabelOf, processSettingsOf, trackProcessSettings, tuneSettingsOf, wantsProcessed } from './processing';
 import { openProject, type AppStore, type RenderState } from './state';
@@ -68,8 +85,6 @@ const MIN_RECORDING_SECONDS = 0.3;
 const MAX_IMPORT_BYTES = 80 * 1024 * 1024;
 const MAX_IMPORT_SECONDS = 15 * 60;
 const IMPORT_EXTENSIONS = /\.(mp3|wav|wave|m4a|aac|mp4|ogg|oga|opus|flac|webm)$/i;
-/** Count-in tempo when the song has no detected BPM. */
-const DEFAULT_BPM = 100;
 const PREVIEW_CHANNEL = 'preview';
 const SAVE_DELAY_MS = 400;
 
@@ -113,7 +128,7 @@ export class Session {
   private sampleRate = 0;
   /** Context time the live pitch line counts from (when Listen/Record started). */
   private liveOrigin = 0;
-  private take: { audio: SampleBuffer; frames: PitchFrame[]; firstTime: number | null } | null = null;
+  private take: { audio: SampleBuffer; frames: PitchFrame[]; firstTime: number | null; keys: KeyEvent[] } | null = null;
   /** Recording over the song: when/where playback started, for aligning the take afterwards. */
   private sync: { playStart: number; songPosition: number; latency: number } | null = null;
   /** Calibration listens to raw blocks instead of the tracker. */
@@ -130,6 +145,21 @@ export class Session {
   private renderTimers = new Map<string, number>();
   /** Global settings, stashed while a song's track settings occupy the inspector. */
   private stash: { tuning: TuningPrefs; cleanup: CleanupPrefs } | null = null;
+  /** Tap-tempo taps (seconds, performance clock). */
+  private taps: number[] = [];
+  /** Play-the-keys: keys down (screen or MIDI), keys kept by the sustain pedal, the pedal. */
+  private keysDown = new Set<number>();
+  private sustained = new Set<number>();
+  private sustain = false;
+  private readonly midi = new MidiInput({
+    onNote: (midi, down) => this.keyPress(midi, down, 'midi'),
+    onSustain: (down) => this.setSustain(down),
+    onDevices: (devices) => this.store.set({ midi: { devices, status: 'on' } }),
+  });
+  /** Sung notes per take (segmented once), and the note being dragged on the roll. */
+  private takeNotes = new Map<string, SungNote[]>();
+  private noteDragBase: { trackId: string; index: number; edit: NoteEdit; span: { start: number; end: number }; key: string } | null = null;
+  private noteDrags = 0;
   private saveTimers = new Map<string, number>();
   /** Undo/redo of the open song (snapshots). */
   private readonly history = new History<Project>();
@@ -154,6 +184,8 @@ export class Session {
 
   async init(): Promise<void> {
     await this.player.loadEngine();
+    this.syncKeys();
+    if (this.store.get().keys.on) void this.startMidi();
     const db = await this.getDb();
     const [recordings, projects] = await Promise.all([db.list(), db.listProjects()]);
     this.store.set({ recordings, projects });
@@ -175,12 +207,20 @@ export class Session {
       this.sampleRate = await this.input.start(source, { noiseSuppression: micFilter });
     }
     this.liveOrigin = this.player.context.currentTime;
-    this.take = record ? { audio: new SampleBuffer(), frames: [], firstTime: null } : null;
+    // Keys already held when the take starts are part of it from its first sample.
+    const held = this.store.get().keys.on ? this.store.get().heldKeys : [];
+    this.take = record ? { audio: new SampleBuffer(), frames: [], firstTime: null, keys: addKeyEvent([], 0, held) } : null;
     this.roll.start();
+    this.roll.setNotes(null, null);
+    this.roll.setKeyHarmony(null);
     this.store.set({ mode: record ? 'recording' : 'listening', recordingSeconds: 0, status: '' });
     this.syncMonitor();
+    this.syncKeys();
     const song = openProject(this.store.get());
-    if (record && song && this.songIsAudible(song)) await this.playAlong(song);
+    this.roll.setGrid(null);
+    const { metronome, input } = this.store.get();
+    // Something to sing along to: the song, the click, or at least a count-in.
+    if (record && song && (this.songIsAudible(song) || metronome.on || input.countIn)) await this.playAlong(song);
   }
 
   /** Whether recording into this song should play it back (something audible to sing along to). */
@@ -199,17 +239,18 @@ export class Session {
     const end = this.player.duration;
     const position = this.player.currentTime >= end - 0.05 ? 0 : this.player.currentTime;
     this.player.seek(position);
-    let startAt = ctx.currentTime + 0.12;
-    if (input.countIn) {
-      const count = countInTimes(startAt, song.bpm ?? DEFAULT_BPM);
-      scheduleClicks(ctx, count.clicks);
-      startAt = count.end;
-    }
-    const playStart = await this.player.play(startAt);
-    const latency = input.calibratedMs !== null ? input.calibratedMs / 1000 : outputLatency(ctx) + this.input.inputLatency;
+    // The count-in clicks on the grid's beats in the bar before the position (the click worklet).
+    const grid = clickGridOf(song);
+    const countIn = input.countIn ? countInLead(position, grid) : 0;
+    const playStart = await this.player.play(ctx.currentTime + 0.12 + countIn, { countIn, recording: true });
+    // Round trip (calibrated, or the browser's estimate), plus the mix chain's own delay: you sing
+    // along to the song as you hear it.
+    const roundTrip = input.calibratedMs !== null ? input.calibratedMs / 1000 : outputLatency(ctx) + this.input.inputLatency;
+    const latency = roundTrip + this.player.mixLatency;
     this.sync = { playStart, songPosition: position, latency };
     // Other tracks as ghosts on the live roll, lined up with what you hear.
-    const toLive = position - (playStart - this.liveOrigin) - outputLatency(ctx);
+    const toLive = position - (playStart - this.liveOrigin) - outputLatency(ctx) - this.player.mixLatency;
+    this.roll.setGrid(gridOf(song), toLive);
     this.roll.setGhosts(
       song.tracks
         .filter((t) => t.kind === 'vocal' && t.takeId && this.takes.has(t.takeId))
@@ -306,7 +347,7 @@ export class Session {
     return this.take && this.sampleRate ? this.take.audio.length / this.sampleRate : 0;
   }
 
-  private async saveTake(t: { audio: SampleBuffer; frames: PitchFrame[] }, offset = 0): Promise<void> {
+  private async saveTake(t: { audio: SampleBuffer; frames: PitchFrame[]; keys?: KeyEvent[] }, offset = 0): Promise<void> {
     const samples = t.audio.toFloat32();
     const duration = samples.length / this.sampleRate;
     if (duration < MIN_RECORDING_SECONDS) {
@@ -329,8 +370,10 @@ export class Session {
     if (this.store.get().projectId) {
       // Recording inside a song: the take becomes a new vocal track, with the settings it was sung with.
       this.takes.set(meta.id, loaded);
-      const { tuning, cleanup } = this.store.get();
-      this.addTrackFromTake(meta, tuning, cleanup, offset, true);
+      const { tuning, cleanup, keys } = this.store.get();
+      // Keys played while singing come along, so the track plays the same harmony back.
+      const played = keys.on && t.keys?.length ? { events: t.keys, voicing: keys.voicing } : undefined;
+      this.addTrackFromTake(meta, tuning, cleanup, offset, true, played);
     } else {
       this.showPreview(loaded, false);
     }
@@ -378,6 +421,7 @@ export class Session {
     // Start "at the end" so the last few seconds are visible; Play restarts from the beginning.
     this.player.seek(autoplay ? 0 : take.meta.duration);
     this.roll.setGhosts([]);
+    this.roll.setGrid(null);
     this.roll.showRecording(take.frames, take.meta.duration, this.player.currentTime);
     this.store.set({
       mode: 'playback',
@@ -586,6 +630,7 @@ export class Session {
     this.player.unload();
     this.roll.clear();
     this.roll.setScaleHint(null);
+    this.roll.setGrid(null);
     const stash = this.stash;
     this.stash = null;
     this.store.set({
@@ -596,8 +641,12 @@ export class Session {
       mode: 'idle',
       detection: null,
       history: { canUndo: false, canRedo: false },
+      noteMode: false,
+      selectedNote: null,
       ...(stash ? { tuning: stash.tuning, cleanup: { ...stash.cleanup, micFilter: this.store.get().cleanup.micFilter } } : {}),
     });
+
+    this.syncMetronome();
   }
 
   renameProject(id: string, name: string): void {
@@ -692,7 +741,7 @@ export class Session {
    * auto-tune scale is shifted to match and its pitch offset cancels the key shift, so it plays back
    * as sung.
    */
-  private addTrackFromTake(meta: RecordingMeta, tuning: TuningPrefs, cleanup: CleanupPrefs, offset = 0, sung = false): void {
+  private addTrackFromTake(meta: RecordingMeta, tuning: TuningPrefs, cleanup: CleanupPrefs, offset = 0, sung = false, keys?: TrackKeys): void {
     const project = openProject(this.store.get());
     if (!project) return;
     const shift = sung ? project.keyShift : 0;
@@ -705,6 +754,7 @@ export class Session {
       pitch: -shift + (sung && selected ? presetPitch(trackVoiceOf(selected)) : 0),
       ...(sung && selected?.fx ? { fx: structuredClone(selected.fx) } : {}),
       ...(sung && selected?.voice ? { voice: { ...selected.voice } } : {}),
+      ...(keys ? { keys } : {}),
     };
     this.mutateProject(project.id, (p) => addTrack(p, track));
     this.selectTrack(track.id);
@@ -732,6 +782,8 @@ export class Session {
     const track = project?.tracks.find((t) => t.id === trackId && t.kind === 'vocal') ?? null;
     const base = this.stash ?? { tuning: state.tuning, cleanup: state.cleanup };
     this.store.set({
+      ...(track?.id !== state.selectedTrackId ? { selectedNote: null } : {}),
+      ...(track ? {} : { noteMode: false }),
       selectedTrackId: track?.id ?? null,
       // No track selected: the inspector shows the global defaults (used for new tracks).
       tuning: track ? track.tuning : base.tuning,
@@ -771,7 +823,7 @@ export class Session {
   setLoopRegion(start: number, end: number): void {
     const project = openProject(this.store.get());
     if (!project) return;
-    const region = normalizeLoop(start, end, project.bpm, this.player.duration, true);
+    const region = normalizeLoop(start, end, gridOf(project), this.player.duration, true);
     if (!region) return;
     this.mutateProject(project.id, (p) => ({ ...p, loop: { ...region, on: true }, updatedAt: Date.now() }), false);
     this.syncLoop();
@@ -783,7 +835,7 @@ export class Session {
     if (!project || this.player.duration <= 0) return;
     let loop = project.loop ? { ...project.loop, on: !project.loop.on } : null;
     if (!loop) {
-      const region = defaultLoop(this.player.currentTime, project.bpm, this.player.duration);
+      const region = defaultLoop(this.player.currentTime, gridOf(project), this.player.duration);
       if (!region) return;
       loop = { ...region, on: true };
     }
@@ -889,6 +941,331 @@ export class Session {
     this.player.setSongFx(fx, project.bpm ?? null);
   }
 
+  // --- play-the-keys harmony (Phase 19) -------------------------------------------------------------
+
+  /** Keys mode on/off (harmony from held keys). Starts listening to MIDI keyboards the first time. */
+  setKeysOn(on: boolean): void {
+    this.store.set((s) => ({ keys: { ...s.keys, on } }));
+    if (on) void this.startMidi();
+    else this.releaseAllKeys();
+    this.syncKeys();
+  }
+
+  setKeysPrefs(patch: Partial<Pick<KeysPrefs, 'latch' | 'voicing'>>): void {
+    this.store.set((s) => ({ keys: { ...s.keys, ...patch } }));
+    if (patch.latch === false) this.releaseAllKeys();
+    this.syncKeys();
+  }
+
+  private async startMidi(): Promise<void> {
+    if (!MidiInput.supported) return this.store.set({ midi: { devices: [], status: 'unsupported' } });
+    const ok = await this.midi.start();
+    if (!ok) this.store.set({ midi: { devices: [], status: 'denied' } });
+  }
+
+  /**
+   * A key pressed or released: on the roll's keyboard (`screen`; with latch a press toggles it) or a
+   * MIDI keyboard (held while down, or until the sustain pedal comes up).
+   */
+  keyPress(midi: number, down: boolean, source: 'screen' | 'midi'): void {
+    if (!this.store.get().keys.on) return;
+    if (source === 'screen' && this.store.get().keys.latch) {
+      if (!down) return;
+      if (this.keysDown.has(midi)) this.keysDown.delete(midi);
+      else this.keysDown.add(midi);
+    } else if (down) {
+      this.keysDown.add(midi);
+      this.sustained.delete(midi);
+    } else {
+      this.keysDown.delete(midi);
+      if (this.sustain) this.sustained.add(midi);
+    }
+    this.syncKeys();
+  }
+
+  private setSustain(down: boolean): void {
+    this.sustain = down;
+    if (!down) this.sustained.clear();
+    this.syncKeys();
+  }
+
+  /** Lets go of every key (latched, held and sustained). */
+  releaseAllKeys(): void {
+    this.keysDown.clear();
+    this.sustained.clear();
+    this.syncKeys();
+  }
+
+  /** Sends the held keys to the live voice and the roll, and records changes into a take. */
+  syncKeys(): void {
+    const { keys, tuning } = this.store.get();
+    const held = keys.on ? [...new Set([...this.keysDown, ...this.sustained])].sort((a, b) => a - b) : [];
+    const prev = this.store.get().heldKeys;
+    if (held.length !== prev.length || held.some((n, i) => n !== prev[i])) this.store.set({ heldKeys: held });
+    this.input.setKeys(keys.on ? held : null, keys.voicing, tuning.harmonyMix);
+    this.roll.setKeysPlayable(keys.on);
+    this.roll.setHeldKeys(held);
+    // Live: the line's harmony follows the held keys.
+    if (this.isLive) this.roll.setKeyHarmony(keys.on ? { voicing: keys.voicing, held } : null);
+    const take = this.take;
+    if (take && keys.on) {
+      const t = take.firstTime === null ? 0 : this.player.context.currentTime - take.firstTime;
+      take.keys = addKeyEvent(take.keys, t, held);
+    }
+  }
+
+  /** Removes the keys recorded with a track (its harmony goes back to the interval voices). */
+  clearTrackKeys(trackId: string): void {
+    const project = openProject(this.store.get());
+    if (!project?.tracks.find((t) => t.id === trackId)?.keys) return;
+    this.mutateProject(project.id, (p) => updateTrackModel(p, trackId, { keys: undefined }));
+    this.updateTrackVoice(trackId);
+  }
+
+  /** Voicing of the keys recorded with a track (re-plans its harmony). Undoable. */
+  setTrackKeysVoicing(trackId: string, voicing: Voicing): void {
+    const project = openProject(this.store.get());
+    const track = project?.tracks.find((t) => t.id === trackId);
+    if (!project || !track?.keys) return;
+    this.mutateProject(project.id, (p) => updateTrackModel(p, trackId, { keys: { ...track.keys!, voicing } }));
+    this.updateTrackVoice(trackId);
+  }
+
+  // --- tempo & metronome (Phase 17) -------------------------------------------------------------
+
+  /**
+   * Tempo, beats per bar, bar 1. Undoable; the click, echo timing, grid lines and snapping follow.
+   * A BPM of null removes the grid.
+   */
+  setTempo(patch: { bpm?: number | null; beatsPerBar?: number; downbeat?: number }): void {
+    const project = openProject(this.store.get());
+    if (!project) return;
+    const field = Object.keys(patch)[0];
+    this.mutateProject(
+      project.id,
+      (p) => {
+        const next = { ...p, ...patch, updatedAt: Date.now() };
+        if (next.bpm) next.bpm = clampBpm(next.bpm);
+        const g = gridOf(next);
+        // Keep bar 1 inside the first bar (a slower tempo or fewer beats make bars shorter).
+        if (g) next.downbeat = normalizeDownbeat(g.downbeat, g);
+        return next;
+      },
+      `tempo:${field}`,
+    );
+    this.tempoChanged();
+  }
+
+  /** One tap of the Tap button: the tempo follows the taps (one undo step per run of taps). */
+  tapTempo(): void {
+    const now = performance.now() / 1000;
+    const last = this.taps[this.taps.length - 1];
+    if (last !== undefined && now - last > TAP_RESET_SECONDS) this.taps = [];
+    this.taps.push(now);
+    const bpm = tapTempo(this.taps);
+    if (bpm) this.setTempo({ bpm });
+  }
+
+  /** Bar 1 starts at the playhead (sets a tempo first if the song has none). */
+  setDownbeatHere(): void {
+    const project = openProject(this.store.get());
+    if (!project) return;
+    const grid = gridOf(project) ?? clickGridOf(null);
+    this.setTempo({ bpm: grid.bpm, downbeat: normalizeDownbeat(this.player.currentTime, grid) });
+  }
+
+  /** Moves a vocal track so the singing starts on the nearest beat (Q). */
+  alignTrackToBeat(trackId: string): void {
+    const project = openProject(this.store.get());
+    const track = project?.tracks.find((t) => t.id === trackId);
+    if (!project || !track?.takeId) return;
+    const grid = gridOf(project);
+    if (!grid) return this.store.set({ status: 'Set the song’s tempo first (Tempo section).' });
+    const take = this.takes.get(track.takeId);
+    const onset = take ? takeOnset(take.frames) : null;
+    if (onset === null) return this.store.set({ status: 'No singing found in this take.' });
+    const offset = alignToBeat(track.offset, onset, grid);
+    if (offset !== track.offset) this.updateTrackMix(trackId, { offset });
+    this.store.set({ status: '' });
+  }
+
+  /** Points the click at the current prefs and the open song's grid (no song: silent). */
+  syncMetronome(): void {
+    const state = this.store.get();
+    const song = openProject(state);
+    const { on, levelDb, accent } = state.metronome;
+    this.player.setMetronome({ on: on && !!song, gain: dbToGain(levelDb), accent, grid: clickGridOf(song) });
+  }
+
+  private tempoChanged(): void {
+    const project = openProject(this.store.get());
+    if (!project) return;
+    this.player.setSongFx(songFxOf(project), project.bpm ?? null);
+    this.syncMetronome();
+    this.syncLoop();
+    this.refreshSongView();
+  }
+
+  // --- note editing (Phase 18) ------------------------------------------------------------------
+
+  /** The selected vocal track and its take, when there is one to edit. */
+  private editTarget(): { project: Project; track: Track; take: LoadedTake; notes: SungNote[] } | null {
+    const state = this.store.get();
+    const project = openProject(state);
+    const track = project?.tracks.find((t) => t.id === state.selectedTrackId && t.kind === 'vocal');
+    const take = track?.takeId ? this.takes.get(track.takeId) : undefined;
+    if (!project || !track || !take) return null;
+    return { project, track, take, notes: this.notesOf(take) };
+  }
+
+  /** The sung notes of a take (segmented once). */
+  notesOf(take: { meta: RecordingMeta; frames: PitchFrame[] }): SungNote[] {
+    let notes = this.takeNotes.get(take.meta.id);
+    if (!notes) {
+      notes = segmentNotes(take.frames);
+      this.takeNotes.set(take.meta.id, notes);
+    }
+    return notes;
+  }
+
+  /** Take time (s) as sung -> as heard, after the track's note timing edits. */
+  private takeTimeMap(track: Track, take: LoadedTake): (t: number) => number {
+    const edits = track.noteEdits ?? [];
+    if (!edits.some((e) => e.start !== undefined)) return (t) => t;
+    // In milliseconds, so the warp's 1-unit margins are 1 ms.
+    const warp = buildWarp(this.notesOf(take), edits, 1000, take.meta.duration * 1000);
+    return warp ? (t) => warpToOutput(warp, t * 1000) / 1000 : (t) => t;
+  }
+
+  /** Note editing on the roll on/off (N). Needs a vocal track selected in an open song. */
+  toggleNoteMode(on = !this.store.get().noteMode): void {
+    if (on && !this.editTarget()) {
+      this.store.set({ status: 'Select a vocal track to edit its notes.' });
+      return;
+    }
+    this.store.set({ noteMode: on, ...(on ? {} : { selectedNote: null }), status: '' });
+    this.syncNoteBlobs();
+  }
+
+  selectNote(index: number | null): void {
+    const target = this.editTarget();
+    if (index !== null && (!target || index < 0 || index >= target.notes.length)) return;
+    this.store.set({ selectedNote: index });
+    this.syncNoteBlobs();
+  }
+
+  /** Selects the next (+1) or previous (−1) note; the first one when none is selected. */
+  stepNote(dir: 1 | -1): void {
+    const target = this.editTarget();
+    if (!target?.notes.length) return;
+    const cur = this.store.get().selectedNote;
+    const next = cur === null ? (dir > 0 ? 0 : target.notes.length - 1) : Math.min(target.notes.length - 1, Math.max(0, cur + dir));
+    this.selectNote(next);
+    // Bring it into view: put the playhead at its start.
+    const n = target.notes[next];
+    const span = noteSpan(n, this.noteEdit(target.track, n));
+    if (!this.player.playing) this.seek(span.start + target.track.offset);
+  }
+
+  /** The edit stored for a note (if any). */
+  private noteEdit(track: Track, note: SungNote): NoteEdit | undefined {
+    return track.noteEdits?.find((e) => e.from === note.from && e.to === note.to);
+  }
+
+  /** Current edit of a note (neutral when it has none). */
+  noteEditOf(index: number): { note: SungNote; edit: NoteEdit } | null {
+    const target = this.editTarget();
+    const note = target?.notes[index];
+    if (!target || !note) return null;
+    return { note, edit: this.noteEdit(target.track, note) ?? { from: note.from, to: note.to, shift: 0, amount: null } };
+  }
+
+  /** Changes one note's edit (pitch, amount, timing). Undoable; drags coalesce under `historyKey`. */
+  editNote(index: number, patch: Partial<Omit<NoteEdit, 'from' | 'to'>>, historyKey: string | null = null, windowMs?: number): void {
+    const target = this.editTarget();
+    const cur = this.noteEditOf(index);
+    if (!target || !cur) return;
+    const next: NoteEdit = { ...cur.edit, ...patch };
+    if (next.start === undefined || next.end === undefined) {
+      delete next.start;
+      delete next.end;
+    }
+    const others = (target.track.noteEdits ?? []).filter((e) => !(e.from === next.from && e.to === next.to));
+    const noteEdits = isNeutralEdit(next) ? others : [...others, next].sort((a, b) => a.from - b.from);
+    this.mutateProject(target.project.id, (p) => updateTrackModel(p, target.track.id, { noteEdits }), historyKey, windowMs);
+    this.updateTrackVoice(target.track.id);
+    this.refreshSongView();
+  }
+
+  resetNote(index: number): void {
+    this.editNote(index, { shift: 0, amount: null, start: undefined, end: undefined });
+  }
+
+  /** Removes every note edit of the selected track. */
+  resetAllNotes(): void {
+    const target = this.editTarget();
+    if (!target?.track.noteEdits?.length) return;
+    this.mutateProject(target.project.id, (p) => updateTrackModel(p, target.track.id, { noteEdits: [] }));
+    this.updateTrackVoice(target.track.id);
+    this.refreshSongView();
+  }
+
+  /**
+   * A note dragged on the roll: up/down moves its pitch (whole semitones; free with Alt), sideways
+   * moves it in time (snapped to 1/16 of the song's grid; free with Alt), its ends stretch it. It
+   * stays between its neighbours (which give way down to 50 ms). One undo step per drag.
+   */
+  dragNote(drag: { index: number; kind: 'move' | 'start' | 'end'; semitones: number; seconds: number; free: boolean; done: boolean }): void {
+    const target = this.editTarget();
+    const cur = this.noteEditOf(drag.index);
+    if (!target || !cur) return;
+    if (!this.noteDragBase || this.noteDragBase.index !== drag.index || this.noteDragBase.trackId !== target.track.id) {
+      // One undo step per drag, however long it takes.
+      this.noteDragBase = { trackId: target.track.id, index: drag.index, edit: cur.edit, span: noteSpan(cur.note, cur.edit), key: `notedrag:${++this.noteDrags}` };
+    }
+    const base = this.noteDragBase;
+    const key = base.key;
+    if (drag.semitones) {
+      const shift = drag.free ? Math.round((base.edit.shift + drag.semitones) * 100) / 100 : Math.round(base.edit.shift + drag.semitones);
+      if (shift !== cur.edit.shift) this.editNote(drag.index, { shift }, key, Infinity);
+    } else if (drag.seconds) {
+      const { notes, track, take, project } = target;
+      const spanOf = (i: number) => noteSpan(notes[i], this.noteEdit(track, notes[i]));
+      const MIN = 0.05;
+      const lo = drag.index > 0 ? spanOf(drag.index - 1).start + MIN : 0;
+      const hi = drag.index + 1 < notes.length ? spanOf(drag.index + 1).end - MIN : take.meta.duration;
+      const grid = gridOf(project);
+      const snap = (t: number) => (drag.free || !grid ? t : snapToGrid(t + track.offset, grid, 0.25, 0.01) - track.offset);
+      let { start, end } = base.span;
+      if (drag.kind === 'move') {
+        const len = end - start;
+        start = Math.min(hi - len, Math.max(lo, snap(start + drag.seconds)));
+        end = start + len;
+      } else if (drag.kind === 'start') start = Math.min(end - MIN, Math.max(lo, snap(start + drag.seconds)));
+      else end = Math.max(start + MIN, Math.min(hi, snap(end + drag.seconds)));
+      const r = (t: number) => Math.round(t * 1000) / 1000;
+      const sung = cur.note;
+      const asSung = Math.abs(start - sung.start) < 0.0005 && Math.abs(end - sung.end) < 0.0005;
+      this.editNote(drag.index, asSung ? { start: undefined, end: undefined } : { start: r(start), end: r(end) }, key, Infinity);
+    }
+    if (drag.done) this.noteDragBase = null;
+  }
+
+  /** Points the roll's note blobs at the selected track (or hides them). */
+  private syncNoteBlobs(): void {
+    const state = this.store.get();
+    const target = state.noteMode && state.mode === 'playback' ? this.editTarget() : null;
+    if (!target) return this.roll.setNotes(null, null);
+    const at = this.takeTimeMap(target.track, target.take);
+    this.roll.setNotes(
+      target.notes.map((n) => {
+        const edit = this.noteEdit(target.track, n);
+        return { from: n.from, to: n.to, start: at(n.start) + target.track.offset, end: at(n.end) + target.track.offset, edited: !!edit };
+      }),
+      state.selectedNote,
+    );
+  }
+
   undo(): void {
     this.restore((current) => this.history.undo(current));
   }
@@ -930,10 +1307,10 @@ export class Session {
    * Changes a song. For the open song the change is recorded for undo, unless `historyKey` is false;
    * edits with the same key in quick succession (a drag) become one undo step.
    */
-  private mutateProject(id: string, fn: (p: Project) => Project, historyKey: string | null | false = null): void {
+  private mutateProject(id: string, fn: (p: Project) => Project, historyKey: string | null | false = null, windowMs?: number): void {
     const before = this.store.get().projects.find((p) => p.id === id);
     if (before && historyKey !== false && id === this.store.get().projectId) {
-      this.history.push(before, historyKey);
+      this.history.push(before, historyKey, Date.now(), windowMs);
       this.publishHistory();
     }
     let updated: Project | null = null;
@@ -973,17 +1350,41 @@ export class Session {
     const state = this.store.get();
     const project = openProject(state);
     if (!project || this.isLive) return;
-    // As heard: shifted by each track's offset and transposed by its pitch + the song's key shift.
+    // As heard: moved by note timing edits, shifted by each track's offset and transposed by its
+    // pitch + the song's key shift.
     const shifted = (t: Track) => {
       const take = t.takeId ? this.takes.get(t.takeId) : undefined;
+      if (!take) return [];
       const st = trackSemitones(t, project);
-      return take ? take.frames.map((f) => ({ ...f, time: f.time + t.offset, midi: f.midi === null ? null : f.midi + st })) : [];
+      const at = this.takeTimeMap(t, take);
+      return take.frames.map((f) => ({ ...f, time: at(f.time) + t.offset, midi: f.midi === null ? null : f.midi + st }));
     };
     this.roll.setTuning(this.rollTuning());
+    this.roll.setGrid(gridOf(project));
     this.roll.setScaleHint(project.key ? transposeScale(project.key, project.keyShift) : null);
     const selected = project.tracks.find((t) => t.id === state.selectedTrackId);
-    this.roll.setGhosts(project.tracks.filter((t) => t !== selected && t.kind === 'vocal').map((t) => ({ frames: shifted(t), hue: t.hue })));
-    this.roll.showRecording(selected ? shifted(selected) : [], this.player.duration, this.player.currentTime);
+    // Ghosts show other tracks' pitch edits too (their lines are drawn from the sung pitch).
+    this.roll.setGhosts(
+      project.tracks
+        .filter((t) => t !== selected && t.kind === 'vocal')
+        .map((t) => {
+          const frames = shifted(t);
+          const edits = t.noteEdits ?? [];
+          if (!edits.length) return { frames, hue: t.hue };
+          const moved = frames.map((f) => ({ ...f }));
+          for (const e of edits) for (let i = e.from; i < Math.min(e.to, moved.length); i++) if (moved[i].midi !== null) moved[i].midi! += e.shift;
+          return { frames: moved, hue: t.hue };
+        }),
+    );
+    this.roll.setNoteEdits(selected?.noteEdits ?? []);
+    // Keys recorded with the track: drawn as its harmony lines (by the take's own frame times).
+    const keyTake = selected?.keys?.events.length && selected.takeId ? this.takes.get(selected.takeId) : undefined;
+    this.roll.setKeyHarmony(
+      keyTake && selected?.keys ? { voicing: selected.keys.voicing, at: (i) => keysAt(selected.keys!.events, keyTake.frames[i]?.time ?? 0) } : null,
+    );
+    // While editing notes the view stays put (it would jump as notes move).
+    this.roll.showRecording(selected ? shifted(selected) : [], this.player.duration, this.player.currentTime, state.noteMode);
+    this.syncNoteBlobs();
   }
 
   // --- instrumentals --------------------------------------------------------------------------
@@ -1031,7 +1432,12 @@ export class Session {
         const analysis = await this.renderer.analyze(downmix(channels), buffer.sampleRate);
         const bpm = analysis.tempo && analysis.tempo.confidence > 1.3 ? Math.round(analysis.tempo.bpm) : null;
         const key = analysis.key && analysis.key.confidence > 0.5 ? analysis.key.scale : null;
-        if (bpm) this.mutateProject(project.id, (p) => ({ ...p, bpm, updatedAt: Date.now() }), false);
+        if (bpm) {
+          // The tempo and where the bars start (so the click and grid line up with the beat).
+          const downbeat = normalizeDownbeat(analysis.tempo!.downbeat, { bpm, beatsPerBar: 4, downbeat: 0 });
+          this.mutateProject(project.id, (p) => ({ ...p, bpm, beatsPerBar: 4, downbeat, updatedAt: Date.now() }), false);
+          if (this.store.get().projectId === project.id) this.tempoChanged();
+        }
         if (this.store.get().projectId === project.id) this.store.set({ detection: { projectId: project.id, key, bpm } });
       } finally {
         this.store.set({ importing: false });
@@ -1207,7 +1613,15 @@ export class Session {
         key !== voice.sentKey ? { key, samples: take.samples, sampleRate: take.meta.sampleRate, targetRate: rate, frames: take.frames } : undefined;
       voice.sentKey = key;
       try {
-        const r = await this.renderer.voice(channel, { prepare, tune: settings.tune, semitones: settings.pitch ?? 0, voice: settings.voice, have: voice.version });
+        const r = await this.renderer.voice(channel, {
+          prepare,
+          tune: settings.tune,
+          semitones: settings.pitch ?? 0,
+          voice: settings.voice,
+          notes: settings.notes,
+          keys: settings.keys,
+          have: voice.version,
+        });
         if (!r || !isCurrent()) return; // superseded, removed or closed
         const prepared = r.version !== voice.version;
         if (prepared) {
@@ -1360,6 +1774,7 @@ export class Session {
     if (!project) return;
     this.player.setMaster(masterOf(project));
     this.player.setSongFx(songFxOf(project), project.bpm ?? null);
+    this.syncMetronome();
     this.player.setTracks(this.mixSpecs(project));
     this.syncLoop();
     this.store.set({ duration: this.player.duration });

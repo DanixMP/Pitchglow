@@ -20,9 +20,12 @@ export class History<T> {
     return this.redoStack.length > 0;
   }
 
-  /** Record `before` (the state prior to an edit). Same `key` within `coalesceMs` = same step. */
-  push(before: T, key: string | null = null, now = Date.now()): void {
-    const coalesce = key !== null && key === this.lastKey && now - this.lastAt <= this.coalesceMs;
+  /**
+   * Record `before` (the state prior to an edit). Same `key` within `windowMs` (default
+   * `coalesceMs`) = same step; one gesture (a drag with its own key) can pass Infinity.
+   */
+  push(before: T, key: string | null = null, now = Date.now(), windowMs = this.coalesceMs): void {
+    const coalesce = key !== null && key === this.lastKey && now - this.lastAt <= windowMs;
     this.lastKey = key;
     this.lastAt = now;
     this.redoStack = [];

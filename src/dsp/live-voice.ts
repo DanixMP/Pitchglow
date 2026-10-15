@@ -17,6 +17,7 @@ import type { PitchFrame } from '../audio/pitch-tracker';
 import { PitchTracker } from '../audio/pitch-tracker';
 import { PitchCorrector, type TuneSettings } from './autotune';
 import { harmonyNote } from './harmony';
+import { keyNotes, MAX_KEY_VOICES, type Voicing } from './keys';
 import { midiToFreq } from './notes';
 import { GrainShaper, SHAPE_MAX_HALF, type GrainVoice } from './grain-shape';
 import { hann, normalizeGrain } from './psola';
@@ -58,6 +59,10 @@ export class LiveVoice {
   private corrector: PitchCorrector | null = null;
   private harmonies = 0;
   private harmonyGain = 0;
+  /** Play-the-keys (Phase 19): the held keys (null = interval harmony from the settings). */
+  private keys: number[] | null = null;
+  private voicing: Voicing = 'near';
+  private keyMix = 0.6;
   // Voice character.
   private readonly shaper = new GrainShaper();
   private readonly grainVoices: GrainVoice[] = [];
@@ -133,13 +138,29 @@ export class LiveVoice {
     this.monoNote = null;
     this.scaleMask = settings.tune ? scaleMask(settings.tune.scale) : null;
     for (let i = 0; i <= MAX_HARMONIES; i++) this.grainVoices[i] = grainVoice(v ?? { formant: 0, whisper: 0, monotone: false }, i);
-    const wanted = Math.min(settings.tune?.harmony?.voices.length ?? 0, MAX_HARMONIES);
-    this.setHarmonies(wanted);
+    this.setHarmonies(this.wantedHarmonies);
+  }
+
+  /**
+   * Play-the-keys: harmony voices sing the held keys (null = back to the interval harmony). Takes
+   * effect from the next pitch frame; doesn't reset the pitch correction.
+   */
+  setKeys(keys: readonly number[] | null, voicing: Voicing = 'near', mix = 0.6): void {
+    this.keys = keys ? [...keys].sort((a, b) => a - b) : null;
+    this.voicing = voicing;
+    this.keyMix = mix;
+    this.setHarmonies(this.wantedHarmonies);
+  }
+
+  /** Harmony voices the settings (or held keys) ask for. */
+  get wantedHarmonies(): number {
+    if (this.keys) return Math.min(this.keys.length, MAX_KEY_VOICES);
+    return Math.min(this.settings.tune?.harmony?.voices.length ?? 0, MAX_HARMONIES);
   }
 
   /** Whether the output is processed (delayed) rather than the input passed straight through. */
   get processing(): boolean {
-    return this.settings.tune !== null || this.settings.semitones !== 0 || !isNeutralVoice(this.settings.voice);
+    return this.settings.tune !== null || this.settings.semitones !== 0 || !isNeutralVoice(this.settings.voice) || this.keys !== null;
   }
 
   /** Processes one block (any size up to a few thousand samples) of input into output. */
@@ -218,6 +239,17 @@ export class LiveVoice {
       const corrected = (c?.corrected ?? midi) + this.settings.semitones;
       this.fRatio[0][i] = Math.pow(2, (corrected - midi) / 12);
       const tune = this.settings.tune;
+      if (this.keys) {
+        // Play-the-keys: each voice on a held key (voiced against the corrected line), keeping
+        // the line's expression; extra voices just follow the lead (they're silent anyway).
+        const notes = keyNotes(this.keys, corrected, this.voicing);
+        for (let v = 1; v <= MAX_HARMONIES; v++) {
+          const note = notes[v - 1];
+          this.fRatio[v][i] = note === undefined ? this.fRatio[0][i] : Math.pow(2, (note + (corrected - Math.round(corrected)) - midi) / 12);
+        }
+        this.onFrame?.(f, pos);
+        return;
+      }
       const voices = tune?.harmony?.voices ?? [];
       for (let v = 1; v <= MAX_HARMONIES; v++) {
         const voice = voices[v - 1];
@@ -408,7 +440,7 @@ export class LiveVoice {
       }
     }
     this.harmonies = count;
-    const mix = this.settings.tune?.harmony?.mix ?? 0.6;
+    const mix = this.keys ? this.keyMix : (this.settings.tune?.harmony?.mix ?? 0.6);
     this.harmonyGain = count ? mix / Math.sqrt(count) : 0;
   }
 }

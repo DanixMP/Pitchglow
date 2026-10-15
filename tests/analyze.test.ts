@@ -76,6 +76,30 @@ describe('tempo detection', () => {
     expect(t!.confidence).toBeGreaterThan(1.5);
   });
 
+  it.each([
+    [120, 0.3],
+    [96, 1.1],
+    [100, 0],
+    [140, 0.77],
+  ])('finds where the bars start (%d BPM, first downbeat at %f s)', (bpm, start) => {
+    // Accented downbeats every 4 beats, starting `start` seconds in.
+    const out = new Float32Array(Math.round(14 * SR));
+    let seed = 7;
+    let k = 0;
+    for (let t = start; t < 14; t += 60 / bpm, k++) {
+      const s0 = Math.round(t * SR);
+      const amp = k % 4 === 0 ? 1 : 0.55;
+      for (let i = 0; i < 2000 && s0 + i < out.length; i++) {
+        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+        out[s0 + i] += amp * Math.exp(-i / 300) * (0.6 * Math.sin((2 * Math.PI * 60 * i) / SR) + 0.3 * ((seed / 0x7fffffff) * 2 - 1));
+      }
+    }
+    const t = estimateTempo(out, SR)!;
+    const bar = (60 / bpm) * 4;
+    const err = Math.abs(((t.downbeat - start + bar / 2) % bar) - bar / 2);
+    expect(err).toBeLessThan(0.015);
+  });
+
   it('needs a few bars of audio', () => {
     expect(estimateTempo(clickTrack(120, 1.5), SR)).toBeNull();
   });

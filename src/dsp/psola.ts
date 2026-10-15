@@ -13,6 +13,7 @@ import type { PitchFrame } from '../audio/pitch-tracker';
 import type { Correction } from './autotune';
 import { GrainCache, SHAPE_MAX_HALF, type GrainVoice } from './grain-shape';
 import { midiToFreq } from './notes';
+import { warpToOutput, warpToSource, type TimeWarp } from './note-edit';
 
 /** Half a Hann window, 0.5 + 0.5·cos(πj/HANN_SIZE) for j = 0 … HANN_SIZE (+1 guard for interpolation). */
 const HANN_SIZE = 4096;
@@ -92,6 +93,8 @@ export interface GrainPlan {
   voiced: Uint8Array;
   /** Voice character applied to the voiced grains (Phase 15). */
   voice: GrainVoice;
+  /** Note timing edits (Phase 18): which source position each output position plays; null = same. */
+  warp: TimeWarp | null;
 }
 
 /** No formant shift, no whisper. */
@@ -146,35 +149,61 @@ export function analyzePsola(samples: Float32Array, sampleRate: number, frames: 
   return { length: n, sampleRate, times, periods, midi, regions };
 }
 
-/** The grains that move the voice along `corrections` (unvoiced audio: identity grains). */
-export function planGrains(analysis: PsolaAnalysis, corrections: readonly Correction[], passthrough = true, voice: GrainVoice = NATURAL_VOICE): GrainPlan {
+/**
+ * The grains that move the voice along `corrections` (unvoiced audio: identity grains). With a time
+ * warp (note timing edits), output position t plays source position warp(t): grains are taken from
+ * there, still spaced by the corrected pitch period, so notes stretch without changing pitch.
+ */
+export function planGrains(
+  analysis: PsolaAnalysis,
+  corrections: readonly Correction[],
+  passthrough = true,
+  voice: GrainVoice = NATURAL_VOICE,
+  warp: TimeWarp | null = null,
+): GrainPlan {
   const { length: n, sampleRate, times, periods, midi, regions } = analysis;
   const ratios = new Float64Array(periods.length);
+  // Voices without passthrough (harmonies) are silent where their curve has no pitch, even inside a
+  // sung stretch (a key voice with no key held there).
+  let silentFrames = false;
+  const silent = new Uint8Array(periods.length);
   for (let i = 0; i < periods.length; i++) {
     const c = corrections[i]?.corrected;
     ratios[i] = c === null || c === undefined || Number.isNaN(midi[i]) ? 1 : Math.pow(2, (c - midi[i]) / 12);
+    if (!passthrough && (c === null || c === undefined) && !Number.isNaN(midi[i])) {
+      silent[i] = 1;
+      silentFrames = true;
+    }
   }
   const unvoicedPeriod = Math.max(16, Math.round(sampleRate * UNVOICED_PERIOD_SECONDS));
-  const plan = new PlanBuilder(n, passthrough, voice);
+  const plan = new PlanBuilder(n, passthrough, voice, warp);
+  // Output <-> source positions (the identity without a warp, so plans stay exactly as before).
+  const toOut = (s: number) => (warp ? warpToOutput(warp, s) : s);
+  const toSrc = (t: number) => (warp ? warpToSource(warp, t) : t);
+  const unvoiced = (from: number, to: number) => {
+    for (let t = toOut(from); t < to; t += unvoicedPeriod) plan.push(Math.round(toSrc(t)), Math.round(t), unvoicedPeriod, 0);
+  };
   let cursor = 0;
   for (const r of regions) {
-    if (passthrough) for (let m = cursor; m < r.start; m += unvoicedPeriod) plan.push(m, m, unvoicedPeriod, 0);
+    if (passthrough) unvoiced(cursor, toOut(r.start));
     const periodAt = (sample: number) => interpolate(times, periods, r.frameFrom, r.frameTo, sample / sampleRate);
     const ratioAt = (sample: number) => interpolate(times, ratios, r.frameFrom, r.frameTo, sample / sampleRate);
     const marks = r.marks;
     let idx = 0;
-    for (let t = marks[0]; t < r.end; ) {
-      // Nearest analysis mark to this synthesis time (marks and t both increase, so walk forward).
-      while (idx + 1 < marks.length && Math.abs(marks[idx + 1] - t) <= Math.abs(marks[idx] - t)) idx++;
+    const end = toOut(r.end);
+    for (let t = toOut(marks[0]); t < end; ) {
+      const u = toSrc(t);
+      // Nearest analysis mark to the source position (marks and u both increase, so walk forward).
+      while (idx + 1 < marks.length && Math.abs(marks[idx + 1] - u) <= Math.abs(marks[idx] - u)) idx++;
       const a = marks[idx];
-      const synthPeriod = periodAt(t) / ratioAt(t);
+      const synthPeriod = periodAt(u) / ratioAt(u);
       // Grains are two analysis periods long (classic TD-PSOLA), whatever the shift.
-      plan.push(a, Math.round(t), Math.round(periodAt(a)), 1);
+      if (!silentFrames || !silent[nearestFrame(times, r.frameFrom, r.frameTo, u / sampleRate)]) plan.push(a, Math.round(t), Math.round(periodAt(a)), 1);
       t += synthPeriod;
     }
     cursor = r.end;
   }
-  if (passthrough) for (let m = cursor; m < n + unvoicedPeriod; m += unvoicedPeriod) plan.push(m, m, unvoicedPeriod, 0);
+  if (passthrough) unvoiced(cursor, n + unvoicedPeriod);
   return plan.build();
 }
 
@@ -237,9 +266,19 @@ export function renderGrains(
       weight[t + k - start] += w;
     }
   }
-  // Harmony voices (no passthrough) fade to silence where the grains thin out.
+  // Harmony voices (no passthrough) fade to silence where the grains thin out. The lead blends
+  // towards the source (where the warp says it is) where grains barely overlap.
   const pass = plan.passthrough;
-  for (let i = 0; i < len; i++) out[i] = normalizeGrain(out[i], weight[i], start + i < src.length ? src[start + i] : 0, pass);
+  const warp = plan.warp;
+  for (let i = 0; i < len; i++) {
+    const w = weight[i];
+    let x = 0;
+    if (pass && w < BLEND_WEIGHT) {
+      const s = warp ? Math.round(warpToSource(warp, start + i)) : start + i;
+      x = s >= 0 && s < src.length ? src[s] : 0;
+    }
+    out[i] = normalizeGrain(out[i], w, x, pass);
+  }
 }
 
 class PlanBuilder {
@@ -254,6 +293,7 @@ class PlanBuilder {
     private readonly length: number,
     private readonly passthrough: boolean,
     private readonly voice: GrainVoice,
+    private readonly warp: TimeWarp | null,
   ) {}
 
   push(from: number, to: number, half: number, voiced: number): void {
@@ -290,6 +330,7 @@ class PlanBuilder {
       length: this.length,
       passthrough: this.passthrough,
       voice: this.voice,
+      warp: this.warp,
     };
   }
 }
@@ -333,6 +374,18 @@ function interpolate(times: Float64Array, values: Float64Array, from: number, to
   }
   const u = (t - times[lo]) / (times[hi] - times[lo]);
   return values[lo] + (values[hi] - values[lo]) * u;
+}
+
+/** Index of the frame in [from, to) whose time is nearest `t`. */
+function nearestFrame(times: Float64Array, from: number, to: number, t: number): number {
+  let lo = from;
+  let hi = to - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (times[mid] <= t) lo = mid;
+    else hi = mid;
+  }
+  return Math.abs(times[hi] - t) < Math.abs(times[lo] - t) ? hi : lo;
 }
 
 function argmax(sig: Float32Array, from: number, to: number): number {

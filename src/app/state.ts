@@ -4,7 +4,19 @@ import type { InputKind } from '../audio/audio-input';
 import type { Scale } from '../dsp/scales';
 import type { Project, Track } from '../project/model';
 import type { RecordingMeta } from '../storage/recording-store';
-import { loadCleanup, loadExportFormat, loadInput, loadTuning, type CleanupPrefs, type InputPrefs, type TuningPrefs } from '../storage/settings';
+import {
+  loadCleanup,
+  loadExportFormat,
+  loadInput,
+  loadKeys,
+  loadMetronome,
+  loadTuning,
+  type CleanupPrefs,
+  type InputPrefs,
+  type KeysPrefs,
+  type MetronomePrefs,
+  type TuningPrefs,
+} from '../storage/settings';
 import { Store } from './store';
 
 /** idle → listening/recording (live input) or playback (a take or a song is open). */
@@ -31,6 +43,12 @@ export interface AppState {
   source: InputKind;
   /** Count-in, sync nudge, calibration. */
   input: InputPrefs;
+  /** Click track (Phase 17): on/off, level, accent. */
+  metronome: MetronomePrefs;
+  /** Play-the-keys harmony (Phase 19): prefs, the held keys, and connected MIDI inputs (null = not started). */
+  keys: KeysPrefs;
+  heldKeys: number[];
+  midi: { devices: string[]; status: 'off' | 'on' | 'unsupported' | 'denied' };
   /** File format for exports (takes, processed takes, mixes); stems are always WAV. */
   exportFormat: 'wav' | 'mp3';
   /** An instrumental is being imported/decoded. */
@@ -72,6 +90,9 @@ export interface AppState {
   mobileTab: MobileTab;
   /** Tablet layout: takes drawer open. */
   takesDrawerOpen: boolean;
+  /** Note editing on the roll (Phase 18): on/off and the selected note (index into the take's notes). */
+  noteMode: boolean;
+  selectedNote: number | null;
 }
 
 export type AppStore = Store<AppState>;
@@ -81,6 +102,10 @@ export function createAppStore(): AppStore {
     mode: 'idle',
     source: 'mic',
     input: loadInput(),
+    metronome: loadMetronome(),
+    keys: loadKeys(),
+    heldKeys: [],
+    midi: { devices: [], status: 'off' },
     exportFormat: loadExportFormat(),
     importing: false,
     detection: null,
@@ -102,6 +127,8 @@ export function createAppStore(): AppStore {
     status: '',
     mobileTab: null,
     takesDrawerOpen: false,
+    noteMode: false,
+    selectedNote: null,
   });
 }
 

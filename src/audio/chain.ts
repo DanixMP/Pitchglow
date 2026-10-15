@@ -222,3 +222,35 @@ export class MasterChain {
   }
 }
 
+
+const latencyCache = new Map<number, Promise<{ limiter: number; plain: number }>>();
+
+/**
+ * How late the mix chain plays a sound, seconds, with the master limiter on and off: the
+ * compressors' look-ahead and the clipper's oversampling filters. Measured once per sample rate by
+ * rendering an impulse through a track chain and the master offline, so it is exact for this
+ * browser. Sounds that skip the chain (the click) are delayed by it, and takes recorded over the song
+ * are placed with it (the singer hears the song this much later than the transport says).
+ */
+export function measureChainLatency(sampleRate: number): Promise<{ limiter: number; plain: number }> {
+  let cached = latencyCache.get(sampleRate);
+  if (!cached) {
+    const measure = async (limiter: boolean) => {
+      const ctx = new OfflineAudioContext(1, Math.round(sampleRate * 0.1), sampleRate);
+      const impulse = ctx.createBuffer(1, 1, sampleRate);
+      impulse.getChannelData(0)[0] = 0.25;
+      const master = new MasterChain(ctx, { gain: 1, limiter });
+      master.output.connect(ctx.destination);
+      const source = new AudioBufferSourceNode(ctx, { buffer: impulse });
+      source.connect(createTrackChain(ctx, 1, 0, master.input).input);
+      source.start(0);
+      const out = (await ctx.startRendering()).getChannelData(0);
+      let peak = 0;
+      for (let i = 1; i < out.length; i++) if (Math.abs(out[i]) > Math.abs(out[peak])) peak = i;
+      return peak / sampleRate;
+    };
+    cached = Promise.all([measure(true), measure(false)]).then(([limiter, plain]) => ({ limiter, plain }));
+    latencyCache.set(sampleRate, cached);
+  }
+  return cached;
+}

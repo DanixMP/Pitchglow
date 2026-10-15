@@ -1,6 +1,7 @@
 // Messages and construction options shared by the voice-engine worklet and its main-thread users.
 
 import type { CleanupAnalysis, CleanupSettings } from '../../dsp/cleanup';
+import type { ClickGrid } from '../../dsp/click';
 import type { VoicePlans } from '../../dsp/voice-engine';
 import type { EngineTransport } from './transport';
 
@@ -42,4 +43,21 @@ export interface BeatOptions {
   /** Where the beat starts in the song, samples. */
   offset: number;
   transport: EngineTransport | null;
+}
+
+// --- metronome (Phase 17) ---------------------------------------------------------------------
+
+export const CLICK_PROCESSOR = 'click-engine';
+
+export type ClickMessage =
+  | { type: 'grid'; grid: ClickGrid }
+  /**
+   * Follow the transport. Its positions are song samples + `bias` (so a count-in before the song
+   * stays non-negative); beats at or after `before` (song samples) stay silent (count-in only).
+   */
+  | { type: 'play'; transport: EngineTransport; bias: number; before: number | null }
+  | { type: 'stop' };
+
+export interface ClickOptions {
+  grid: ClickGrid;
 }

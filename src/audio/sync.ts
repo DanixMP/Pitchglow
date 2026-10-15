@@ -60,9 +60,3 @@ export function detectClickLatency(
   delays.sort((a, b) => a - b);
   return delays[delays.length >> 1];
 }
-
-/** Context times of a count-in: `beats` clicks at `bpm`, starting at `start`; returns them and when the bar ends. */
-export function countInTimes(start: number, bpm: number, beats = 4): { clicks: number[]; end: number } {
-  const beat = 60 / bpm;
-  return { clicks: Array.from({ length: beats }, (_, i) => start + i * beat), end: start + beats * beat };
-}

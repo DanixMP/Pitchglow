@@ -7,6 +7,10 @@ export const theme = {
   background: '#0f0f10',
   laneSeparator: 'rgba(0, 0, 0, 0.55)',
   playhead: 'rgba(255, 255, 255, 0.18)',
+  /** Tempo grid on the roll (Phase 17): bar lines, beat lines, bar numbers. */
+  gridBar: 'rgba(255, 255, 255, 0.11)',
+  gridBeat: 'rgba(255, 255, 255, 0.045)',
+  gridLabel: 'rgba(255, 255, 255, 0.32)',
   line: '#ffffff',
   lineGlow: 'rgba(255, 255, 255, 0.85)',
   whiteKey: '#f2f2f0',

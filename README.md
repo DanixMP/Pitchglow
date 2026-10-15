@@ -84,6 +84,11 @@ Import a beat (MP3, WAV, M4A, OGG, FLAC), sing over it, and layer takes into tra
   look-ahead limiter. Undo/redo for every edit.
 - **Timeline:** waveform clips you can drag (snapping to 1/16 notes); drag along the ruler for a
   **loop region**.
+- **Metronome & grid:** a click on the song's tempo while it plays and while you record (with an
+  accented bar 1 and a count-in on the beat). Bar and beat lines run across the piano roll and the
+  timeline. The tempo *and where the bars start* are detected from the beat. You can also type a BPM,
+  tap it in, or set bar 1 at the playhead. One click (<kbd>Q</kbd>) moves a take so its first note
+  lands on the beat.
 - **Ghost lines:** the other vocal tracks are drawn faintly behind the one you're editing.
 - **Everything is instant:** auto-tune, harmony, pitch, voice character, clean-up and the song's key shift
   are all heard on the **next audio block** while the song plays. Playback never restarts and nothing
@@ -91,6 +96,30 @@ Import a beat (MP3, WAV, M4A, OGG, FLAC), sing over it, and layer takes into tra
 
 <p align="center">
   <img src="docs/screenshots/mixer.png" alt="Mixer: timeline with waveforms and a loop region, track strips with mute, solo, pan, fader and meters" width="760" />
+</p>
+
+### ✏️ Edit the notes you sang
+
+Press **Edit notes** (<kbd>N</kbd>) and every sung note shows up as a blob on the piano roll. Drag a
+note up or down to sing it on another pitch (whole semitones; hold <kbd>Alt</kbd> for cents). Drag it
+sideways to move it in time (it snaps to the song's grid), or by its ends to make it longer or shorter.
+The pitch stays put while it stretches. You can also give a note its own correction strength. Every edit is
+non-destructive, can be undone, and is heard straight away while the song plays (and in exports).
+
+<p align="center">
+  <img src="docs/screenshots/note-editing.png" alt="Note editing: sung notes as blobs on the piano roll, one moved up a semitone and selected" width="760" />
+</p>
+
+### 🎹 Play the harmony
+
+Switch the Harmony section to **Keys** and hold notes, either on the keyboard at the left of the roll
+(click to latch, so a mouse can hold chords) or on a **MIDI keyboard**. Your voice sings every held note
+at once, Jacob Collier style, live in your headphones while you sing. Voices sit near your own pitch
+(or exactly as played) and keep your vibrato. Takes you record into a song remember the keys, so the
+harmony plays back and exports exactly as you heard it.
+
+<p align="center">
+  <img src="docs/screenshots/play-the-keys.png" alt="Play-the-keys: a chord held on the roll's keyboard, the voice's harmony lines on the held notes" width="760" />
 </p>
 
 ### 🎭 Voice character
@@ -197,6 +226,9 @@ npm run dev:lan
 | <kbd>T</kbd> | Auto-tune on / off |
 | <kbd>A</kbd> | Original ↔ processed |
 | <kbd>L</kbd> | Loop on / off (song open) |
+| <kbd>M</kbd> | Click (metronome) on / off (song open) |
+| <kbd>Q</kbd> | Align the selected take's singing to the nearest beat |
+| <kbd>N</kbd> | Edit notes on / off; then <kbd>↑</kbd> <kbd>↓</kbd> pitch (<kbd>Shift</kbd> = 0.1 st), <kbd>←</kbd> <kbd>→</kbd> next note, <kbd>Delete</kbd> reset, <kbd>Esc</kbd> done |
 | <kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> | Undo / redo (song open) |
 | <kbd>←</kbd> <kbd>→</kbd> | Nudge the selected clip (timeline focused; <kbd>Shift</kbd> = ×4) |
 | <kbd>Alt</kbd> + drag | Move clips / loop edges without snapping |
@@ -278,7 +310,11 @@ cycle has arrived, and synthesis runs a fixed 25 ms behind the input.
   noise profile comes from the quietest 15% of frames. About +9 dB SNR while the voice keeps ~97% of
   its level.
 - **Key detection:** a 55 Hz–2 kHz chroma correlated with the 24 Krumhansl–Kessler key profiles.
-- **Tempo:** autocorrelation of a spectral-flux onset envelope, 60–200 BPM, with a tempo prior.
+- **Tempo:** autocorrelation of a spectral-flux onset envelope, 60–200 BPM, with a tempo prior. Bar 1
+  is the beat phase with the strongest comb of onsets, then the strongest of the 4 beats (downbeats
+  hit hardest).
+- **Metronome:** a worklet that clicks on the beats of whatever song position the transport plays, so
+  it stays on the beat through seeks and loop wraps.
 - **Reverb:** impulse responses generated from seeded, filtered, decaying noise, so no sample files ship.
 
 </details>
@@ -288,9 +324,11 @@ cycle has arrived, and synthesis runs a fixed 25 ms behind the input.
 
 The mic and playback share **one `AudioContext` clock**, and the mic worklet stamps every block with its
 context frame. A take's position = song position + (first sample − playback start) − round-trip
-latency + nudge, where the latency is the browser's estimate or a measured loopback calibration (6
-clicks through the speakers, onsets found in the mic signal). In the app, a take recorded after a
-count-in landed within 10 ms of the predicted position.
+latency − mix-chain delay + nudge. The round trip is the browser's estimate or a measured loopback
+calibration (6 clicks through the speakers, onsets found in the mic signal). The mix chain's own delay
+(compressor look-ahead, the limiter's oversampling; about 15 ms in Chrome) is measured once by
+rendering an impulse offline, and the click is delayed by the same amount, so it sits exactly on the
+beat. In the app, a take recorded after a count-in landed within 10 ms of the predicted position.
 
 </details>
 
@@ -342,12 +380,14 @@ The microphone needs `localhost` or HTTPS.
 - [x] **v1:** live pitch visualizer, recorder, auto-tune (visual + audio), harmonizer, noise reduction, PWA
 - [x] **v2 "Studio":** three-column layout, songs & tracks, beat import with key/BPM detection, recording
       over the beat, mixer, effects, loop, song files, MP3
-- [ ] **v3 "Real-time & Neon studio"**
+- [x] **v3 "Real-time & Neon studio"**
   - [x] Real-time voice engine: every change instant during playback
   - [x] Hear yourself live: monitoring with auto-tune, harmony and effects
   - [x] Clean-up and the beat's key shift live too, plus voice character (formant shift, robot, whisper)
   - [x] "Neon studio" UX: custom sliders with snapping, context cursors, LED meters
-  - [ ] Metronome & grid, note editing (drag sung notes), play-the-keys harmony (MIDI keyboard)
+  - [x] Metronome & grid: click, count-in on the beat, tap tempo, bar/beat lines, align takes to the beat
+  - [x] Note editing: drag sung notes to new pitches and times, per-note correction
+  - [x] Play-the-keys harmony: on-screen keys or a MIDI keyboard, live and recorded with the take
 
 ## Credits & licenses
 

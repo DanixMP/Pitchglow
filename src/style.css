@@ -1569,6 +1569,103 @@ body {
   background: rgba(246, 196, 83, 0.14);
 }
 
+/* --- Phase 19: play-the-keys harmony ----------------------------------------------------------- */
+
+.harmony-mode {
+  align-self: flex-start;
+}
+
+.keys-status {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.keys-status b {
+  color: var(--accent);
+}
+
+/* --- Phase 18: note editing ----------------------------------------------------------------------- */
+
+.roll-tool {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(15, 15, 16, 0.82);
+  backdrop-filter: blur(4px);
+}
+
+.roll-tool svg {
+  width: 15px;
+  height: 15px;
+  fill: currentColor;
+}
+
+.roll-tool.is-on {
+  color: #111;
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: var(--glow-accent);
+}
+
+.note-info {
+  margin: 0;
+  font-weight: 700;
+  font-size: 13px;
+}
+
+#roll.is-keys-playable.is-over-keys {
+  cursor: pointer;
+}
+
+#roll.is-note-hover {
+  cursor: grab;
+}
+
+#roll.is-note-edge {
+  cursor: var(--cursor-ew);
+}
+
+#roll.is-note-dragging {
+  cursor: grabbing;
+}
+
+/* --- Phase 17: tempo & click ---------------------------------------------------------------------- */
+
+.tempo-row {
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+}
+
+.tempo-bpm {
+  display: flex;
+  gap: 6px;
+}
+
+.input-number {
+  width: 100%;
+  min-width: 0;
+  padding: 7px 10px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--fg);
+  font: 600 13px var(--font);
+  font-variant-numeric: tabular-nums;
+}
+
+.input-number:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.tempo-tap-flash {
+  box-shadow: var(--glow-accent-strong);
+}
+
 .select-small {
   width: auto;
   padding: 5px 26px 5px 10px;

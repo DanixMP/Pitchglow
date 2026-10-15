@@ -9,7 +9,7 @@
 
 import { LiveVoice, MAX_HARMONIES } from '../../dsp/live-voice';
 import type { PitchFrame } from '../pitch-tracker';
-import { LIVE_PROCESSOR, type LiveMessage, type LiveSettingsMessage } from './live-protocol';
+import { LIVE_PROCESSOR, type LiveKeysMessage, type LiveMessage, type LiveSettingsMessage } from './live-protocol';
 
 declare abstract class AudioWorkletProcessor {
   readonly port: MessagePort;
@@ -31,7 +31,13 @@ class LiveProcessor extends AudioWorkletProcessor {
   /** Context frame of the voice's sample 0. */
   private origin = -1;
   private monitor = false;
-  private wantedHarmonies = 0;
+  /** The latest keys message (re-applied when monitoring switches on). */
+  private pendingKeys: LiveKeysMessage | null = null;
+
+  /** Harmony voices wanted right now (none without monitoring). */
+  private get wantedHarmonies(): number {
+    return this.monitor ? this.voice.wantedHarmonies : 0;
+  }
 
   // Load estimate: count millisecond ticks of Date.now() that happen *during* process(). Summed over
   // many blocks this is an unbiased measure of the time spent, even with a 1 ms clock.
@@ -41,12 +47,18 @@ class LiveProcessor extends AudioWorkletProcessor {
 
   constructor() {
     super();
-    this.port.onmessage = (e: MessageEvent<LiveSettingsMessage>) => {
+    this.port.onmessage = (e: MessageEvent<LiveSettingsMessage | LiveKeysMessage>) => {
       const m = e.data;
+      if (m.type === 'keys') {
+        if (this.monitor) this.voice.setKeys(m.keys, m.voicing, m.mix);
+        this.pendingKeys = m;
+        return;
+      }
       this.monitor = m.monitor;
-      this.wantedHarmonies = m.monitor ? Math.min(m.tune?.harmony?.voices.length ?? 0, MAX_HARMONIES) : 0;
       // Without monitoring only the pitch tracker runs (no synthesis work).
       this.voice.setSettings(m.monitor ? { tune: m.tune, semitones: m.semitones, voice: m.voice } : { tune: null, semitones: 0 });
+      const k = this.pendingKeys;
+      this.voice.setKeys(m.monitor && k ? k.keys : null, k?.voicing, k?.mix);
     };
     this.voice.onFrame = (frame: PitchFrame, position: number) => {
       const msg: LiveMessage = { type: 'frame', frame, at: this.origin + position };

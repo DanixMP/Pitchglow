@@ -10,7 +10,8 @@ import { analyzeInstrumental, type AnalysisResult } from '../dsp/analyze';
 import type { TuneSettings } from '../dsp/autotune';
 import type { CleanupAnalysis } from '../dsp/cleanup';
 import { prepareVoice, type PreparedVoice } from '../dsp/process';
-import { planVoices, type VoiceCharacter, type VoicePlans } from '../dsp/voice-engine';
+import type { NoteEdit } from '../dsp/note-edit';
+import { planVoices, type KeyHarmony, type VoiceCharacter, type VoicePlans } from '../dsp/voice-engine';
 import { unpackFrames, type PackedPitchTrack } from '../storage/pitch-track';
 import type { PitchFrame } from './pitch-tracker';
 
@@ -30,6 +31,10 @@ export interface VoiceRequest {
   tune: TuneSettings | null;
   semitones: number;
   voice?: VoiceCharacter;
+  /** Note edits (Phase 18). */
+  notes?: NoteEdit[];
+  /** Keys played along (Phase 19). */
+  keys?: KeyHarmony;
   /** Version the main thread has; the response carries the preparation when it differs. */
   have: number;
 }
@@ -109,7 +114,7 @@ function runVoice(req: VoiceRequest): void {
       voices.set(req.channel, ch);
     }
     if (!ch) throw new Error('Voice not prepared');
-    const plans = planVoices(ch.prepared.analysis, ch.frames, req.tune, req.semitones, req.voice);
+    const plans = planVoices(ch.prepared.analysis, ch.frames, req.tune, req.semitones, req.voice, req.notes, req.keys);
     const transfer = plans ? [plans.lead, ...plans.harmonies].flatMap((g) => [g.to.buffer, g.from.buffer, g.half.buffer, g.voiced.buffer]) : [];
     const fresh = req.have !== ch.version;
     // Copied (structured clone), not transferred: the channel keeps them for later replies.

@@ -211,6 +211,78 @@ The visual and UX reference is **`Goal.mp4`** (vertical video, 1:45) in the proj
     - Arrow keys stepped 0 → 1; the wheel while focused stepped it; double-click reset it.
     - The roll label read E3 / C3 at two heights.
     - Real-Chrome screenshots at 1440, 900 and 390 px (`npm run screenshots`, which now also makes `tablet.png` and shows a value bubble).
+- **Metronome & grid (Phase 17):**
+  - **Grid model** (`src/project/grid.ts`, pure, tested): `Grid { bpm, beatsPerBar, downbeat }` from the song's `bpm`, `beatsPerBar` (default 4) and `downbeat` (song time where a bar starts, normalised into the first bar). There is no grid without a BPM; the click then uses 100 BPM in 4 (`clickGridOf`).
+    - Helpers: `snapToGrid` (anchored at the downbeat), `gridLines` (beats, or only every 2ⁿ-th bar when crowded), `countInLead`, `tapTempo` (taps since the last 2 s pause, last 8, clamped 40–240), `takeOnset` (first frame ≥ 10% of the 95th-percentile RMS, or the first voiced one), `alignToBeat`.
+    - `snapOffset`, `normalizeLoop` and `defaultLoop` take a `Grid` (or a bare BPM, as before), so clips and loops snap to the downbeat-anchored grid.
+  - **Detection:** `estimateTempo` also returns `downbeat` (`estimateDownbeat`):
+    - the beat phase with the strongest *mean* comb of onsets, then the strongest of the 4 bar phases;
+    - a flux frame peaks when an onset is ¾ of the window in, which is corrected for.
+    - Importing a beat sets bpm + downbeat. Tests: within 15 ms at 96–140 BPM; in the app 0.36 s for a beat whose bars start at 0.37 s.
+  - **Click** (`src/dsp/click.ts` `ClickTrack`, `engine/click-worklet.ts` processor `click-engine`):
+    - It renders clicks for whatever song samples the transport (`blockRuns`) plays, so seeks and loop wraps are sample-accurate. Precomputed 45 ms ticks: 1760 Hz accented bar 1, 1175 Hz other beats.
+    - A click continues across blocks and runs; blocks equal one-go rendering (tested).
+    - `MixPlayer` owns one click node → DelayNode → gain → **destination** (never in exports, master meters or the limiter). `setMetronome({ on, gain, accent, grid })` is live: grid/accent are messages; switching on mid-play re-sends the current transport.
+    - Count-in positions can be negative, so the click's transport carries a `bias`, and `before` (song samples) keeps count-in-only clicks silent from the song position on when the metronome is off.
+  - **Count-in** (replaces `countInTimes` + `scheduleClicks`): clicks on the grid's beats in the bar before the position (`countInLead`, accent on bar starts), by the click worklet: `player.play(at, { countIn, recording: true })`.
+    - `recording` keeps the transport (and the click) running past the song's end and allows a song with no tracks. It lasts until `pause()`, so a mix rebuild mid-take keeps it.
+    - Recording into a song now plays along when the song is audible **or** the click or count-in is on (an empty song gets a count-in and a grid-aligned take).
+  - **Mix-chain latency (found while measuring the click):** the track compressor's look-ahead (6 ms) and the master limiter + 2× oversampled clipper (~8.7 ms) delay everything in the mix by **14.7 ms** (6 ms with the limiter off) in Chrome.
+    - `measureChainLatency` (`chain.ts`) renders an impulse through a track chain + master offline once per rate.
+    - The click is delayed by it. `MixPlayer.mixLatency` is added to `currentTime`'s latency (visuals) and to the take alignment (`playAlong`: round trip + mix latency; you sing to the song as you hear it). Before, takes recorded over a song sat ~15 ms late.
+  - **Session:** `setTempo({ bpm?, beatsPerBar?, downbeat? })` is undoable (coalesced per field), re-normalises the downbeat and updates echo sync, the click, the loop and the roll. Also `tapTempo()`, `setDownbeatHere()` (sets 100 BPM if none), `alignTrackToBeat(id)` (undoable clip move) and `syncMetronome()` (on open/close/rebuild/prefs).
+  - **Prefs:** `state.metronome = { on, levelDb (−30…0, default −6), accent }`, in `localStorage['recorder.metronome']`; the click only sounds with a song open.
+  - **UI:**
+    - Inspector **Tempo & click** section (`ui/panels/tempo-panel.ts`): BPM field + Tap, beats per bar, "Bar 1 here", click switch/level/accent, "Align take to beat".
+    - The transport has a click button. Shortcuts: **M** = click on/off (song open), **Q** = align the selected take (playback).
+    - The roll draws beat/bar lines with bar numbers (`PianoRoll.setGrid(grid, toSong)`; while recording over a song `toSong` maps live time to song time). The timeline draws beat + bar lines and bar labels ≥ 26 px apart.
+  - **Verified in the app** (beat at 96 BPM, bars from 0.37 s; click and master captured in the same ScriptProcessor):
+    - every click 10 ms before its kick (= the detection error) with the limiter on and off, and through loop wraps (no double clicks);
+    - switched on mid-play it starts on the next beat, and off it stops;
+    - the count-in clicked at −2.51/−1.885/−1.26/−0.635 s from the first kick exactly as predicted, accent first, silent after;
+    - the take was added as a track, and "Align" put its first note exactly on a beat (undo/redo fine).
+- **Note editing (Phase 18):**
+  - **Notes** (`src/dsp/note-edit.ts`, pure, tested): `segmentNotes(frames)` cuts each voiced run where the 5-frame median pitch stays > 0.7 st from the note's pitch (median of its first 8 frames) for 4+ frames. Pieces < 60 ms merge into a neighbour, and neighbours on the same pitch join (so a blip doesn't split a note). A `SungNote` has frames [from, to), start/end (s) and its median pitch.
+  - **Edits** live on the track: `track.noteEdits: NoteEdit[]` = `{ from, to, shift, amount, start?, end? }`, keyed by the note's frame range, so the take itself never changes. A neutral edit is removed.
+  - **Pitch:** `applyNoteEdits` runs on the sung-key curve (after auto-tune/robot, before the transpose). `amount` (null = the track's auto-tune) pulls the sung pitch that far onto the note (its auto-tune target, or its rounded median), then `shift` moves it. Targets move by the rounded shift, so harmonies follow in key.
+  - **Timing:** `buildWarp` makes a piecewise-linear time warp. The moved notes' edges are pinned where they were put; every other note's edges stay as sung where that keeps time running forward (otherwise that edge gives way, squeezing or stretching the neighbour); the gaps stretch. The take's length never changes.
+    - `planGrains(…, warp)` walks *output* time: each grain comes from the analysis mark nearest `warpToSource(t)` and is spaced by the corrected period there, so moved/stretched notes keep their pitch. Without a warp the plan is bit-identical to before (the old tests still pass).
+    - `renderGrains`' low-weight blend reads the source at the warped position; `VoiceRenderer.clean` covers the warped source range.
+  - **Flow:** `trackProcessSettings` adds `notes`. `VoiceRequest.notes` → worker → `planVoices(…, edits)` (which also counts edits as "something to do"). So edits are live in the engine (heard on the next block) and in every export (same plans). `.recsong` files carry them in the track JSON.
+  - **Session:**
+    - `notesOf(take)` (cached per take); `toggleNoteMode`, `selectNote`, `stepNote`, `noteEditOf`, `editNote` (undoable, coalesced), `resetNote`, `resetAllNotes`.
+    - `dragNote` (from the roll): up/down = pitch in whole semitones (Alt: free, 0.01 st); sideways = move (snapped to 1/16 of the song grid; Alt: free); ends = stretch. It's kept between the neighbours' far edges (≥ 50 ms each). **One undo step per drag, however slow:** each drag has its own history key with no time window (`History.push(…, windowMs)`); the 800 ms window had split a slow drag into several steps.
+    - `refreshSongView` draws everything as heard: frames moved by the track's warp (in ms) + offset + transpose; ghosts get their pitch edits too. While editing, the view doesn't re-centre.
+  - **Roll** (`PianoRoll`): `setNoteEdits` (the line shows the edited curve over the faded sung one, even with auto-tune off) and `setNotes(blobs, selected)`.
+    - Note mode draws rounded blobs on the notes' lanes (selected = white outline + glow; edited = brighter), shows the whole window (ahead of the playhead too) with no history fade, and hit-tests blobs: middle = move (axis locks after 5 px), 7 px ends = stretch.
+    - Callbacks `onNoteSelect` / `onNoteDrag` (cumulative semitones/seconds). Cursors: grab / ↔ on ends / grabbing.
+  - **UI:**
+    - An "Edit notes" button on the roll (**N**). The inspector's **Note** section (`ui/panels/note-panel.ts`, top of the inspector, only in note mode) has: name (heard vs sung), a pitch slider (±12 st, a detent on every semitone, Alt = free, `data-ticks="0"`), "Own correction" + amount, a timing readout, and reset note / reset all.
+    - Keys in note mode: ↑/↓ ±1 st (Shift ±0.1), ←/→ previous/next note (the playhead jumps there), Delete/Backspace reset, Esc done.
+    - `NeonSlider` learned `data-ticks` (marks shown ≠ detents).
+  - **Verified in the app** (demo take, 14 notes; real pointer drags; playback captured and pitch-tracked):
+    - Dragging note 4 up 2 lanes gave shift +2. Heard 50.09 vs 48.04 after one undo (sung 48.01); redo is back.
+    - Dragging it sideways 7 px moved the edit by +0.098 s, and the D3 was heard 0.097 s later at both ends.
+    - Keys worked: N, →→, ↑, Shift+↑ (= +1.1), Delete, Esc.
+- **Play-the-keys harmony (Phase 19):**
+  - **Maths** (`src/dsp/keys.ts`, pure, tested): one harmony voice per held key (lowest key = first voice, at most `MAX_KEY_VOICES` = 4).
+    - Voicing **near** moves each key to the octave closest to the sung line (duplicates dropped); **played** keeps it.
+    - Each voice sings its key plus the line's expression (corrected − its nearest semitone), so vibrato and scoops ride along. With auto-tune at 0 ms the voices are exact.
+    - `KeyEvent { t, notes }` = the held set from t (s into the take). `addKeyEvent` drops repeats and replaces same-time changes; `keysAt`; `keyHarmonyCorrections` per slot.
+  - **Live** (`LiveVoice.setKeys(keys | null, voicing, mix)`): keys replace the interval voices from the next pitch frame without resetting the corrector. Keys mode always processes (no 25 ms jump on the first key). A separate `keys` message reaches the live worklet (`LiveKeysMessage`), re-applied when monitoring switches on; `AudioInput.setKeys`. The CPU fallback counts key voices.
+  - **Playback/export:** `planVoices(…, keys)` gives one voiced-only plan per key slot. **`planGrains` now skips grains where a non-passthrough voice's curve has no pitch inside a sung stretch**, so a slot is silent where fewer keys are held; interval harmonies are unchanged (their curves only lack pitch where unvoiced). Gain = mix / √voices.
+  - **Recording:** `Session.syncKeys` records every held-set change into the take (context time − the take's first sample). Keys already held at Record start at 0. A take recorded into a song keeps them as `track.keys = { events, voicing }` (the mix = the track's harmony mix). `trackProcessSettings` → `ProcessSettings.keys` → worker. "Remove the track's keys" (undoable); voicing changes re-plan the selected track's keys.
+  - **Inputs:**
+    - The roll's keyboard is playable in keys mode (`PianoRoll.setKeysPlayable`, `onKeyPress`, multi-touch via pointer ids). **Latch** (default): a click toggles a key, for chords with a mouse.
+    - Web MIDI (`src/audio/midi-input.ts`): every input, note on/off, sustain pedal CC 64 (keys released under the pedal stay until it lifts). Access is asked when keys mode turns on (or at start if it was on).
+    - Held keys are drawn on the roll (accent bar + dot on the key, a faint lane stripe).
+  - **Roll:** `setKeyHarmony({ voicing, held } | { voicing, at(frameIndex) })` draws the key voices as harmony lines and lit lanes: the held keys live; the track's recorded keys in playback (looked up by the take frame's own time, so note-timing warps don't matter).
+  - **UI:** Harmony section **Intervals | Keys** (`ui/panels/keys-panel.ts`; the tuning panel hides the interval chips and enables Mix in keys mode, even with auto-tune off). Also: voicing (Near my voice / As played), latch, the held notes + MIDI status, "Let go of all", "Remove the track's keys (n changes)". Prefs in `localStorage['recorder.keys']`.
+  - **Fix found on the way:** the transport's A/B buttons were picked with `.segmented .seg`, which would have grabbed any other segmented control; it's now `.seg[data-ab]`.
+  - **Verified in the app** (demo voice; output captured and measured):
+    - Two latched keys clicked on the roll's keyboard (F3 + C4) while listening with "Hear myself": 23× (F3) and 3.9× (C4, which the demo also sings) more energy at those notes than with the keys released.
+    - A take recorded with A3 held, then E4 from 2 s, kept the events (0 s [A3], 2 s [E4], 4.01 s []). Its playback had A3 77× stronger only in the first part and E4 19× only in the second, against the same take with its keys removed; undo brings them back.
+    - The pane refuses Web MIDI ("MIDI access was refused" shown); real MIDI keyboards are for the user to try in Chrome/Edge.
 - **Modes** (`AppState.mode`, driven by `Session`): `idle`, `listening` (live line, nothing saved), `recording` (live line + saving), `playback` (a saved recording is open and the roll follows `Player.currentTime`).
 
 ## Architecture
@@ -237,12 +309,15 @@ src/
     voice-engine.ts       voice plans (lead + harmonies) + VoiceRenderer: block rendering for the real-time engine
     live-voice.ts         causal PSOLA for monitoring: tracker + corrector + live marks + 25 ms-delayed synthesis
     harmony.ts            diatonic harmony voices + mixed render (renderWithHarmony)
+    note-edit.ts          sung notes (segmentation), note edits on the pitch curve, timing warp
+    keys.ts               play-the-keys harmony: voicing held keys against the line, key events, per-slot curves
     limiter.ts            look-ahead peak limiter
     fft.ts                radix-2 complex FFT
     cleanup.ts            clean-up as a restartable stream: STFT Wiener (paired frames) -> gate -> de-esser; analysis
     denoise.ts            offline noise reduction (runs the clean-up stream); frameSizeFor
     process.ts            prepareVoice (once per take: rate, PSOLA marks, clean-up analysis) + processRecording (offline reference)
-    analyze.ts            key (chroma + Krumhansl) and tempo (onset autocorrelation) of instrumentals
+    analyze.ts            key (chroma + Krumhansl), tempo (onset autocorrelation) and bar start of instrumentals
+    click.ts              metronome clicks for any song-sample range (accented bar 1), block-exact
     shift-stream.ts       streaming phase vocoder (stereo-packed FFT, per-peak rotation): the beat's key shift, live
     vocoder.ts            pitchShift (offline wrapper of shift-stream) + Catmull-Rom resample
     reverb.ts             generated impulse responses (Room, Plate, Hall, Cathedral)
@@ -256,7 +331,8 @@ src/
     mix-player.ts         multi-track playback: buffer lanes (beats) + voice-engine lanes (takes), live plans/gain/pan/fx, loop, clock
     mixdown.ts            OfflineAudioContext mixdown/stems/processed take through the same graph and engine
     sync.ts               take alignment math, click-loopback latency detection, count-in times
-    metronome.ts          scheduled click sounds
+    metronome.ts          scheduled click sounds (latency calibration)
+    midi-input.ts         Web MIDI keyboards: note on/off + sustain pedal
     render-worker.ts      Web Worker: voice requests (prepare once per take + plans per change), key/tempo
     engine/
       engine-worklet.ts   AudioWorklet 'voice-engine': renders a take from source + plans, follows the transport
@@ -265,6 +341,7 @@ src/
       live-worklet.ts     AudioWorklet 'live-processor': raw blocks + pitch frames + monitored voice (LiveVoice) + CPU load
       live-protocol.ts    live worklet messages
       beat-worklet.ts     AudioWorklet 'beat-engine': a key-shifted beat (ShiftStream), follows the transport
+      click-worklet.ts    AudioWorklet 'click-engine': the metronome + count-in, follows the transport
     tuned-renderer.ts     main-thread client for the worker (voice: per-channel latest-wins; analyze; shift)
     wav.ts                16-bit PCM WAV encoder (mono or interleaved multi-channel); float WAV encode + WAV decode (song files)
     encode.ts             export encoding: WAV, or MP3 via mp3-worker.ts (LAME, LGPL, own chunk)
@@ -273,6 +350,7 @@ src/
   project/
     model.ts              Project/Track types + pure helpers (create, duplicate, update, effective gain, scheduling, transpose)
     fx.ts                 TrackFx / SongFx, presets, echo timing
+    grid.ts               tempo grid: snapping, beat/bar lines, count-in, tap tempo, take onset + align to beat
     voice.ts              TrackVoice + voice presets (Natural, Deeper, Younger, Chipmunk, Monster, Robot, Whisper)
     history.ts            undo/redo snapshots with drag coalescing
     package.ts            .recsong song files: pack/unpack (project + takes + beat), import id/name handling
@@ -308,6 +386,9 @@ src/
       fx-panel.ts         Voice (presets, formant, whisper), Effects (track) and Song FX (key shift, reverb, echo) sections
       onboarding.ts       one-time studio tips (captions) when features first come up
       roll-hover.ts       note label under the pointer on the roll (with the crosshair cursor)
+      tempo-panel.ts      Tempo & click section: BPM + tap, beats per bar, bar 1, click, align take
+      note-panel.ts       Edit notes button + Note section (pitch, own correction, timing, reset); roll note callbacks
+      keys-panel.ts       Harmony Intervals | Keys switch, voicing, latch, MIDI status; the roll's playable keyboard
 public/                   manifest, icon.svg, icons/*.png (generated)
 scripts/make-icons.mjs    procedural icon renderer (no deps)
 vite.config.ts            base './', LAN HTTPS mode, build-time service worker
@@ -325,7 +406,7 @@ tests/                    vitest unit tests (dsp, tracker, wav, packing, storage
 Data flow: mic → live AudioWorklet (`PitchTracker` inside `LiveVoice`: downsample, YIN, median filter) → `PitchFrame { time, freq, midi, clarity, rms }` posted with its context frame → `Session.onFrame` → `PianoRoll.push()` → canvas drawn on each `requestAnimationFrame`. With "Hear myself" on, the same worklet's output (the processed voice) → monitor track chain → master.
 While recording, the same blocks and frames are also collected into a take. On Stop the take is saved to IndexedDB and opened in playback mode.
 
-Shortcuts: **R** = record/stop, **T** = auto-tune on/off, **Space** = play/pause and **A** = original/tuned (playback mode), **L** = loop on/off (song open), **Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y** = undo/redo (song open).
+Shortcuts: **R** = record/stop, **T** = auto-tune on/off, **Space** = play/pause and **A** = original/tuned (playback mode), **L** = loop on/off (song open), **M** = click on/off (song open), **Q** = align the selected take to the beat (playback), **N** = edit notes (then ↑/↓ pitch, Shift = 0.1 st, ←/→ next note, Delete reset, Esc done), **Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y** = undo/redo (song open).
 
 ## Commands
 
@@ -566,17 +647,23 @@ The user asked for every setting to work in real time: hearing your voice proces
 - [x] Inspector/mixer/transport polish (faders fill from the left, brighter rails), touch targets ≥ 40 px on phones; checked at 1440/900/390 px in real Chrome
 - [ ] Feel check (user): slider snapping strength, bubble placement, cursors on your mouse/trackpad
 
-### Phase 17 — Metronome & grid
-- [ ] Click track (playback and recording, accent, volume), tap tempo / set BPM
-- [ ] Bar/beat grid on the roll and timeline; snap clips and loop to the grid
-- [ ] Quantize a take's start to the nearest beat
+### Phase 17 — Metronome & grid — branch `realtime-engine`
+- [x] Click track (playback and recording, accent, volume), tap tempo / set BPM, beats per bar, bar 1 here; downbeat detected on import; count-in on the grid's beats
+- [x] Bar/beat grid on the roll and timeline; snap clips and loop to the grid (anchored at bar 1)
+- [x] Quantize a take's start to the nearest beat ("Align take to beat", Q; first sung onset)
+- [x] Found and fixed: the mix chain's ~15 ms delay (compressor look-ahead + limiter) wasn't compensated, so takes recorded over a song sat late; it's measured now, and the click and take alignment use it
+- [ ] Real-world check (user): click against real beats (detected bar 1), tap tempo feel, count-in + align on a real take
 
-### Phase 18 — Note editing
-- [ ] Segment the pitch track into notes (stable pitch regions); draw note blobs on the roll
-- [ ] Drag a note's pitch (semitone snap, Alt = cents) and timing/length (PSOLA time-stretch); per-note correction amount
-- [ ] Edits stored per track (non-destructive), undoable, live in the engine and in export
+### Phase 18 — Note editing — branch `realtime-engine`
+- [x] Segment the pitch track into notes (stable pitch regions); draw note blobs on the roll
+- [x] Drag a note's pitch (semitone snap, Alt = cents) and timing/length (PSOLA time-stretch); per-note correction amount
+- [x] Edits stored per track (non-destructive), undoable, live in the engine and in export (tests: pitch within 10¢, a move/stretch keeps pitch, blocks == whole with a warp; verified by ear-measurement in the app)
+- [x] Found and fixed: a slow drag became several undo steps (time-window coalescing); drags are one step now
+- [ ] Real-world check (user): note splits on real singing (too many/few?), drag feel, stretched consonants
 
-### Phase 19 — Play-the-keys harmony
-- [ ] Clickable on-screen piano + Web MIDI keyboard input
-- [ ] Harmony voices follow held keys live (engine), voiced from the sung note
-- [ ] Record key events into the track so playback/export reproduce them
+### Phase 19 — Play-the-keys harmony — branch `realtime-engine`
+- [x] Clickable on-screen piano (the roll's keyboard; latch for mouse chords, multi-touch) + Web MIDI keyboard input (sustain pedal)
+- [x] Harmony voices follow held keys live (LiveVoice), voiced near the sung note (or as played), keeping its expression
+- [x] Record key events into the track so playback/export reproduce them (plans per key slot, silent where fewer keys are held); key voices drawn on the roll
+- [ ] Real-world check (user): a real MIDI keyboard in Chrome/Edge, chords while singing with headphones, near vs as-played voicing
+- [ ] Later: overdub keys onto an existing track during playback (today keys are recorded with the take)

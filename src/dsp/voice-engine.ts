@@ -10,6 +10,8 @@ import { correctTrack, type Correction, type TuneSettings } from './autotune';
 import { cleanupActive, CleanupStream, type CleanupAnalysis, type CleanupSettings } from './cleanup';
 import { GrainCache, type GrainVoice } from './grain-shape';
 import { harmonyCorrections } from './harmony';
+import { keyHarmonyCorrections, keyVoiceCount, type KeyEvent, type Voicing } from './keys';
+import { applyNoteEdits, buildWarp, isNeutralEdit, segmentNotes, warpToSource, type NoteEdit } from './note-edit';
 import { planGrains, renderGrains, type GrainPlan, type PsolaAnalysis } from './psola';
 import { nearestInScale, scaleMask, type Scale } from './scales';
 
@@ -66,14 +68,30 @@ export function monotoneCorrections(frames: readonly PitchFrame[], scale: Scale 
  * on one note per phrase for the robot), then transposed, so harmonies derived from it move along
  * and land in the shifted key.
  */
-export function leadCorrections(frames: readonly PitchFrame[], tune: TuneSettings | null, semitones: number, monotone = false): Correction[] {
+export function leadCorrections(
+  frames: readonly PitchFrame[],
+  tune: TuneSettings | null,
+  semitones: number,
+  monotone = false,
+  edits: readonly NoteEdit[] = [],
+): Correction[] {
   let lead: Correction[] = monotone
     ? monotoneCorrections(frames, tune?.scale ?? null)
     : tune
       ? correctTrack(frames, tune)
       : frames.map((f) => ({ target: null, corrected: f.midi }));
+  // Note edits (Phase 18) act on the sung key's curve, before the transpose.
+  lead = applyNoteEdits(frames, lead, edits);
   if (semitones) lead = lead.map((c) => (c.corrected === null ? c : { ...c, corrected: c.corrected + semitones }));
   return lead;
+}
+
+/** Keys played while the take was sung (Phase 19): they replace the interval harmony voices. */
+export interface KeyHarmony {
+  events: KeyEvent[];
+  voicing: Voicing;
+  /** Level of the key voices together (as the harmony mix). */
+  mix: number;
 }
 
 /** Plans for a take with these settings; null = nothing to do (play the source as it is). */
@@ -83,14 +101,29 @@ export function planVoices(
   tune: TuneSettings | null,
   semitones: number,
   voice: VoiceCharacter = NEUTRAL_VOICE,
+  edits: readonly NoteEdit[] = [],
+  keys: KeyHarmony | null = null,
 ): VoicePlans | null {
-  if (!tune && !semitones && isNeutralVoice(voice)) return null;
-  const lead = leadCorrections(frames, tune, semitones, voice.monotone);
+  edits = edits.filter((e) => !isNeutralEdit(e));
+  const keyVoices = keys ? keyVoiceCount(keys.events) : 0;
+  if (!tune && !semitones && isNeutralVoice(voice) && !edits.length && !keyVoices) return null;
+  const lead = leadCorrections(frames, tune, semitones, voice.monotone, edits);
+  const warp = edits.some((e) => e.start !== undefined) ? buildWarp(segmentNotes(frames), edits, analysis.sampleRate, analysis.length) : null;
+  if (keys && keyVoices) {
+    // Play-the-keys: one voice per held key (voiced-only; silent where fewer keys are held).
+    return {
+      lead: planGrains(analysis, lead, true, grainVoice(voice, 0), warp),
+      harmonies: Array.from({ length: keyVoices }, (_, k) =>
+        planGrains(analysis, keyHarmonyCorrections(frames, lead, keys.events, keys.voicing, k), false, grainVoice(voice, k + 1), warp),
+      ),
+      harmonyGain: keys.mix / Math.sqrt(keyVoices),
+    };
+  }
   const voices = tune?.harmony?.voices ?? [];
   return {
-    lead: planGrains(analysis, lead, true, grainVoice(voice, 0)),
+    lead: planGrains(analysis, lead, true, grainVoice(voice, 0), warp),
     // Harmony voices sing the voiced parts only (no stacked breaths / "s" sounds).
-    harmonies: voices.map((v, i) => planGrains(analysis, harmonyCorrections(lead, v, tune!.scale), false, grainVoice(voice, i + 1))),
+    harmonies: voices.map((v, i) => planGrains(analysis, harmonyCorrections(lead, v, tune!.scale), false, grainVoice(voice, i + 1), warp)),
     // Equal-power-ish: more voices -> each a bit quieter, so the stack doesn't swamp the lead.
     harmonyGain: voices.length ? (tune!.harmony!.mix ?? 0.6) / Math.sqrt(voices.length) : 0,
   };
@@ -192,7 +225,9 @@ export class VoiceRenderer {
     const a = Math.max(0, start);
     const b = Math.min(this.source.length, start + len);
     if (a >= b) return;
-    const src = this.cleaning ? this.clean(a, b) : this.source;
+    // With note timing edits the grains read the source where the warp points.
+    const warp = this.plans?.lead.warp;
+    const src = !this.cleaning ? this.source : warp ? this.clean(Math.floor(warpToSource(warp, a)), Math.ceil(warpToSource(warp, b))) : this.clean(a, b);
     const at = offset + (a - start);
     const plans = this.plans;
     if (!plans) {

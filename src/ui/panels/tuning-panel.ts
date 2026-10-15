@@ -78,11 +78,13 @@ export function mountTuningPanel(store: AppStore, captions: Captions): void {
   harmonyMix.addEventListener('input', () => update({ harmonyMix: Number(harmonyMix.value) / 100 }));
 
   store.watch(
-    (s) => s.tuning,
-    (t) => {
+    (s) => [s.tuning, s.keys.on] as const,
+    ([t, keysOn]) => {
       tuneOn.checked = t.enabled;
       tuningSection.classList.toggle('is-off', !t.enabled);
-      harmonySection.classList.toggle('is-off', !t.enabled);
+      // Play-the-keys works without auto-tune; the interval voices need it.
+      harmonySection.classList.toggle('is-off', !t.enabled && !keysOn);
+      harmonyVoices.hidden = keysOn;
       tuneKey.value = String(t.root);
       tuneKey.disabled = !t.enabled || t.type === 'chromatic';
       tuneScale.value = t.type;
@@ -95,8 +97,9 @@ export function mountTuningPanel(store: AppStore, captions: Captions): void {
         chip.disabled = !t.enabled;
       }
       harmonyMix.value = String(Math.round(t.harmonyMix * 100));
-      harmonyMix.disabled = !t.enabled || t.harmony.length === 0;
+      harmonyMix.disabled = !keysOn && (!t.enabled || t.harmony.length === 0);
       harmonyMixValue.textContent = `${Math.round(t.harmonyMix * 100)}%`;
     },
+    { shallow: true },
   );
 }

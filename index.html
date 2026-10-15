@@ -65,6 +65,10 @@
 
         <section class="stage">
           <canvas id="roll" aria-label="Pitch of your voice drawn over piano-key lanes"></canvas>
+          <button id="note-mode" class="chip roll-tool" type="button" aria-pressed="false" title="Edit notes (N): drag sung notes to new pitches and times" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h7v4H4zm9 6h7v4h-7zM6 15h4v2H6zm8-8h4v2h-4z"/></svg>
+            <span>Edit notes</span>
+          </button>
           <p id="caption" class="caption" aria-live="polite"></p>
         </section>
 
@@ -78,6 +82,9 @@
             <span id="time-total" class="time">0:00</span>
             <button id="loop" class="icon-btn loop-btn" type="button" aria-pressed="false" aria-label="Loop" title="Loop (L): drag along the timeline ruler to choose the section" hidden>
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v3l4-4-4-4v3H5v6h2zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2z"/></svg>
+            </button>
+            <button id="metronome-btn" class="icon-btn loop-btn" type="button" aria-pressed="false" aria-label="Click" title="Click (M): a metronome on the song's tempo" hidden>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path fill-rule="evenodd" d="M9.3 3h5.4l4.6 18H4.7zm1.3 1.8L7 19.2h10L13.4 4.8z"/><path d="m11.2 16.6 5.9-9.3 1.4.9-5.9 9.3z"/><circle cx="12" cy="16.9" r="1.6"/></svg>
             </button>
           </div>
           <div class="transport-row transport-row-ab">
@@ -161,6 +168,36 @@
 
       <!-- Right column: inspector (desktop/tablet), tab panel (phone) -->
       <aside id="controls-col" class="col col-right" aria-label="Controls">
+        <details id="note-panel" class="section" open hidden>
+          <summary class="section-head">Note</summary>
+          <div class="section-body">
+            <p id="note-hint" class="section-hint">Click a note on the roll. Drag it up or down for a new pitch (whole semitones; hold Alt for cents), sideways to move it, or by its ends to stretch it. Keys: ↑ ↓ pitch, ← → next note, Delete reset, Esc done.</p>
+            <div id="note-controls" class="fx-controls" hidden>
+              <p id="note-info" class="note-info"></p>
+              <label class="slider-field">
+                <span class="field-label">Pitch</span>
+                <input id="note-shift" type="range" min="-12" max="12" step="0.01" value="0" data-default="0" data-ticks="0" aria-label="Note pitch, semitones" />
+                <span id="note-shift-value" class="slider-value">0 st</span>
+              </label>
+              <label class="switch switch-quiet">
+                <input id="note-own" type="checkbox" role="switch" />
+                <span class="switch-track" aria-hidden="true"></span>
+                <span class="switch-label">Own correction <span class="switch-hint">instead of the track's auto-tune</span></span>
+              </label>
+              <label class="slider-field">
+                <span class="field-label">Amount</span>
+                <input id="note-amount" type="range" min="0" max="100" step="1" value="100" data-detents="0,50,100" data-default="100" data-fill="start" aria-label="How far the note is pulled onto its pitch" />
+                <span id="note-amount-value" class="slider-value">Track</span>
+              </label>
+              <p id="note-timing" class="switch-hint"></p>
+              <div class="calibrate">
+                <button id="note-reset" class="btn btn-small" type="button">Reset note</button>
+                <button id="note-reset-all" class="btn btn-small btn-ghost" type="button">Reset all notes</button>
+              </div>
+            </div>
+          </div>
+        </details>
+
         <details class="section" open>
           <summary class="section-head">Input</summary>
           <div class="section-body">
@@ -228,7 +265,28 @@
         <details id="harmony-panel" class="section" open>
           <summary class="section-head">Harmony</summary>
           <div class="section-body">
+            <div class="segmented harmony-mode" role="radiogroup" aria-label="Harmony from">
+              <button class="seg is-on" type="button" role="radio" aria-checked="true" data-harmony-mode="intervals">Intervals</button>
+              <button class="seg" type="button" role="radio" aria-checked="false" data-harmony-mode="keys">Keys</button>
+            </div>
             <div id="harmony-voices" class="harmony-voices" role="group" aria-label="Harmony voices"></div>
+            <div id="keys-controls" class="fx-controls" hidden>
+              <p class="section-hint">Hold notes on the keyboard at the left of the roll, or on a MIDI keyboard: your voice sings them. Turn on <b>Hear myself</b> to hear them while you sing; takes recorded into a song keep the keys.</p>
+              <div class="segmented" role="radiogroup" aria-label="Voicing">
+                <button class="seg is-on" type="button" role="radio" aria-checked="true" data-voicing="near">Near my voice</button>
+                <button class="seg" type="button" role="radio" aria-checked="false" data-voicing="played">As played</button>
+              </div>
+              <label class="switch switch-quiet">
+                <input id="keys-latch" type="checkbox" role="switch" />
+                <span class="switch-track" aria-hidden="true"></span>
+                <span class="switch-label">Latch on-screen keys <span class="switch-hint">click to hold, click again to let go (chords with a mouse)</span></span>
+              </label>
+              <p id="keys-status" class="keys-status" aria-live="polite"></p>
+              <div class="calibrate">
+                <button id="keys-release" class="btn btn-small" type="button">Let go of all</button>
+                <button id="keys-clear" class="btn btn-small btn-ghost" type="button" hidden>Remove the track's keys</button>
+              </div>
+            </div>
             <label class="slider-field">
               <span class="field-label">Mix</span>
               <input id="harmony-mix" type="range" min="0" max="100" step="1" value="60" data-detents="60" aria-label="Harmony mix" />
@@ -280,6 +338,51 @@
                 </div>
               </div>
               <div id="fx-sliders" class="fx-sliders"></div>
+            </div>
+          </div>
+        </details>
+
+        <details id="tempo-panel" class="section" open>
+          <summary class="section-head">Tempo &amp; click</summary>
+          <div class="section-body">
+            <p id="tempo-hint" class="section-hint">Open a song to set its tempo, see the bars and use the click.</p>
+            <div id="tempo-controls" class="fx-controls">
+              <div class="field-row tempo-row">
+                <div class="field">
+                  <label class="field-label" for="tempo-bpm">BPM</label>
+                  <div class="tempo-bpm">
+                    <input id="tempo-bpm" class="input-number" type="number" min="40" max="240" step="1" inputmode="decimal" placeholder="—" />
+                    <button id="tempo-tap" class="btn btn-small" type="button" title="Tap along with the beat (4+ taps)">Tap</button>
+                  </div>
+                </div>
+                <div class="field">
+                  <label class="field-label" for="tempo-beats">Beats per bar</label>
+                  <select id="tempo-beats" class="select"></select>
+                </div>
+              </div>
+              <div class="calibrate">
+                <button id="tempo-downbeat" class="btn btn-small" type="button" title="Bar 1 starts at the playhead">Bar 1 here</button>
+                <span id="tempo-downbeat-value" class="switch-hint"></span>
+              </div>
+              <label class="switch">
+                <input id="metronome" type="checkbox" role="switch" />
+                <span class="switch-track" aria-hidden="true"></span>
+                <span class="switch-label">Click <span class="switch-hint">while the song plays and while you record · M</span></span>
+              </label>
+              <label class="slider-field">
+                <span class="field-label">Level</span>
+                <input id="metronome-level" type="range" min="-30" max="0" step="1" value="-6" data-detents="-6" data-default="-6" aria-label="Click level" />
+                <span id="metronome-level-value" class="slider-value">−6 dB</span>
+              </label>
+              <label class="switch switch-quiet">
+                <input id="metronome-accent" type="checkbox" role="switch" />
+                <span class="switch-track" aria-hidden="true"></span>
+                <span class="switch-label">Accent bar 1 <span class="switch-hint">a higher click on each bar's first beat</span></span>
+              </label>
+              <div class="calibrate">
+                <button id="align-beat" class="btn btn-small" type="button">Align take to beat</button>
+                <span id="align-beat-hint" class="switch-hint">the selected take's singing starts on the nearest beat · Q</span>
+              </div>
             </div>
           </div>
         </details>

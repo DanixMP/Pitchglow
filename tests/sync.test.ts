@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { alignTake, countInTimes, detectClickLatency } from '../src/audio/sync';
+import { alignTake, detectClickLatency } from '../src/audio/sync';
 import { noise } from './signals';
 
 describe('alignTake', () => {
@@ -61,13 +61,5 @@ describe('detectClickLatency', () => {
 
   it('gives up when nothing was heard (headphones on)', () => {
     expect(detectClickLatency(noise(SR, 3, 0.003), 0, SR, [1, 1.4, 1.8, 2.2])).toBeNull();
-  });
-});
-
-describe('countInTimes', () => {
-  it('spaces clicks by the beat', () => {
-    const { clicks, end } = countInTimes(10, 120);
-    expect(clicks).toEqual([10, 10.5, 11, 11.5]);
-    expect(end).toBe(12);
   });
 });

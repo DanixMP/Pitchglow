@@ -10,18 +10,43 @@
 // - engine lanes (vocals): a voice-engine AudioWorkletNode that holds the take and its grain plans and
 //   follows transport messages (start frame, position, loop). New plans (a knob turned) apply on the
 //   next 128-sample block without interrupting playback.
+//
+// The metronome (Phase 17) is a click-engine worklet on the same transport, straight to the speakers
+// (never in exports or the master meters). It also plays the count-in before a take.
 
 import { CLEANUP_OFF, type CleanupAnalysis, type CleanupSettings } from '../dsp/cleanup';
 import type { VoicePlans } from '../dsp/voice-engine';
 import { resample } from '../dsp/vocoder';
 import { DEFAULT_SONG_FX, type SongFx, type TrackFx } from '../project/fx';
+import { clickGridOf, type Grid } from '../project/grid';
 import { loopPosition, scheduleTrack } from '../project/model';
-import { applyTrackFx, clampPan, createTrackChain, disconnectChain, FxBuses, MasterChain, type MasterSettings, type TrackChain } from './chain';
+import {
+  applyTrackFx,
+  clampPan,
+  createTrackChain,
+  disconnectChain,
+  FxBuses,
+  MasterChain,
+  measureChainLatency,
+  type MasterSettings,
+  type TrackChain,
+} from './chain';
 import { sharedContext } from './context';
-import { BEAT_PROCESSOR, ENGINE_PROCESSOR, type BeatMessage, type BeatOptions, type EngineMessage, type EngineOptions } from './engine/protocol';
+import {
+  BEAT_PROCESSOR,
+  CLICK_PROCESSOR,
+  ENGINE_PROCESSOR,
+  type BeatMessage,
+  type BeatOptions,
+  type ClickMessage,
+  type ClickOptions,
+  type EngineMessage,
+  type EngineOptions,
+} from './engine/protocol';
 import type { EngineTransport } from './engine/transport';
 import engineWorkletUrl from './engine/engine-worklet.ts?worker&url';
 import beatWorkletUrl from './engine/beat-worklet.ts?worker&url';
+import clickWorkletUrl from './engine/click-worklet.ts?worker&url';
 
 export interface Level {
   /** Linear peak and RMS over the analyser window (~21 ms). */
@@ -73,7 +98,11 @@ const engineLoaded = new WeakSet<BaseAudioContext>();
 /** Loads the voice-engine worklet module into a context (once). */
 export async function loadEngine(ctx: BaseAudioContext): Promise<void> {
   if (engineLoaded.has(ctx)) return;
-  await Promise.all([ctx.audioWorklet.addModule(engineWorkletUrl), ctx.audioWorklet.addModule(beatWorkletUrl)]);
+  await Promise.all([
+    ctx.audioWorklet.addModule(engineWorkletUrl),
+    ctx.audioWorklet.addModule(beatWorkletUrl),
+    ctx.audioWorklet.addModule(clickWorkletUrl),
+  ]);
   engineLoaded.add(ctx);
 }
 
@@ -127,6 +156,21 @@ interface Voice {
 
 type Region = { start: number; end: number };
 
+export interface MetronomeSettings {
+  on: boolean;
+  /** Linear click level. */
+  gain: number;
+  accent: boolean;
+  grid: Grid;
+}
+
+export interface PlayOptions {
+  /** Seconds of count-in clicks before `at` (on the grid's beats; heard even with the metronome off). */
+  countIn?: number;
+  /** Recording a take over the song: keep the transport (and the click) running past the song's end. */
+  recording?: boolean;
+}
+
 const METER_FFT = 1024;
 
 /** Scheduling lead so all tracks start on the same audio frame. */
@@ -161,6 +205,13 @@ export class MixPlayer {
   private _playing = false;
   private _duration = 0;
   private endTimer = 0;
+  private metronome: MetronomeSettings = { on: false, gain: 0.5, accent: true, grid: clickGridOf(null) };
+  private click: { node: AudioWorkletNode; delay: DelayNode; gain: GainNode } | null = null;
+  /** The mix chain's own delay (limiter on / off), measured once; see measureChainLatency. */
+  private chainLatency = { limiter: 0, plain: 0 };
+  /** The click's current 'play' message (re-sent when the metronome is switched on mid-play). */
+  private clickPlay: Extract<ClickMessage, { type: 'play' }> | null = null;
+  private recording = false;
 
   /** Called when playback reaches the end on its own. */
   onEnded: (() => void) | null = null;
@@ -180,7 +231,15 @@ export class MixPlayer {
 
   /** Loads the voice engine into the shared context; call before any take or song is played. */
   async loadEngine(): Promise<void> {
-    await loadEngine(this.ensureContext());
+    const ctx = this.ensureContext();
+    await loadEngine(ctx);
+    this.chainLatency = await measureChainLatency(ctx.sampleRate);
+    this.applyClickDelay();
+  }
+
+  /** How much later than the transport the mix is heard, from the chain itself (not the output). */
+  get mixLatency(): number {
+    return this.masterSettings.limiter ? this.chainLatency.limiter : this.chainLatency.plain;
   }
 
   /** Decodes an audio file (mp3/wav/m4a/ogg/flac…) at the context's sample rate. */
@@ -192,7 +251,7 @@ export class MixPlayer {
   /** Song position in seconds, compensated for output latency so visuals match what you hear. */
   get currentTime(): number {
     if (!this._playing || !this.ctx) return this.offset;
-    const latency = (this.ctx.outputLatency || 0) + (this.ctx.baseLatency || 0);
+    const latency = (this.ctx.outputLatency || 0) + (this.ctx.baseLatency || 0) + this.mixLatency;
     const elapsed = Math.max(0, this.ctx.currentTime - this.startedAt - latency);
     return Math.min(this._duration, loopPosition(this.offset, elapsed, this.playLoop));
   }
@@ -411,6 +470,12 @@ export class MixPlayer {
   setMaster(settings: MasterSettings): void {
     this.masterSettings = settings;
     if (this.master && this.ctx) this.master.apply(settings, this.ctx);
+    this.applyClickDelay();
+  }
+
+  /** The click skips the mix chain, so it waits as long as the chain delays the music. */
+  private applyClickDelay(): void {
+    if (this.click) this.click.delay.delayTime.value = this.mixLatency;
   }
 
   /** Current levels per track and for the master (L, R). Cheap enough to call every frame. */
@@ -448,9 +513,10 @@ export class MixPlayer {
    * Starts playback. `at` = context time to start (default: right away); returns the context time
    * the current position starts playing, so callers can align recordings to it.
    */
-  async play(at?: number): Promise<number> {
-    if (!this.ctx || this.lanes.size === 0 || this._playing) return this.startedAt;
-    if (this.offset >= this._duration - 0.01) this.offset = 0;
+  async play(at?: number, opts: PlayOptions = {}): Promise<number> {
+    if (opts.recording) this.recording = true; // until pause(): survives a mix rebuild mid-take
+    if (!this.ctx || (this.lanes.size === 0 && !this.recording) || this._playing) return this.startedAt;
+    if (this.offset >= this._duration - 0.01 && !this.recording) this.offset = 0;
     await this.ctx.resume();
     if (this._playing) return this.startedAt;
     const now = Math.max(at ?? 0, this.ctx.currentTime + START_LEAD);
@@ -466,6 +532,7 @@ export class MixPlayer {
       loop: loop ? { start: Math.round(loop.start * rate), end: Math.round(loop.end * rate) } : null,
     };
     for (const lane of this.lanes.values()) if (lane.engine) this.post(lane, { type: 'play', transport });
+    this.startClick(transport, opts.countIn ?? 0);
     if (loop) {
       // First pass from the playhead to the loop end, then whole passes back to back.
       this.scheduleSpan(now, this.offset, loop.end, false);
@@ -473,9 +540,76 @@ export class MixPlayer {
       this.fillLoop();
     } else {
       this.scheduleSpan(now, this.offset, Infinity, false);
-      this.armEndTimer();
+      if (!this.recording) this.armEndTimer();
     }
     return now;
+  }
+
+  // --- metronome ------------------------------------------------------------------------------
+
+  /** Click on/off, level, accent and grid; all live (the click follows the running transport). */
+  setMetronome(settings: MetronomeSettings): void {
+    const prev = this.metronome;
+    this.metronome = settings;
+    const click = this.ensureClick();
+    if (!click || !this.ctx) return;
+    click.gain.gain.setTargetAtTime(settings.gain, this.ctx.currentTime, 0.01);
+    const g = settings.grid;
+    if (g.bpm !== prev.grid.bpm || g.beatsPerBar !== prev.grid.beatsPerBar || g.downbeat !== prev.grid.downbeat || settings.accent !== prev.accent) {
+      click.node.port.postMessage({ type: 'grid', grid: this.clickGrid() } satisfies ClickMessage);
+    }
+    if (settings.on !== prev.on && this._playing && this.clickPlay) {
+      // Switched mid-play: keep any count-in still to come, otherwise click (or stop clicking) now.
+      const before = settings.on ? null : this.clickPlay.before;
+      if (settings.on || before !== null) click.node.port.postMessage({ ...this.clickPlay, before } satisfies ClickMessage);
+      else click.node.port.postMessage({ type: 'stop' } satisfies ClickMessage);
+    }
+  }
+
+  private clickGrid() {
+    const rate = this.ctx!.sampleRate;
+    const g = this.metronome.grid;
+    return { beatSamples: (60 / g.bpm) * rate, downbeatSample: g.downbeat * rate, beatsPerBar: g.beatsPerBar, accent: this.metronome.accent };
+  }
+
+  /** The click lane (created once the worklet modules are loaded). */
+  private ensureClick(): { node: AudioWorkletNode; delay: DelayNode; gain: GainNode } | null {
+    const ctx = this.ctx;
+    if (this.click || !ctx || !engineLoaded.has(ctx)) return this.click;
+    const node = new AudioWorkletNode(ctx, CLICK_PROCESSOR, {
+      numberOfInputs: 0,
+      numberOfOutputs: 1,
+      outputChannelCount: [1],
+      processorOptions: { grid: this.clickGrid() } satisfies ClickOptions,
+    });
+    const delay = new DelayNode(ctx, { maxDelayTime: 0.2, delayTime: this.mixLatency });
+    const gain = new GainNode(ctx, { gain: this.metronome.gain });
+    node.connect(delay).connect(gain).connect(ctx.destination);
+    this.click = { node, delay, gain };
+    return this.click;
+  }
+
+  /** Starts the click on the transport, `countIn` seconds early (count-in clicks only, if it's off). */
+  private startClick(transport: EngineTransport, countIn: number): void {
+    const click = this.ensureClick();
+    this.clickPlay = null;
+    if (!click || !this.ctx) return;
+    const rate = this.ctx.sampleRate;
+    const lead = Math.round(countIn * rate);
+    // Count-in positions are before the song position (maybe below 0): bias them to stay positive.
+    const bias = lead + rate;
+    this.clickPlay = {
+      type: 'play',
+      transport: {
+        startFrame: transport.startFrame - lead,
+        from: transport.from - lead + bias,
+        loop: transport.loop ? { start: transport.loop.start + bias, end: transport.loop.end + bias } : null,
+      },
+      bias,
+      before: lead > 0 ? transport.from : null,
+    };
+    if (this.metronome.on) click.node.port.postMessage({ ...this.clickPlay, before: null } satisfies ClickMessage);
+    else if (lead > 0) click.node.port.postMessage(this.clickPlay satisfies ClickMessage);
   }
 
   /** Schedules every track for song time [from, to), starting at context time `at`. */
@@ -525,6 +659,7 @@ export class MixPlayer {
   }
 
   pause(): void {
+    this.recording = false;
     if (!this._playing) return;
     this.offset = this.currentTime;
     this.stopSources();
@@ -583,6 +718,7 @@ export class MixPlayer {
   private stopSources(): void {
     window.clearTimeout(this.endTimer);
     window.clearTimeout(this.loopTimer);
+    this.click?.node.port.postMessage({ type: 'stop' } satisfies ClickMessage);
     for (const lane of this.lanes.values()) if (lane.engine) this.post(lane, { type: 'stop' });
     for (const { source, env } of this.voices) {
       source.onended = null;

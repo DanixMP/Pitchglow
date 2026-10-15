@@ -5,11 +5,14 @@ import { processSettingsOf, wantsProcessed } from './app/processing';
 import { Session } from './app/session';
 import { createAppStore } from './app/state';
 import { setupPwa } from './pwa';
-import { saveCleanup, saveExportFormat, saveInput, saveTuning } from './storage/settings';
+import { saveCleanup, saveExportFormat, saveInput, saveKeys, saveMetronome, saveTuning } from './storage/settings';
 import { Captions } from './ui/captions';
 import { $ } from './ui/dom';
 import { mountCleanupPanel } from './ui/panels/cleanup-panel';
 import { mountFxPanel } from './ui/panels/fx-panel';
+import { mountTempoPanel } from './ui/panels/tempo-panel';
+import { mountNotePanel } from './ui/panels/note-panel';
+import { mountKeysPanel } from './ui/panels/keys-panel';
 import { mountHeader } from './ui/panels/header';
 import { mountImportPanel } from './ui/panels/import-panel';
 import { mountInputPanel } from './ui/panels/input-panel';
@@ -45,6 +48,9 @@ mountImportPanel(store, session, captions);
 mountTuningPanel(store, captions);
 mountCleanupPanel(store, captions);
 mountFxPanel(store, session);
+mountTempoPanel(store, session);
+mountNotePanel(store, session, roll);
+mountKeysPanel(store, session, roll);
 const transport = mountTransport(store, session, roll, captions);
 const readout = mountReadout(store, roll, session.player);
 mountOnboarding(store, captions);
@@ -56,6 +62,7 @@ store.watch(
   (s) => [s.tuning, s.cleanup] as const,
   () => {
     session.settingsChanged();
+    session.syncKeys(); // the harmony mix also sets the key voices' level
     const global = session.globalSettings();
     saveTuning(global.tuning);
     saveCleanup(global.cleanup);
@@ -75,13 +82,48 @@ store.watch(
   (s) => s.exportFormat,
   (format) => saveExportFormat(format),
 );
+store.watch(
+  (s) => s.keys,
+  (keys) => saveKeys(keys),
+);
+store.watch(
+  (s) => s.metronome,
+  (metronome) => {
+    saveMetronome(metronome);
+    session.syncMetronome();
+  },
+);
 
 // Keyboard shortcuts: R record/stop, T auto-tune on/off, Space play/pause, A original/processed,
-// L loop on/off (songs).
+// L loop on/off, M click on/off, Q align the selected take to the beat (songs), N edit notes
+// (then ↑/↓ pitch, ←/→ next note, Delete reset, Esc done).
 document.addEventListener('keydown', (e) => {
   if (e.target instanceof HTMLSelectElement) return;
   if (e.target instanceof HTMLInputElement && e.target.type !== 'range' && e.target.type !== 'checkbox') return;
   const s = store.get();
+  // Note editing keys, unless a control (slider, timeline) has the arrows.
+  const free = !(e.target instanceof HTMLInputElement) && !(e.target instanceof HTMLCanvasElement && e.target.id !== 'roll');
+  if (s.noteMode && s.mode === 'playback' && free && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    const note = s.selectedNote;
+    const nudge = (d: number) => {
+      const cur = note === null ? null : session.noteEditOf(note);
+      if (cur) session.editNote(note!, { shift: Math.round((cur.edit.shift + d) * 100) / 100 }, `notekey:${note}`);
+    };
+    const handled: Record<string, () => void> = {
+      ArrowUp: () => nudge(e.shiftKey ? 0.1 : 1),
+      ArrowDown: () => nudge(e.shiftKey ? -0.1 : -1),
+      ArrowLeft: () => session.stepNote(-1),
+      ArrowRight: () => session.stepNote(1),
+      Delete: () => note !== null && session.resetNote(note),
+      Backspace: () => note !== null && session.resetNote(note),
+      Escape: () => session.toggleNoteMode(false),
+    };
+    if (handled[e.key]) {
+      e.preventDefault();
+      handled[e.key]();
+      return;
+    }
+  }
   if (e.code === 'Space' && s.mode === 'playback') {
     e.preventDefault();
     session.togglePlay();
@@ -98,6 +140,12 @@ document.addEventListener('keydown', (e) => {
     $('tune-on').click();
   } else if (e.key === 'l' && s.projectId && s.mode === 'playback') {
     session.toggleLoop();
+  } else if (e.key === 'm' && s.projectId) {
+    store.set((st) => ({ metronome: { ...st.metronome, on: !st.metronome.on } }));
+  } else if (e.key === 'n' && s.projectId && s.mode === 'playback') {
+    session.toggleNoteMode();
+  } else if (e.key === 'q' && s.projectId && s.mode === 'playback' && s.selectedTrackId) {
+    session.alignTrackToBeat(s.selectedTrackId);
   } else if (e.key === 'a' && s.mode === 'playback' && processSettingsOf(s.tuning, s.cleanup)) {
     session.setListenProcessed(!s.listenProcessed);
     const next = store.get();
