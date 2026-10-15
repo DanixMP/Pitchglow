@@ -1,0 +1,36 @@
+# Builds the desktop app on Windows, macOS and Linux and attaches the installers to a draft GitHub
+# Release. Run it by pushing a version tag that matches package.json, e.g.:
+#   npm version 0.2.0 --no-git-tag-version   (or edit "version")
+#   git commit -am "Release 0.2.0" && git tag v0.2.0 && git push origin v0.2.0
+# Then review the draft release on GitHub and publish it.
+name: Release desktop app
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      # Unsigned builds (no code-signing certificates in this repo).
+      - run: npx electron-builder --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'

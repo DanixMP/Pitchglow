@@ -420,6 +420,18 @@ tests/                    vitest unit tests (dsp, tracker, wav, packing, storage
   - Modes only show/hide UI (`data-mode-hidden`, separate from the panels' own `hidden`); songs, settings and audio are untouched. Popped-out windows and their placeholders (`data-for`) follow the mode.
   - Keys **1–5**; a caption names the mode; `state.workspace` in `localStorage['recorder.workspace']`; `body[data-workspace]` for mode-specific CSS. Phones show icons with the active mode's label.
   - Verified in Chrome: each mode shows exactly its sections and mixer state; Edit toggles note mode both ways.
+- **Desktop app (Electron)** (`electron/main.cjs`, `electron-builder` config in `package.json` → `build`):
+  - The built `dist/` is served on a privileged **`app://recorder/`** scheme (`protocol.handle` + `net.fetch`, no path escape), not file://. So it's a secure origin: the mic, AudioWorklets and module workers load, and IndexedDB persists in the app's own profile (`%APPDATA%/Recorder`).
+  - Permissions: microphone (audio only) and MIDI; everything else denied. Other-site links open in the default browser (window-open handler + `will-navigate`).
+  - Single instance; no menu bar on Windows/Linux; `backgroundThrottling: false`; macOS asks for the mic (`NSMicrophoneUsageDescription`).
+  - `pwa.ts` skips the service worker and the Install button inside Electron (service workers aren't available on `app://`).
+  - `@breezystack/lamejs` moved to devDependencies (Vite bundles it), so the package has no runtime `node_modules`.
+  - Targets: Windows NSIS installer (`Recorder-Setup-<v>.exe`: per-user, choose folder, shortcuts, MIT license page) + portable exe; macOS dmg; Linux AppImage. Output in `release/` (gitignored). Icon `build/icon.png` (512 px).
+  - **Releases:** `.github/workflows/release.yml` runs on a `v*` tag (or by hand): Windows/macOS/Linux runners do `npm ci`, test, build, then `electron-builder --publish always`. That makes a **draft** release with the installers (unsigned: `CSC_IDENTITY_AUTO_DISCOVERY=false`).
+  - Verified: `npm run dist:win` built both exes (~111 MB). The packaged app, driven over DevTools:
+    - loads `app://recorder/index.html` (secure context, no service worker, Install hidden, 0 console errors);
+    - the demo voice gives live notes in the readout and the line on the roll;
+    - a new song survives a restart; external links don't open inside the app.
 - **About panel** (`ui/panels/about.ts`, `#about` side sheet `<dialog>`, opened by the avatar button at the right of the top bar): tabs **Profile · Purpose · How it works · Privacy · License** (tablist with arrow keys; Esc / outside click closes; studio shortcuts are blocked while any `dialog[open]` is up).
   - **Profile:** the author's GitHub card (`DanixMP`). **Privacy-first:** it shows the username and links right away. The avatar, name, bio and counts are fetched from `api.github.com` **only when the visitor clicks "Load from GitHub"** (no credentials, no referrer).
     - The result is kept in `localStorage['recorder.githubProfile']`, with the avatar as a 160 px data URL, so a reload makes no request. "Forget" removes it, and the top-bar avatar follows. The service worker ignores other origins.
@@ -467,6 +479,9 @@ npm test           # vitest unit tests
 npm run dev:lan    # HTTPS dev server on the LAN (phone mic testing; accept the cert warning)
 npm run preview:lan # build + HTTPS preview on the LAN
 npm run icons      # regenerate public/icons/*.png
+npm run electron   # build + run the desktop app (Electron)
+npm run electron:dev # desktop window on the running `npm run dev` server, with DevTools
+npm run dist:win   # Windows installer + portable exe into release/ (dist:mac / dist:linux on those OSes)
 npm run screenshots # regenerate README screenshots (headless Chrome via puppeteer-core; needs `npm run dev`; GIF needs ffmpeg)
 ```
 
@@ -728,6 +743,8 @@ The user asked for more UX work: first a collapsible Songs column, then pop-able
 - [x] A margin around the whole app; columns as rounded cards (desktop, tablet, phone)
 - [x] Custom cursors everywhere (arrow, pointer, move, text + the context cursors); neon scrollbars (every range slider was already the Neon slider)
 - [x] Top bar with workspace modes: Studio, Record, Remix, Edit, Fun (1–5), remembered; phone-friendly
+- [x] Desktop app: Electron wrapper (app:// secure origin, mic + MIDI only, external links to the browser), Windows installer + portable exe, macOS dmg / Linux AppImage via a tag-triggered GitHub Actions release workflow
+- [ ] Code signing (Windows certificate / Apple Developer ID) so SmartScreen and Gatekeeper don't warn
 - [x] About panel (top bar, right): GitHub profile (loaded only on click, kept locally), purpose, how it works, privacy, MIT license
 - [x] Custom confirmation pop-up for deleting songs/takes (and the other confirmations) with "Don't ask again" (+ a way to turn questions back on)
 - [ ] Feel check (user): rail width, window placement, dragging on a trackpad, frame size, cursor size
