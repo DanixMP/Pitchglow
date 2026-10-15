@@ -1,14 +1,21 @@
-# Builds the desktop app on Windows, macOS and Linux and attaches the installers to a draft GitHub
+# Builds the desktop app on Windows, macOS and Linux and attaches the installers to ONE draft GitHub
 # Release. Run it by pushing a version tag that matches package.json, e.g.:
 #   npm version 0.2.0 --no-git-tag-version   (or edit "version")
 #   git commit -am "Release 0.2.0" && git tag v0.2.0 && git push origin v0.2.0
-# Then review the draft release on GitHub and publish it.
+# or from the Actions tab ("Run workflow") with an existing tag. Then review the draft and publish it.
+#
+# The build jobs only build; a final job uploads everything at once. (When each build job published
+# by itself, they raced and created several drafts for the same version.)
 name: Release desktop app
 
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to build (e.g. v0.1.0)
+        required: true
 
 permissions:
   contents: write
@@ -22,6 +29,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -30,7 +39,40 @@ jobs:
       - run: npm test
       - run: npm run build
       # Unsigned builds (no code-signing certificates in this repo).
-      - run: npx electron-builder --publish always
+      - run: npx electron-builder --publish never
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: recorder-${{ matrix.os }}
+          path: |
+            release/*.exe
+            release/*.dmg
+            release/*.AppImage
+            release/*.blockmap
+            release/latest*.yml
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: files
+          merge-multiple: true
+      - run: ls -la files
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          name: Recorder ${{ inputs.tag || github.ref_name }}
+          draft: true
+          generate_release_notes: true
+          body: |
+            ## Download
+            - **Windows:** `Recorder-Setup-*.exe` (installer) or `Recorder-*-portable.exe` (no install)
+            - **macOS (Apple silicon):** `Recorder-*-arm64.dmg`
+            - **Linux:** `Recorder-*-x86_64.AppImage`
+
+            The builds aren't code-signed yet: on Windows choose *More info → Run anyway*; on macOS right-click the app → *Open* the first time.
+          files: files/*
