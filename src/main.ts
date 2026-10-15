@@ -14,6 +14,7 @@ import { mountTempoPanel } from './ui/panels/tempo-panel';
 import { mountNotePanel } from './ui/panels/note-panel';
 import { mountKeysPanel } from './ui/panels/keys-panel';
 import { mountModebar } from './ui/panels/modebar';
+import { mountAbout } from './ui/panels/about';
 import { mountHeader } from './ui/panels/header';
 import { mountImportPanel } from './ui/panels/import-panel';
 import { mountInputPanel } from './ui/panels/input-panel';
@@ -59,6 +60,7 @@ mountOnboarding(store, captions);
 mountRollHover(roll, $<HTMLCanvasElement>('roll'));
 mountPopouts($('controls-col'));
 mountModebar(store, session, captions);
+mountAbout();
 
 // Inspector settings changed: apply them (to the take, or the selected track of the open song),
 // then persist the *global* defaults (a track's own settings are saved with its song).
@@ -102,6 +104,8 @@ store.watch(
 // L loop on/off, M click on/off, Q align the selected take to the beat (songs), N edit notes
 // (then ↑/↓ pitch, ←/→ next note, Delete reset, Esc done).
 document.addEventListener('keydown', (e) => {
+  // A pop-up (About, a confirmation) has the keyboard: no studio shortcuts behind it.
+  if (document.querySelector('dialog[open]')) return;
   if (e.target instanceof HTMLSelectElement) return;
   if (e.target instanceof HTMLInputElement && e.target.type !== 'range' && e.target.type !== 'checkbox') return;
   const s = store.get();

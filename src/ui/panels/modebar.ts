@@ -39,7 +39,7 @@ export function mountModebar(store: AppStore, session: Session, captions: Captio
 
   // 1–5 switch modes (not while typing).
   document.addEventListener('keydown', (e) => {
-    if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+    if (e.ctrlKey || e.metaKey || e.altKey || e.repeat || document.querySelector('dialog[open]')) return;
     const t = e.target as HTMLElement;
     if (t instanceof HTMLInputElement && t.type !== 'range' && t.type !== 'checkbox') return;
     if (t instanceof HTMLSelectElement || t instanceof HTMLTextAreaElement) return;

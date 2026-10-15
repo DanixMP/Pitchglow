@@ -24,7 +24,7 @@ export function mountLayout(store: AppStore): void {
   close.addEventListener('click', () => store.set({ takesDrawerOpen: false, mobileTab: null }));
   backdrop.addEventListener('click', () => store.set({ takesDrawerOpen: false }));
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && store.get().takesDrawerOpen) store.set({ takesDrawerOpen: false });
+    if (e.key === 'Escape' && store.get().takesDrawerOpen && !document.querySelector('dialog[open]')) store.set({ takesDrawerOpen: false });
   });
 
   // Collapsible columns.

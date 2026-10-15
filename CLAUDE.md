@@ -407,6 +407,7 @@ src/
       note-panel.ts       Edit notes button + Note section (pitch, own correction, timing, reset); roll note callbacks
       keys-panel.ts       Harmony Intervals | Keys switch, voicing, latch, MIDI status; the roll's playable keyboard
       modebar.ts          top bar: workspace modes (Studio, Record, Remix, Edit, Fun) showing/hiding panels
+      about.ts            About side sheet: GitHub profile (on-click, cached), purpose, how it works, privacy, license
 public/                   manifest, icon.svg, icons/*.png (generated)
 scripts/make-icons.mjs    procedural icon renderer (no deps)
 vite.config.ts            base './', LAN HTTPS mode, build-time service worker
@@ -434,6 +435,15 @@ tests/                    vitest unit tests (dsp, tracker, wav, packing, storage
   - Modes only show/hide UI (`data-mode-hidden`, separate from the panels' own `hidden`); songs, settings and audio are untouched. Popped-out windows and their placeholders (`data-for`) follow the mode.
   - Keys **1–5**; a caption names the mode; `state.workspace` in `localStorage['recorder.workspace']`; `body[data-workspace]` for mode-specific CSS. Phones show icons with the active mode's label.
   - Verified in Chrome: each mode shows exactly its sections and mixer state; Edit toggles note mode both ways.
+- **About panel** (`ui/panels/about.ts`, `#about` side sheet `<dialog>`, opened by the avatar button at the right of the top bar): tabs **Profile · Purpose · How it works · Privacy · License** (tablist with arrow keys; Esc / outside click closes; studio shortcuts are blocked while any `dialog[open]` is up).
+  - **Profile:** the author's GitHub card (`DanixMP`). **Privacy-first:** it shows the username and links right away. The avatar, name, bio and counts are fetched from `api.github.com` **only when the visitor clicks "Load from GitHub"** (no credentials, no referrer).
+    - The result is kept in `localStorage['recorder.githubProfile']`, with the avatar as a 160 px data URL, so a reload makes no request. "Forget" removes it, and the top-bar avatar follows. The service worker ignores other origins.
+  - **Privacy:** everything stays local (IndexedDB/localStorage); the only optional request is the GitHub one; storage used (`navigator.storage.estimate`).
+  - **License:** **MIT** (`LICENSE`, © 2026 DanixMP; `package.json` `"license": "MIT"`), plus the LAME/LGPL-3.0 notice. The version comes from `package.json` via Vite `define` (`__APP_VERSION__`).
+  - Verified in Chrome:
+    - no external request until the click; then exactly `api.github.com/users/DanixMP` + the avatar;
+    - after a reload the details come from the device (0 requests); Forget clears them;
+    - key 3 while open doesn't switch mode; Esc closes; the phone layout fits.
 - **Confirmations** (`src/ui/confirm.ts`, `confirmDialog(opts) → Promise<boolean>`): a custom modal pop-up (native `<dialog>`: focus kept inside, Esc or a click outside cancels) replaces every `window.confirm`.
   - It's used for: delete take, delete song, replace the beat, calibrate latency.
   - Destructive questions use a red button and start focused on Cancel.
@@ -733,5 +743,6 @@ The user asked for more UX work: first a collapsible Songs column, then pop-able
 - [x] A margin around the whole app; columns as rounded cards (desktop, tablet, phone)
 - [x] Custom cursors everywhere (arrow, pointer, move, text + the context cursors); neon scrollbars (every range slider was already the Neon slider)
 - [x] Top bar with workspace modes: Studio, Record, Remix, Edit, Fun (1–5), remembered; phone-friendly
+- [x] About panel (top bar, right): GitHub profile (loaded only on click, kept locally), purpose, how it works, privacy, MIT license
 - [x] Custom confirmation pop-up for deleting songs/takes (and the other confirmations) with "Don't ask again" (+ a way to turn questions back on)
 - [ ] Feel check (user): rail width, window placement, dragging on a trackpad, frame size, cursor size

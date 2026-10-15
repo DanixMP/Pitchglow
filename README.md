@@ -403,4 +403,8 @@ The microphone needs `localhost` or HTTPS.
 - The look and the explanations follow a short explainer video about how auto-tune works.
 - Built with [Claude Code](https://claude.com/claude-code).
 
-**License:** none chosen yet, so all rights are reserved by the author for now.
+**License:** [MIT](LICENSE) © 2026 DanixMP. The MP3 encoder keeps its own LGPL-3.0 license (see above).
+
+**Privacy:** recordings, songs and settings stay in your browser; nothing is uploaded and there is no
+tracking. The only optional network request is the author's GitHub card in the About panel, and it's
+made only when you click "Load from GitHub".
