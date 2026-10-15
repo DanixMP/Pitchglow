@@ -1,6 +1,7 @@
 // Messages between the live-input worklet and the main thread.
 
 import type { TuneSettings } from '../../dsp/autotune';
+import type { VoiceCharacter } from '../../dsp/voice-engine';
 import type { PitchFrame } from '../pitch-tracker';
 
 export const LIVE_PROCESSOR = 'live-processor';
@@ -18,4 +19,6 @@ export interface LiveSettingsMessage {
   monitor: boolean;
   tune: TuneSettings | null;
   semitones: number;
+  /** Voice character (formant, whisper, robot); null = natural. */
+  voice: VoiceCharacter | null;
 }

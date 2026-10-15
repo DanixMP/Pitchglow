@@ -3,6 +3,7 @@
 // Uses the app's shared AudioContext, so blocks and frames carry times on the same clock as playback.
 
 import type { TuneSettings } from '../dsp/autotune';
+import type { VoiceCharacter } from '../dsp/voice-engine';
 import { midiToFreq } from '../dsp/notes';
 import { sharedContext } from './context';
 import { LIVE_PROCESSOR, type LiveMessage, type LiveSettingsMessage } from './engine/live-protocol';
@@ -29,6 +30,7 @@ export interface LiveProcessing {
   monitor: boolean;
   tune: TuneSettings | null;
   semitones: number;
+  voice: VoiceCharacter | null;
 }
 
 export class AudioInput {
@@ -36,7 +38,7 @@ export class AudioInput {
   private nodes: AudioNode[] = [];
   private live: AudioWorkletNode | null = null;
   private demo: { stop(): void; direct: GainNode } | null = null;
-  private processing: LiveProcessing = { monitor: false, tune: null, semitones: 0 };
+  private processing: LiveProcessing = { monitor: false, tune: null, semitones: 0, voice: null };
   private _kind: InputKind | null = null;
   private _noiseSuppression = false;
   private _inputLatency = 0;

@@ -9,6 +9,7 @@ import type { TuneSettings } from './autotune';
 import { denoise, type DenoiseSettings } from './denoise';
 import { deess, gate } from './dynamics';
 import { renderWithHarmony } from './harmony';
+import { isNeutralVoice, type VoiceCharacter } from './voice-engine';
 import { resample } from './vocoder';
 
 /** The clean-up part of the chain (everything that runs before the voice engine). */
@@ -25,6 +26,8 @@ export interface ProcessSettings {
   pitch?: number;
   /** Noise gate amount 0..1. */
   gate?: number;
+  /** Voice character: formant, whisper, robot (Phase 15). */
+  voice?: VoiceCharacter;
   /** De-esser amount 0..1. */
   deess?: number;
 }
@@ -52,7 +55,10 @@ export function processRecording(
 ): ProcessResult {
   const { source, notes } = prepareVoice(samples, sampleRate, sampleRate, frames, settings, cache, cacheKey);
   // The pitch track (from the original) still describes the cleaned audio: same timing, same voice.
-  const output = settings.tune || settings.pitch ? renderWithHarmony(source, sampleRate, frames, settings.tune, settings.pitch ?? 0) : source;
+  const output =
+    settings.tune || settings.pitch || !isNeutralVoice(settings.voice)
+      ? renderWithHarmony(source, sampleRate, frames, settings.tune, settings.pitch ?? 0, settings.voice)
+      : source;
   return { output, notes };
 }
 

@@ -46,7 +46,7 @@ class LiveProcessor extends AudioWorkletProcessor {
       this.monitor = m.monitor;
       this.wantedHarmonies = m.monitor ? Math.min(m.tune?.harmony?.voices.length ?? 0, MAX_HARMONIES) : 0;
       // Without monitoring only the pitch tracker runs (no synthesis work).
-      this.voice.setSettings(m.monitor ? { tune: m.tune, semitones: m.semitones } : { tune: null, semitones: 0 });
+      this.voice.setSettings(m.monitor ? { tune: m.tune, semitones: m.semitones, voice: m.voice } : { tune: null, semitones: 0 });
     };
     this.voice.onFrame = (frame: PitchFrame, position: number) => {
       const msg: LiveMessage = { type: 'frame', frame, at: this.origin + position };

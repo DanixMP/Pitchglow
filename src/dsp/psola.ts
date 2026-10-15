@@ -11,6 +11,7 @@
 
 import type { PitchFrame } from '../audio/pitch-tracker';
 import type { Correction } from './autotune';
+import { GrainCache, SHAPE_MAX_HALF, type GrainVoice } from './grain-shape';
 import { midiToFreq } from './notes';
 
 /** Half a Hann window, 0.5 + 0.5·cos(πj/HANN_SIZE) for j = 0 … HANN_SIZE (+1 guard for interpolation). */
@@ -87,6 +88,17 @@ export interface GrainPlan {
   passthrough: boolean;
   /** Output length in samples (= the take). */
   length: number;
+  /** 1 for grains of sung (voiced) cycles, 0 for identity grains. */
+  voiced: Uint8Array;
+  /** Voice character applied to the voiced grains (Phase 15). */
+  voice: GrainVoice;
+}
+
+/** No formant shift, no whisper. */
+export const NATURAL_VOICE: GrainVoice = { formant: 1, whisper: 0, seed: 0 };
+
+function shapes(voice: GrainVoice): boolean {
+  return voice.formant !== 1 || voice.whisper > 0;
 }
 
 export function renderTuned(
@@ -135,7 +147,7 @@ export function analyzePsola(samples: Float32Array, sampleRate: number, frames: 
 }
 
 /** The grains that move the voice along `corrections` (unvoiced audio: identity grains). */
-export function planGrains(analysis: PsolaAnalysis, corrections: readonly Correction[], passthrough = true): GrainPlan {
+export function planGrains(analysis: PsolaAnalysis, corrections: readonly Correction[], passthrough = true, voice: GrainVoice = NATURAL_VOICE): GrainPlan {
   const { length: n, sampleRate, times, periods, midi, regions } = analysis;
   const ratios = new Float64Array(periods.length);
   for (let i = 0; i < periods.length; i++) {
@@ -143,10 +155,10 @@ export function planGrains(analysis: PsolaAnalysis, corrections: readonly Correc
     ratios[i] = c === null || c === undefined || Number.isNaN(midi[i]) ? 1 : Math.pow(2, (c - midi[i]) / 12);
   }
   const unvoicedPeriod = Math.max(16, Math.round(sampleRate * UNVOICED_PERIOD_SECONDS));
-  const plan = new PlanBuilder(n, passthrough);
+  const plan = new PlanBuilder(n, passthrough, voice);
   let cursor = 0;
   for (const r of regions) {
-    if (passthrough) for (let m = cursor; m < r.start; m += unvoicedPeriod) plan.push(m, m, unvoicedPeriod);
+    if (passthrough) for (let m = cursor; m < r.start; m += unvoicedPeriod) plan.push(m, m, unvoicedPeriod, 0);
     const periodAt = (sample: number) => interpolate(times, periods, r.frameFrom, r.frameTo, sample / sampleRate);
     const ratioAt = (sample: number) => interpolate(times, ratios, r.frameFrom, r.frameTo, sample / sampleRate);
     const marks = r.marks;
@@ -157,26 +169,38 @@ export function planGrains(analysis: PsolaAnalysis, corrections: readonly Correc
       const a = marks[idx];
       const synthPeriod = periodAt(t) / ratioAt(t);
       // Grains are two analysis periods long (classic TD-PSOLA), whatever the shift.
-      plan.push(a, Math.round(t), Math.round(periodAt(a)));
+      plan.push(a, Math.round(t), Math.round(periodAt(a)), 1);
       t += synthPeriod;
     }
     cursor = r.end;
   }
-  if (passthrough) for (let m = cursor; m < n + unvoicedPeriod; m += unvoicedPeriod) plan.push(m, m, unvoicedPeriod);
+  if (passthrough) for (let m = cursor; m < n + unvoicedPeriod; m += unvoicedPeriod) plan.push(m, m, unvoicedPeriod, 0);
   return plan.build();
 }
 
 /**
  * Renders output samples [start, end) of a plan into `out[0 .. end-start)`, normalised by the summed
  * window weight (blending towards the source where grains barely overlap). `weight` is scratch of at
- * least the same length. Allocates nothing, so it can run on the audio thread.
+ * least the same length. With a voice character, shaped grains come from `cache` (one per plan; a
+ * temporary one is made when omitted, which is fine offline). Allocates nothing when given a cache,
+ * so it can run on the audio thread.
  */
-export function renderGrains(src: Float32Array, plan: GrainPlan, start: number, end: number, out: Float32Array, weight: Float32Array): void {
+export function renderGrains(
+  src: Float32Array,
+  plan: GrainPlan,
+  start: number,
+  end: number,
+  out: Float32Array,
+  weight: Float32Array,
+  cache: GrainCache | null = null,
+): void {
   const len = end - start;
   out.fill(0, 0, len);
   weight.fill(0, 0, len);
   const n = Math.min(src.length, plan.length);
-  const { to, from, half: halves, count, maxHalf } = plan;
+  const { to, from, half: halves, count, maxHalf, voiced, voice } = plan;
+  const shaped = shapes(voice);
+  if (shaped && !cache) cache = new GrainCache();
   // First grain that can reach `start` (grains are sorted by output centre).
   let lo = 0;
   let hi = count;
@@ -191,6 +215,18 @@ export function renderGrains(src: Float32Array, plan: GrainPlan, start: number, 
     if (t - maxHalf >= end) break;
     const f = from[g];
     const half = halves[g];
+    if (shaped && voiced[g] && half <= SHAPE_MAX_HALF) {
+      // Voice character: the grain's content is shaped (and cached), the window is the same.
+      const grain = cache!.get(plan, g, src, f, half, voice, n);
+      const kMin = Math.max(-half + 1, -t, start - t);
+      const kMax = Math.min(half - 1, n - 1 - t, end - 1 - t);
+      for (let k = kMin; k <= kMax; k++) {
+        const w = hann(k, half);
+        out[t + k - start] += w * grain[k + half];
+        weight[t + k - start] += w;
+      }
+      continue;
+    }
     const kMin = Math.max(-half + 1, -f, -t, start - t);
     const kMax = Math.min(half - 1, n - 1 - f, n - 1 - t, end - 1 - t);
     // Hann window 0.5 + 0.5·cos(πk/half) from a table (no Math.cos per sample). A pure function of
@@ -210,15 +246,17 @@ class PlanBuilder {
   private to = new Int32Array(1024);
   private from = new Int32Array(1024);
   private half = new Int32Array(1024);
+  private voiced = new Uint8Array(1024);
   private count = 0;
   private maxHalf = 1;
 
   constructor(
     private readonly length: number,
     private readonly passthrough: boolean,
+    private readonly voice: GrainVoice,
   ) {}
 
-  push(from: number, to: number, half: number): void {
+  push(from: number, to: number, half: number, voiced: number): void {
     if (this.count === this.to.length) {
       const grow = (a: Int32Array) => {
         const b = new Int32Array(a.length * 2);
@@ -228,17 +266,31 @@ class PlanBuilder {
       this.to = grow(this.to);
       this.from = grow(this.from);
       this.half = grow(this.half);
+      const v = new Uint8Array(this.voiced.length * 2);
+      v.set(this.voiced);
+      this.voiced = v;
     }
     this.to[this.count] = to;
     this.from[this.count] = from;
     this.half[this.count] = half;
+    this.voiced[this.count] = voiced;
     this.count++;
     if (half > this.maxHalf) this.maxHalf = half;
   }
 
   build(): GrainPlan {
     const c = this.count;
-    return { to: this.to.slice(0, c), from: this.from.slice(0, c), half: this.half.slice(0, c), count: c, maxHalf: this.maxHalf, length: this.length, passthrough: this.passthrough };
+    return {
+      to: this.to.slice(0, c),
+      from: this.from.slice(0, c),
+      half: this.half.slice(0, c),
+      voiced: this.voiced.slice(0, c),
+      count: c,
+      maxHalf: this.maxHalf,
+      length: this.length,
+      passthrough: this.passthrough,
+      voice: this.voice,
+    };
   }
 }
 

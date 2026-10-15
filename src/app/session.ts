@@ -19,6 +19,8 @@ import { exportLength, renderMix, renderStems, renderVoice } from '../audio/mixd
 import type { ProcessSettings } from '../dsp/process';
 import type { VoicePlans } from '../dsp/voice-engine';
 import { songFxOf, trackFxOf, withPreset, FX_PRESETS, type FxPresetId, type SongFx, type TrackFx } from '../project/fx';
+import { isNeutralVoice, presetPitch, trackVoiceOf, withVoicePreset, type TrackVoice, type VoicePresetId } from '../project/voice';
+import type { VoiceCharacter } from '../dsp/voice-engine';
 import { createZip } from '../audio/zip';
 import { peaksOf } from '../audio/peaks';
 import type { TimelineClip } from '../ui/timeline';
@@ -271,8 +273,15 @@ export class Session {
     const song = openProject(state);
     const tune = tuneSettingsOf(state.tuning);
     const shift = song?.keyShift ?? 0;
-    this.input.setProcessing({ monitor, tune: tune && shift ? { ...tune, scale: transposeScale(tune.scale, shift) } : tune, semitones: 0 });
     const track = song?.tracks.find((t) => t.id === state.selectedTrackId && t.kind === 'vocal');
+    // The selected track's voice character (and its preset's pitch) is what you hear while singing.
+    const voice = track ? trackVoiceOf(track) : null;
+    this.input.setProcessing({
+      monitor,
+      tune: tune && shift ? { ...tune, scale: transposeScale(tune.scale, shift) } : tune,
+      semitones: voice ? presetPitch(voice) : 0,
+      voice: voice && !isNeutralVoice(voice) ? { formant: voice.formant, whisper: voice.whisper, monotone: voice.monotone } : null,
+    });
     this.player.setMonitor(monitor ? this.input.output : null, track ? trackFxOf(track) : undefined);
     if (!monitor && state.live.latencyMs !== null) this.store.set({ live: { ...state.live, latencyMs: null } });
   }
@@ -686,8 +695,10 @@ export class Session {
     const track: Track = {
       ...createVocalTrack(meta, sungTuning, cleanup, project.tracks.filter((t) => t.kind === 'vocal')),
       offset,
-      pitch: -shift,
+      // Plays back as sung (+ the voice preset's pitch you heard while monitoring).
+      pitch: -shift + (sung && selected ? presetPitch(trackVoiceOf(selected)) : 0),
       ...(sung && selected?.fx ? { fx: structuredClone(selected.fx) } : {}),
+      ...(sung && selected?.voice ? { voice: { ...selected.voice } } : {}),
     };
     this.mutateProject(project.id, (p) => addTrack(p, track));
     this.selectTrack(track.id);
@@ -803,6 +814,28 @@ export class Session {
   }
 
   /** Applies a vocal preset ("Robot" also sets hard auto-tune on the track). */
+  /** Voice character edits (formant, whisper, robot): new plans, heard on the next block. */
+  setTrackVoice(trackId: string, patch: Partial<VoiceCharacter>): void {
+    const project = openProject(this.store.get());
+    const track = project?.tracks.find((t) => t.id === trackId);
+    if (!project || !track) return;
+    const voice: TrackVoice = { ...trackVoiceOf(track), ...patch, preset: null };
+    this.mutateProject(project.id, (p) => updateTrackModel(p, trackId, { voice }), `voice:${trackId}:${Object.keys(patch).join(',')}`);
+    this.updateTrackVoice(trackId);
+    if (this.isLive) this.syncMonitor();
+  }
+
+  /** Voice presets set the character and the track's pitch (e.g. Chipmunk: +7 st, formants up). */
+  applyVoicePreset(trackId: string, id: VoicePresetId): void {
+    const project = openProject(this.store.get());
+    if (!project) return;
+    const { voice, pitch } = withVoicePreset(id);
+    this.mutateProject(project.id, (p) => updateTrackModel(p, trackId, { voice, pitch }));
+    this.updateTrackVoice(trackId);
+    this.refreshSongView();
+    if (this.isLive) this.syncMonitor();
+  }
+
   applyFxPreset(trackId: string, id: FxPresetId): void {
     const project = openProject(this.store.get());
     const track = project?.tracks.find((t) => t.id === trackId);
@@ -1195,7 +1228,7 @@ export class Session {
           : undefined;
       voice.sentKey = key;
       try {
-        const r = await this.renderer.voice(channel, { prepare, tune: settings.tune, semitones: settings.pitch ?? 0, have: voice.version });
+        const r = await this.renderer.voice(channel, { prepare, tune: settings.tune, semitones: settings.pitch ?? 0, voice: settings.voice, have: voice.version });
         if (!r || !isCurrent()) return; // superseded, removed or closed
         if (r.source) {
           voice.source = r.source;

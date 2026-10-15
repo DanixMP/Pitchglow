@@ -9,7 +9,7 @@ import { analyzeInstrumental, type AnalysisResult } from '../dsp/analyze';
 import type { TuneSettings } from '../dsp/autotune';
 import { prepareVoice, type DenoiseCache, type PrepareSettings } from '../dsp/process';
 import { analyzePsola, type PsolaAnalysis } from '../dsp/psola';
-import { planVoices, type VoicePlans } from '../dsp/voice-engine';
+import { planVoices, type VoiceCharacter, type VoicePlans } from '../dsp/voice-engine';
 import { pitchShift } from '../dsp/vocoder';
 import { unpackFrames, type PackedPitchTrack } from '../storage/pitch-track';
 import type { PitchFrame } from './pitch-tracker';
@@ -31,6 +31,7 @@ export interface VoiceRequest {
   };
   tune: TuneSettings | null;
   semitones: number;
+  voice?: VoiceCharacter;
   /** Source version the main thread has; the response carries the source when it differs. */
   have: number;
 }
@@ -136,7 +137,7 @@ function runVoice(req: VoiceRequest): void {
       voices.set(req.channel, ch);
     }
     if (!ch) throw new Error('Voice not prepared');
-    const plans = planVoices(ch.analysis, ch.frames, req.tune, req.semitones);
+    const plans = planVoices(ch.analysis, ch.frames, req.tune, req.semitones, req.voice);
     const transfer = plans ? [plans.lead, ...plans.harmonies].flatMap((g) => [g.to.buffer, g.from.buffer, g.half.buffer]) : [];
     // The source is copied (structured clone), not transferred: the channel keeps it for later replies.
     post({ id: req.id, version: ch.version, source: req.have === ch.version ? undefined : ch.source, plans, notes: ch.notes }, transfer);

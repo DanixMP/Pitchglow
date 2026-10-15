@@ -3,6 +3,7 @@
 import type { TuneSettings } from '../dsp/autotune';
 import type { ProcessSettings } from '../dsp/process';
 import { trackFxOf } from '../project/fx';
+import { isNeutralVoice, trackVoiceOf } from '../project/voice';
 import { trackSemitones, type Project, type Track } from '../project/model';
 import { scaleName } from '../dsp/scales';
 import type { CleanupPrefs, TuningPrefs } from '../storage/settings';
@@ -31,8 +32,17 @@ export function trackProcessSettings(track: Track, project: Project): ProcessSet
   const base = processSettingsOf(track.tuning, { ...track.cleanup, micFilter: false });
   const fx = trackFxOf(track);
   const pitch = trackSemitones(track, project);
-  if (!base && !pitch && !fx.gate && !fx.deess) return null;
-  return { tune: base?.tune ?? null, denoise: base?.denoise ?? null, pitch, gate: fx.gate, deess: fx.deess };
+  const voice = trackVoiceOf(track);
+  const neutral = isNeutralVoice(voice);
+  if (!base && !pitch && !fx.gate && !fx.deess && neutral) return null;
+  return {
+    tune: base?.tune ?? null,
+    denoise: base?.denoise ?? null,
+    pitch,
+    gate: fx.gate,
+    deess: fx.deess,
+    ...(neutral ? {} : { voice: { formant: voice.formant, whisper: voice.whisper, monotone: voice.monotone } }),
+  };
 }
 
 /** Name for the processed version, used on the A/B switch, heading and export. */

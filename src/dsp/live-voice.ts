@@ -18,7 +18,10 @@ import { PitchTracker } from '../audio/pitch-tracker';
 import { PitchCorrector, type TuneSettings } from './autotune';
 import { harmonyNote } from './harmony';
 import { midiToFreq } from './notes';
+import { GrainShaper, SHAPE_MAX_HALF, type GrainVoice } from './grain-shape';
 import { hann, normalizeGrain } from './psola';
+import { nearestInScale, scaleMask } from './scales';
+import { grainVoice, isNeutralVoice, type VoiceCharacter } from './voice-engine';
 
 /** Extra latency of the live path when it processes (the analysis needs one cycle ahead). */
 export const LIVE_DELAY_SECONDS = 0.025;
@@ -35,6 +38,8 @@ export interface LiveSettings {
   tune: TuneSettings | null;
   /** Transpose (e.g. the song's key shift), semitones. */
   semitones: number;
+  /** Voice character (formant, whisper, robot); null = natural. */
+  voice?: VoiceCharacter | null;
 }
 
 export class LiveVoice {
@@ -53,6 +58,14 @@ export class LiveVoice {
   private corrector: PitchCorrector | null = null;
   private harmonies = 0;
   private harmonyGain = 0;
+  // Voice character.
+  private readonly shaper = new GrainShaper();
+  private readonly grainVoices: GrainVoice[] = [];
+  private shaping = false;
+  private monotone = false;
+  private monoNote: number | null = null;
+  private scaleMask: boolean[] | null = null;
+  private grainCount = 0;
 
   private readonly x = new Float32Array(RING);
   private readonly lp = new Float32Array(RING);
@@ -114,13 +127,19 @@ export class LiveVoice {
   setSettings(settings: LiveSettings): void {
     this.settings = settings;
     this.corrector = settings.tune ? new PitchCorrector(settings.tune) : null;
+    const v = settings.voice;
+    this.shaping = !!v && (v.formant !== 0 || v.whisper > 0);
+    this.monotone = !!v?.monotone;
+    this.monoNote = null;
+    this.scaleMask = settings.tune ? scaleMask(settings.tune.scale) : null;
+    for (let i = 0; i <= MAX_HARMONIES; i++) this.grainVoices[i] = grainVoice(v ?? { formant: 0, whisper: 0, monotone: false }, i);
     const wanted = Math.min(settings.tune?.harmony?.voices.length ?? 0, MAX_HARMONIES);
     this.setHarmonies(wanted);
   }
 
   /** Whether the output is processed (delayed) rather than the input passed straight through. */
   get processing(): boolean {
-    return this.settings.tune !== null || this.settings.semitones !== 0;
+    return this.settings.tune !== null || this.settings.semitones !== 0 || !isNeutralVoice(this.settings.voice);
   }
 
   /** Processes one block (any size up to a few thousand samples) of input into output. */
@@ -184,7 +203,13 @@ export class LiveVoice {
     if (this.fCount < FRAMES) this.fCount++;
     this.fPos[i] = pos;
     const midi = f.midi;
-    const c = this.corrector?.process(f) ?? null;
+    let c = this.corrector?.process(f) ?? null;
+    if (this.monotone) {
+      // Robot: hold each phrase on the note it starts on (as monotoneCorrections does offline).
+      if (midi === null) this.monoNote = null;
+      else this.monoNote ??= this.settings.tune && this.scaleMask ? nearestInScale(midi, this.settings.tune.scale, this.scaleMask) : Math.round(midi);
+      c = this.monoNote === null ? null : { target: this.monoNote, corrected: this.monoNote };
+    }
     if (midi === null) {
       this.fPeriod[i] = 0;
       for (let v = 0; v <= MAX_HARMONIES; v++) this.fRatio[v][i] = 1;
@@ -328,9 +353,18 @@ export class LiveVoice {
       if (T > 0) {
         const Ts = T / this.ratioAt(v, ts);
         const h = Math.min(hCap, Math.round(T)); // two analysis periods, as in psola.ts
-        const a = this.nearestMark(ts, h, T);
+        const gv = this.grainVoices[v];
+        const shaped = this.shaping && h <= SHAPE_MAX_HALF;
+        // A formant shift up reads further ahead: allow a mark a cycle further back.
+        const reach = shaped ? Math.ceil(h * Math.max(1, gv.formant)) + 1 : h;
+        const a = this.nearestMark(ts, reach, shaped ? 2 * T : T);
         if (a >= 0) {
-          this.overlapAdd(acc, wsum, a, Math.round(ts), h, outStart);
+          if (shaped) {
+            const grain = this.shaper.shape(this.x, a, h, gv, this.grainCount++, this.n - RING + 1, this.n, MASK);
+            this.overlapShaped(acc, wsum, grain, Math.round(ts), h, outStart);
+          } else {
+            this.overlapAdd(acc, wsum, a, Math.round(ts), h, outStart);
+          }
           this.synth[v] = ts + Math.max(1, Ts);
           continue;
         }
@@ -340,6 +374,16 @@ export class LiveVoice {
         this.overlapAdd(acc, wsum, at, at, this.unvoiced, outStart);
       }
       this.synth[v] = ts + this.unvoiced;
+    }
+  }
+
+  /** Overlap-adds an already shaped grain (grain[k + half]) centred on `to`. */
+  private overlapShaped(acc: Float32Array, wsum: Float32Array, grain: Float32Array, to: number, half: number, outStart: number): void {
+    for (let k = Math.max(-half + 1, outStart - to); k <= half - 1; k++) {
+      const w = hann(k, half);
+      const o = (to + k) & MASK;
+      acc[o] += w * grain[k + half];
+      wsum[o] += w;
     }
   }
 

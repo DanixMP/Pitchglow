@@ -5,7 +5,7 @@ import type { PitchFrame } from '../audio/pitch-tracker';
 import type { Correction, TuneSettings } from './autotune';
 import { limit } from './limiter';
 import { analyzePsola, renderGrains } from './psola';
-import { planVoices } from './voice-engine';
+import { planVoices, type VoiceCharacter } from './voice-engine';
 import { nearestInScale, scaleMask, type Scale } from './scales';
 import { pitchClass } from './notes';
 
@@ -62,9 +62,10 @@ export function renderWithHarmony(
   frames: readonly PitchFrame[],
   settings: TuneSettings | null,
   semitones = 0,
+  character?: VoiceCharacter,
 ): Float32Array {
   const analysis = analyzePsola(samples, sampleRate, frames);
-  const plans = planVoices(analysis, frames, settings, semitones);
+  const plans = planVoices(analysis, frames, settings, semitones, character);
   if (!plans) return samples.slice();
   const n = samples.length;
   const out = new Float32Array(n);

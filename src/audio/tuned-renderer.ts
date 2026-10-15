@@ -7,7 +7,7 @@ import type { AnalysisResult } from '../dsp/analyze';
 import { packFrames } from '../storage/pitch-track';
 import type { TuneSettings } from '../dsp/autotune';
 import type { PrepareSettings } from '../dsp/process';
-import type { VoicePlans } from '../dsp/voice-engine';
+import type { VoiceCharacter, VoicePlans } from '../dsp/voice-engine';
 import type { AnalyzeRequest, DropVoiceRequest, RenderResponse, ShiftRequest, VoiceRequest, VoiceResponse } from './render-worker';
 import RenderWorker from './render-worker.ts?worker';
 
@@ -39,7 +39,10 @@ export class TunedRenderer {
    * Source + grain plans for a track's voice engine. `prepare` (new clean-up input) is needed the
    * first time and whenever the take or its clean-up settings change. Latest request per channel wins.
    */
-  voice(channel: string, request: { prepare?: VoicePrepare; tune: TuneSettings | null; semitones: number; have: number }): Promise<VoiceResult | null> {
+  voice(
+    channel: string,
+    request: { prepare?: VoicePrepare; tune: TuneSettings | null; semitones: number; voice?: VoiceCharacter; have: number },
+  ): Promise<VoiceResult | null> {
     const worker = this.ensureWorker();
     const id = this.nextId++;
     for (const [oldId, p] of this.voicesPending) {
@@ -57,6 +60,7 @@ export class TunedRenderer {
         channel,
         tune: request.tune,
         semitones: request.semitones,
+        voice: request.voice,
         have: request.have,
         prepare:
           p && samples
