@@ -16,6 +16,32 @@
   </head>
   <body>
     <div id="studio" class="studio">
+      <!-- Top bar: workspace modes -->
+      <header id="modebar" class="modebar">
+        <div class="modebar-brand" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M3 15c2.5 0 2.5-6 5-6s2.5 8 5 8 2.5-12 5-12 2 5 3 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>Recorder</span>
+        </div>
+        <nav class="modebar-modes" aria-label="Workspace mode">
+          <button class="mode-btn mode-studio" type="button" data-workspace="studio" aria-pressed="false" title="Studio mode (1)">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h7v7H4zm9 0h7v7h-7zM4 13h7v7H4zm9 0h7v7h-7z"/></svg><span>Studio</span>
+          </button>
+          <button class="mode-btn mode-record" type="button" data-workspace="record" aria-pressed="false" title="Record mode (2)">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="6.5"/></svg><span>Record</span>
+          </button>
+          <button class="mode-btn mode-remix" type="button" data-workspace="remix" aria-pressed="false" title="Remix mode (3)">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h2v8.2A2.5 2.5 0 1 1 5 12zm6 0h2v2.2A2.5 2.5 0 1 1 11 6zm0 9h2v7h-2zm6-9h2v12.2A2.5 2.5 0 1 1 17 16zM5 17h2v3H5zm6-6h2v1h-2z"/></svg><span>Remix</span>
+          </button>
+          <button class="mode-btn mode-edit" type="button" data-workspace="edit" aria-pressed="false" title="Edit mode (4)">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17.3V20h2.7l8.1-8.1-2.7-2.7zM20.7 7a1 1 0 0 0 0-1.4l-2.3-2.3a1 1 0 0 0-1.4 0L15.2 5.1l2.7 2.7z"/></svg><span>Edit</span>
+          </button>
+          <button class="mode-btn mode-fun" type="button" data-workspace="fun" aria-pressed="false" title="Fun mode (5)">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2.6 5.6 6.1.7-4.5 4.2 1.2 6L12 16.5 6.6 19.5l1.2-6L3.3 9.3l6.1-.7z"/></svg><span>Fun</span>
+          </button>
+        </nav>
+        <span id="modebar-song" class="modebar-song" hidden></span>
+      </header>
+
       <!-- Left rail: what stays of Songs/Takes when that column is closed (desktop) -->
       <nav id="rail-left" class="rail rail-left" aria-label="Songs and takes (closed)">
         <button id="left-open" class="icon-btn rail-btn" type="button" aria-label="Open songs and takes" aria-controls="takes-col" aria-expanded="false" title="Open songs and takes ( [ )">

@@ -406,6 +406,7 @@ src/
       tempo-panel.ts      Tempo & click section: BPM + tap, beats per bar, bar 1, click, align take
       note-panel.ts       Edit notes button + Note section (pitch, own correction, timing, reset); roll note callbacks
       keys-panel.ts       Harmony Intervals | Keys switch, voicing, latch, MIDI status; the roll's playable keyboard
+      modebar.ts          top bar: workspace modes (Studio, Record, Remix, Edit, Fun) showing/hiding panels
 public/                   manifest, icon.svg, icons/*.png (generated)
 scripts/make-icons.mjs    procedural icon renderer (no deps)
 vite.config.ts            base './', LAN HTTPS mode, build-time service worker
@@ -428,6 +429,11 @@ tests/                    vitest unit tests (dsp, tracker, wav, packing, storage
   - `--cursor-grab` / `--cursor-grabbing` (4-way move: floating windows, note blobs, drags) and `--cursor-text` (I-beam: text/search/number fields);
   - plus Phase 16's crosshair / ↔.
   - No raw `cursor: pointer|default|grab` is left in the CSS. Verified in Chrome: every element kind gets its custom `url(...)` cursor.
+- **Top bar with workspace modes** (`ui/panels/modebar.ts`, `#modebar`, spans the grid's first row inside the frame): brand, mode switch, open song's name.
+  - **Studio** (everything), **Record** (Input, Auto-tune, Harmony, Voice, Tempo & click; no mixer), **Remix** (Clean up, Voice, Effects, Tempo & click, Song FX; mixer), **Edit** (Note, Auto-tune, Harmony; mixer; switches note editing on, and leaving it switches it off), **Fun** (Input, Auto-tune, Harmony, Voice with big chips; no mixer).
+  - Modes only show/hide UI (`data-mode-hidden`, separate from the panels' own `hidden`); songs, settings and audio are untouched. Popped-out windows and their placeholders (`data-for`) follow the mode.
+  - Keys **1–5**; a caption names the mode; `state.workspace` in `localStorage['recorder.workspace']`; `body[data-workspace]` for mode-specific CSS. Phones show icons with the active mode's label.
+  - Verified in Chrome: each mode shows exactly its sections and mixer state; Edit toggles note mode both ways.
 - **Confirmations** (`src/ui/confirm.ts`, `confirmDialog(opts) → Promise<boolean>`): a custom modal pop-up (native `<dialog>`: focus kept inside, Esc or a click outside cancels) replaces every `window.confirm`.
   - It's used for: delete take, delete song, replace the beat, calibrate latency.
   - Destructive questions use a red button and start focused on Cancel.
@@ -454,7 +460,7 @@ tests/                    vitest unit tests (dsp, tracker, wav, packing, storage
 Data flow: mic → live AudioWorklet (`PitchTracker` inside `LiveVoice`: downsample, YIN, median filter) → `PitchFrame { time, freq, midi, clarity, rms }` posted with its context frame → `Session.onFrame` → `PianoRoll.push()` → canvas drawn on each `requestAnimationFrame`. With "Hear myself" on, the same worklet's output (the processed voice) → monitor track chain → master.
 While recording, the same blocks and frames are also collected into a take. On Stop the take is saved to IndexedDB and opened in playback mode.
 
-Shortcuts: **R** = record/stop, **T** = auto-tune on/off, **Space** = play/pause and **A** = original/tuned (playback mode), **L** = loop on/off (song open), **M** = click on/off (song open), **Q** = align the selected take to the beat (playback), **[** / **]** = close/open Songs+Takes / the inspector, **N** = edit notes (then ↑/↓ pitch, Shift = 0.1 st, ←/→ next note, Delete reset, Esc done), **Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y** = undo/redo (song open).
+Shortcuts: **R** = record/stop, **T** = auto-tune on/off, **Space** = play/pause and **A** = original/tuned (playback mode), **L** = loop on/off (song open), **M** = click on/off (song open), **Q** = align the selected take to the beat (playback), **1–5** = workspace modes (Studio, Record, Remix, Edit, Fun), **[** / **]** = close/open Songs+Takes / the inspector, **N** = edit notes (then ↑/↓ pitch, Shift = 0.1 st, ←/→ next note, Delete reset, Esc done), **Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y** = undo/redo (song open).
 
 ## Commands
 
@@ -726,5 +732,6 @@ The user asked for more UX work: first a collapsible Songs column, then pop-able
 - [x] Inspector closes to a rail too (» / ] ); each section pops out into a floating, draggable, resizable window and docks back with one click; remembered; docked on phones
 - [x] A margin around the whole app; columns as rounded cards (desktop, tablet, phone)
 - [x] Custom cursors everywhere (arrow, pointer, move, text + the context cursors); neon scrollbars (every range slider was already the Neon slider)
+- [x] Top bar with workspace modes: Studio, Record, Remix, Edit, Fun (1–5), remembered; phone-friendly
 - [x] Custom confirmation pop-up for deleting songs/takes (and the other confirmations) with "Don't ask again" (+ a way to turn questions back on)
 - [ ] Feel check (user): rail width, window placement, dragging on a trackpad, frame size, cursor size

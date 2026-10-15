@@ -13,6 +13,7 @@ import { mountFxPanel } from './ui/panels/fx-panel';
 import { mountTempoPanel } from './ui/panels/tempo-panel';
 import { mountNotePanel } from './ui/panels/note-panel';
 import { mountKeysPanel } from './ui/panels/keys-panel';
+import { mountModebar } from './ui/panels/modebar';
 import { mountHeader } from './ui/panels/header';
 import { mountImportPanel } from './ui/panels/import-panel';
 import { mountInputPanel } from './ui/panels/input-panel';
@@ -57,6 +58,7 @@ const readout = mountReadout(store, roll, session.player);
 mountOnboarding(store, captions);
 mountRollHover(roll, $<HTMLCanvasElement>('roll'));
 mountPopouts($('controls-col'));
+mountModebar(store, session, captions);
 
 // Inspector settings changed: apply them (to the take, or the selected track of the open song),
 // then persist the *global* defaults (a track's own settings are saved with its song).

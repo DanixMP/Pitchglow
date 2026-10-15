@@ -11,12 +11,14 @@ import {
   loadKeys,
   loadLayout,
   loadMetronome,
+  loadWorkspace,
   loadTuning,
   type CleanupPrefs,
   type InputPrefs,
   type KeysPrefs,
   type LayoutPrefs,
   type MetronomePrefs,
+  type Workspace,
   type TuningPrefs,
 } from '../storage/settings';
 import { Store } from './store';
@@ -94,12 +96,15 @@ export interface AppState {
   takesDrawerOpen: boolean;
   /** Desktop: Songs/Takes and the inspector closed to rails. */
   layout: LayoutPrefs;
+  /** Workspace mode from the top bar: which panels the studio shows. */
+  workspace: Workspace;
   /** Note editing on the roll (Phase 18): on/off and the selected note (index into the take's notes). */
   noteMode: boolean;
   selectedNote: number | null;
 }
 
 export type AppStore = Store<AppState>;
+export type { Workspace };
 
 export function createAppStore(): AppStore {
   return new Store<AppState>({
@@ -132,6 +137,7 @@ export function createAppStore(): AppStore {
     mobileTab: null,
     takesDrawerOpen: false,
     layout: loadLayout(),
+    workspace: loadWorkspace(),
     noteMode: false,
     selectedNote: null,
   });

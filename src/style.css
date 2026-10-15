@@ -122,17 +122,17 @@ body {
 @media (max-width: 759px) {
   .studio {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr) auto auto;
+    grid-template-rows: auto minmax(0, 1fr) auto auto;
   }
 
   .col-center {
-    grid-row: 1;
+    grid-row: 2;
     padding-bottom: 6px;
   }
 
   .col-left,
   .col-right {
-    grid-row: 2;
+    grid-row: 3;
     display: none;
     max-height: 44dvh;
     padding-top: 12px;
@@ -152,7 +152,7 @@ body {
   }
 
   .studio .tabbar {
-    grid-row: 3;
+    grid-row: 4;
     display: flex;
     border-top: 1px solid var(--border);
     background: var(--panel);
@@ -2578,5 +2578,174 @@ textarea,
 @keyframes confirm-fade {
   from {
     opacity: 0;
+  }
+}
+
+/* ===========================================================================================
+   Top bar: workspace modes (src/ui/panels/modebar.ts)
+   =========================================================================================== */
+
+@media (min-width: 760px) {
+  .studio {
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+}
+
+.modebar {
+  grid-row: 1;
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  padding: 6px 8px 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--frame-radius);
+  background: var(--panel);
+}
+
+.modebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  font-weight: 800;
+  font-size: 14px;
+  letter-spacing: 0.02em;
+}
+
+.modebar-brand svg {
+  width: 22px;
+  height: 22px;
+  color: var(--accent);
+  filter: drop-shadow(0 0 4px rgba(246, 196, 83, 0.6));
+}
+
+.modebar-modes {
+  display: flex;
+  gap: 4px;
+  margin: 0 auto;
+  padding: 3px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+  border-radius: 999px;
+  background: #0d0d0f;
+  border: 1px solid var(--border);
+}
+
+.modebar-modes::-webkit-scrollbar {
+  display: none;
+}
+
+.mode-btn {
+  --mode: var(--fg);
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+  padding: 7px 14px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: 700 13px var(--font);
+  letter-spacing: 0.02em;
+  transition: color var(--dur-fast), background var(--dur-fast), box-shadow var(--dur-fast), border-color var(--dur-fast);
+}
+
+.mode-btn svg {
+  width: 15px;
+  height: 15px;
+  fill: currentColor;
+}
+
+.mode-btn:hover {
+  color: var(--fg);
+}
+
+.mode-btn.is-on {
+  color: #121212;
+  background: var(--mode);
+  box-shadow: 0 0 14px color-mix(in srgb, var(--mode) 55%, transparent);
+}
+
+.mode-studio {
+  --mode: #f4f2ee;
+}
+
+.mode-record {
+  --mode: var(--record);
+}
+
+.mode-remix {
+  --mode: #5ec8ff;
+}
+
+.mode-edit {
+  --mode: var(--accent);
+}
+
+.mode-fun {
+  --mode: #c792ff;
+}
+
+.mode-record.is-on {
+  color: #fff;
+}
+
+.modebar-song {
+  flex: none;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+/* Hidden by the current mode (independent of the panels' own [hidden]). */
+[data-mode-hidden] {
+  display: none !important;
+}
+
+/* Fun mode: big, friendly voice presets and harmony buttons. */
+body[data-workspace='fun'] #voice-panel .chip,
+body[data-workspace='fun'] #harmony-panel .chip {
+  min-height: 48px;
+  font-size: 15px;
+}
+
+@media (max-width: 759px) {
+  .modebar {
+    gap: 8px;
+    padding: 5px;
+  }
+
+  .modebar-brand span,
+  .modebar-song {
+    display: none;
+  }
+
+  .modebar-brand {
+    padding-left: 6px;
+  }
+
+  .mode-btn {
+    padding: 7px 11px;
+  }
+}
+
+@media (max-width: 420px) {
+  .mode-btn span {
+    display: none;
+  }
+
+  .mode-btn.is-on span {
+    display: inline;
   }
 }

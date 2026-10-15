@@ -90,6 +90,8 @@ Import a beat (MP3, WAV, M4A, OGG, FLAC), sing over it, and layer takes into tra
   tap it in, or set bar 1 at the playhead. One click (<kbd>Q</kbd>) moves a take so its first note
   lands on the beat.
 - **Ghost lines:** the other vocal tracks are drawn faintly behind the one you're editing.
+- **Workspace modes:** a top bar switches between **Studio**, **Record**, **Remix**, **Edit** and **Fun**
+  (<kbd>1</kbd>–<kbd>5</kbd>). Each shows just the controls that job needs.
 - **Your layout:** close the Songs column or the inspector to a thin rail (<kbd>[</kbd> <kbd>]</kbd>), and pop any
   inspector section (Auto-tune, Harmony, Effects…) out into a floating window you can drag next to the roll.
 - **Everything is instant:** auto-tune, harmony, pitch, voice character, clean-up and the song's key shift
@@ -230,6 +232,7 @@ npm run dev:lan
 | <kbd>L</kbd> | Loop on / off (song open) |
 | <kbd>M</kbd> | Click (metronome) on / off (song open) |
 | <kbd>Q</kbd> | Align the selected take's singing to the nearest beat |
+| <kbd>1</kbd>–<kbd>5</kbd> | Workspace mode: Studio, Record, Remix, Edit, Fun |
 | <kbd>[</kbd> <kbd>]</kbd> | Close / open the Songs & Takes column and the inspector (desktop) |
 | <kbd>N</kbd> | Edit notes on / off; then <kbd>↑</kbd> <kbd>↓</kbd> pitch (<kbd>Shift</kbd> = 0.1 st), <kbd>←</kbd> <kbd>→</kbd> next note, <kbd>Delete</kbd> reset, <kbd>Esc</kbd> done |
 | <kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> | Undo / redo (song open) |

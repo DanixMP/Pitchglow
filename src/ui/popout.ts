@@ -81,6 +81,7 @@ export function mountPopouts(column: HTMLElement): void {
     if (floating.has(section.id)) return;
     const placeholder = document.createElement('div');
     placeholder.className = 'popout-placeholder';
+    placeholder.dataset.for = section.id;
     placeholder.innerHTML = `<span>${titleOf(section)} · floating</span>`;
     const back = document.createElement('button');
     back.type = 'button';
