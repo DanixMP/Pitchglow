@@ -192,6 +192,31 @@ an installable **PWA** that works offline once installed.
 
 ---
 
+## Desktop app
+
+Prefer a normal app to a browser tab? Download it from the repository's **Releases** page:
+
+| System | File |
+|---|---|
+| Windows | `Recorder-Setup-<version>.exe` (installer: Start-menu and desktop shortcuts, uninstaller) or `Recorder-<version>-portable.exe` (no install) |
+| macOS | `Recorder-<version>-<arch>.dmg` |
+| Linux | `Recorder-<version>-x86_64.AppImage` |
+
+It's the same app in an [Electron](https://www.electronjs.org/) window, working fully offline. Your songs are kept
+in the app's own storage, separate from the browser's. The builds aren't code-signed yet, so Windows
+SmartScreen ("More info → Run anyway") and macOS Gatekeeper (right-click → Open) ask once.
+
+Build it yourself:
+
+```bash
+npm run electron      # build and run the desktop app
+npm run dist:win      # Windows installer + portable .exe in release/ (dist:mac / dist:linux on those systems)
+```
+
+**Publishing a release:** set the version in `package.json`, commit, then push a matching tag
+(`git tag v0.2.0 && git push origin v0.2.0`). The **Release desktop app** workflow builds Windows, macOS
+and Linux installers and attaches them to a draft release, ready for you to review and publish.
+
 ## Quick start
 
 Requires **Node.js 20.19+ or 22.12+** and a Chromium-based browser (see [browser support](#browser-support)).

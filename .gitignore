@@ -4,3 +4,4 @@ dist/
 .vite/
 # Reference video (third-party content): kept locally, never committed
 Goal.mp4
+release/

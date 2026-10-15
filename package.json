@@ -1,9 +1,14 @@
 {
   "name": "recorder",
+  "productName": "Recorder",
   "private": true,
   "version": "0.1.0",
+  "description": "Record your voice, see it on piano-key lanes, and auto-tune it to any scale.",
+  "author": "DanixMP",
+  "homepage": "https://github.com/DanixMP/Recorder",
   "license": "MIT",
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
     "dev:lan": "vite --host --mode lan",
@@ -12,17 +17,93 @@
     "preview:lan": "vite build && vite preview --host --mode lan",
     "icons": "node scripts/make-icons.mjs",
     "test": "vitest run",
-    "screenshots": "node scripts/screenshots.mjs"
+    "screenshots": "node scripts/screenshots.mjs",
+    "electron": "npm run build && electron .",
+    "electron:dev": "electron . --dev-url=http://localhost:5173",
+    "dist": "npm run build && electron-builder",
+    "dist:win": "npm run build && electron-builder --win",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:linux": "npm run build && electron-builder --linux"
   },
   "devDependencies": {
     "@vitejs/plugin-basic-ssl": "^2.3.0",
+    "electron": "^44.7.2",
+    "electron-builder": "^26.15.3",
     "fake-indexeddb": "^6.2.5",
     "puppeteer-core": "^24.43.1",
     "typescript": "^7.0.2",
     "vite": "^8.3.4",
-    "vitest": "^5.0.4"
-  },
-  "dependencies": {
+    "vitest": "^5.0.4",
     "@breezystack/lamejs": "^1.2.7"
+  },
+  "build": {
+    "appId": "io.github.danixmp.recorder",
+    "productName": "Recorder",
+    "copyright": "Copyright © 2026 DanixMP",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**",
+      "electron/**",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Recorder",
+      "license": "LICENSE",
+      "artifactName": "Recorder-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "Recorder-${version}-portable.${ext}"
+    },
+    "mac": {
+      "icon": "build/icon.png",
+      "category": "public.app-category.music",
+      "target": [
+        "dmg"
+      ],
+      "artifactName": "Recorder-${version}-${arch}.${ext}",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Recorder listens to your voice to draw its pitch and tune it."
+      }
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "category": "Audio",
+      "target": [
+        "AppImage"
+      ],
+      "artifactName": "Recorder-${version}-${arch}.${ext}"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "DanixMP",
+      "repo": "Recorder",
+      "releaseType": "draft"
+    }
   }
 }

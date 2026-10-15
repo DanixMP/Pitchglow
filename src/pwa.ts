@@ -6,6 +6,8 @@ interface BeforeInstallPromptEvent extends Event {
 }
 
 export function setupPwa(installButton: HTMLButtonElement): void {
+  // The desktop app (Electron) ships its files itself: no service worker, no browser install.
+  if (navigator.userAgent.includes('Electron/')) return;
   if (import.meta.env.PROD && 'serviceWorker' in navigator) {
     window.addEventListener('load', () => {
       navigator.serviceWorker.register('./sw.js').catch((err) => console.warn('Service worker not registered:', err));
