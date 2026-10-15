@@ -8,7 +8,7 @@ import { packFrames } from '../storage/pitch-track';
 import type { TuneSettings } from '../dsp/autotune';
 import type { CleanupAnalysis } from '../dsp/cleanup';
 import type { NoteEdit } from '../dsp/note-edit';
-import type { VoiceCharacter, VoicePlans } from '../dsp/voice-engine';
+import type { KeyHarmony, VoiceCharacter, VoicePlans } from '../dsp/voice-engine';
 import type { AnalyzeRequest, DropVoiceRequest, RenderResponse, VoiceRequest, VoiceResponse } from './render-worker';
 import RenderWorker from './render-worker.ts?worker';
 
@@ -41,7 +41,7 @@ export class TunedRenderer {
    */
   voice(
     channel: string,
-    request: { prepare?: VoicePrepare; tune: TuneSettings | null; semitones: number; voice?: VoiceCharacter; notes?: NoteEdit[]; have: number },
+    request: { prepare?: VoicePrepare; tune: TuneSettings | null; semitones: number; voice?: VoiceCharacter; notes?: NoteEdit[]; keys?: KeyHarmony; have: number },
   ): Promise<VoiceResult | null> {
     const worker = this.ensureWorker();
     const id = this.nextId++;
@@ -62,6 +62,7 @@ export class TunedRenderer {
         semitones: request.semitones,
         voice: request.voice,
         notes: request.notes,
+        keys: request.keys,
         have: request.have,
         prepare:
           p && samples

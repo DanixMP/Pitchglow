@@ -8,6 +8,7 @@ import { PitchCorrector, correctTrack, type Correction, type TuneSettings } from
 import { isBlackKey, octaveOf, pitchClass, pitchClassName } from '../dsp/notes';
 import { harmonyNote } from '../dsp/harmony';
 import { scaleMask, scaleName, type Scale } from '../dsp/scales';
+import { keyNotes, MAX_KEY_VOICES, type Voicing } from '../dsp/keys';
 import { applyNoteEdits, type NoteEdit } from '../dsp/note-edit';
 import { gridLines, type Grid } from '../project/grid';
 import { laneFill, litColor, theme } from './colors';
@@ -101,6 +102,18 @@ export class PianoRoll {
   private selectedNote: number | null = null;
   private noteDrag: { pointerId: number; index: number; kind: NoteDrag['kind']; x: number; y: number; axis: 'x' | 'y' | null } | null = null;
 
+  /**
+   * Key harmony drawn as harmony lines (Phase 19): the keys held now (live) or the keys recorded at
+   * each shown frame (playback, by frame index). Null = interval harmony from the tuning.
+   */
+  private keyHarmony: { voicing: Voicing; held?: readonly number[]; at?: (frameIndex: number) => readonly number[] } | null = null;
+  /** Play-the-keys (Phase 19): the keyboard is playable, the held keys, and pointers holding keys. */
+  private keysPlayable = false;
+  private held = new Set<number>();
+  private keyPointers = new Map<number, number>();
+  /** A key of the on-screen keyboard was pressed or released (keys playable only). */
+  onKeyPress: ((midi: number, down: boolean) => void) | null = null;
+
   /** Called with a new time while the user drags a recording left/right. */
   onScrub: ((time: number) => void) | null = null;
   /** Note editing: a note was clicked (null = empty space), or is being dragged. */
@@ -142,7 +155,9 @@ export class PianoRoll {
 
   push(frame: PitchFrame): void {
     const correction = this.correct(frame);
-    this.frames.push({ ...frame, ...correction, harmony: this.harmonyFor(correction.target) });
+    const f: RollFrame = { ...frame, ...correction, harmony: [] };
+    f.harmony = this.harmonyFor(f, -1);
+    this.frames.push(f);
     this.latestTime = frame.time;
     this.lastPushAt = performance.now();
     const keepFrom = frame.time - this.secondsVisible - 1;
@@ -189,6 +204,24 @@ export class PianoRoll {
   setNotes(notes: RollNote[] | null, selected: number | null): void {
     this.notes = notes;
     this.selectedNote = selected;
+  }
+
+  /** Makes the keyboard on the left playable (play-the-keys harmony) or not. */
+  setKeysPlayable(on: boolean): void {
+    this.keysPlayable = on;
+    if (!on) this.keyPointers.clear();
+    this.canvas.classList.toggle('is-keys-playable', on);
+  }
+
+  /** Harmony lines from keys (see `keyHarmony`); re-voices what is shown. */
+  setKeyHarmony(k: PianoRoll['keyHarmony']): void {
+    this.keyHarmony = k;
+    this.frames.forEach((f, i) => (f.harmony = this.harmonyFor(f, i)));
+  }
+
+  /** Keys shown as held (from the screen or a MIDI keyboard). */
+  setHeldKeys(notes: readonly number[]): void {
+    this.held = new Set(notes);
   }
 
   get editingNotes(): boolean {
@@ -261,6 +294,7 @@ export class PianoRoll {
     if (this.notes) this.drawNotes(layout, now, this.notes);
     this.drawLines(layout, now);
     this.drawKeyboard(layout);
+    this.drawHeldKeys(layout);
     if (this.tuning) this.drawTuningChip(layout, this.tuning);
   }
 
@@ -270,7 +304,15 @@ export class PianoRoll {
     return this.corrector?.process(frame) ?? { target: null, corrected: null };
   }
 
-  private harmonyFor(target: number | null): number[] {
+  /** Harmony notes at a frame: the keys (voiced against the line), or the tuning's interval voices. */
+  private harmonyFor(f: RollFrame, index: number): number[] {
+    const k = this.keyHarmony;
+    if (k) {
+      const line = this.displayMidi(f);
+      const keys = k.at && index >= 0 ? k.at(index) : (k.held ?? []);
+      return line === null || !keys.length ? [] : keyNotes(keys, line, k.voicing);
+    }
+    const target = f.target;
     const voices = this.tuning?.harmony?.voices;
     if (target === null || !voices?.length) return [];
     return voices.map((v) => harmonyNote(target, v, this.tuning!.scale));
@@ -278,17 +320,17 @@ export class PianoRoll {
 
   private retune(): void {
     if (!this.tuning && !this.edits.length) {
-      for (const f of this.frames) {
+      this.frames.forEach((f, i) => {
         f.target = f.corrected = null;
-        f.harmony = [];
-      }
+        f.harmony = this.harmonyFor(f, i);
+      });
       return;
     }
     const base = this.tuning ? correctTrack(this.frames, this.tuning) : this.frames.map((f) => ({ target: null, corrected: f.midi }));
     const corrections = applyNoteEdits(this.frames, base, this.edits);
     this.frames.forEach((f, i) => {
       Object.assign(f, corrections[i]);
-      f.harmony = this.harmonyFor(f.target);
+      f.harmony = this.harmonyFor(f, i);
     });
     // Continue live correction from where the shown history ends.
     if (!this.tuning) return;
@@ -354,6 +396,16 @@ export class PianoRoll {
   private attachScrubbing(): void {
     const c = this.canvas;
     c.addEventListener('pointerdown', (e) => {
+      if (this.keysPlayable) {
+        const hit = this.noteAt(e.clientX, e.clientY);
+        if (hit?.onKeys) {
+          e.preventDefault();
+          c.setPointerCapture(e.pointerId);
+          this.keyPointers.set(e.pointerId, hit.midi);
+          this.onKeyPress?.(hit.midi, true);
+          return;
+        }
+      }
       if (this.notes) {
         const hit = this.noteHit(e.clientX, e.clientY);
         this.onNoteSelect?.(hit ? hit.index : null);
@@ -370,6 +422,7 @@ export class PianoRoll {
       c.classList.add('is-scrubbing');
     });
     c.addEventListener('pointermove', (e) => {
+      if (this.keysPlayable) c.classList.toggle('is-over-keys', !!this.noteAt(e.clientX, e.clientY)?.onKeys);
       const nd = this.noteDrag;
       if (nd && e.pointerId === nd.pointerId) return this.dragNote(nd, e, false);
       if (this.notes && !nd) {
@@ -383,6 +436,12 @@ export class PianoRoll {
       this.onScrub?.(Math.min(this.duration, Math.max(0, t)));
     });
     const end = (e: PointerEvent) => {
+      const key = this.keyPointers.get(e.pointerId);
+      if (key !== undefined) {
+        this.keyPointers.delete(e.pointerId);
+        this.onKeyPress?.(key, false);
+        return;
+      }
       const nd = this.noteDrag;
       if (nd && e.pointerId === nd.pointerId) {
         this.noteDrag = null;
@@ -610,10 +669,20 @@ export class PianoRoll {
     }
 
     // Harmony voices: thinner lines on their own notes' lanes (Goal.mp4, 1:28).
-    const voiceCount = this.tuning?.harmony?.voices.length ?? 0;
+    const keys = this.keyHarmony !== null;
+    const voiceCount = keys ? MAX_KEY_VOICES : (this.tuning?.harmony?.voices.length ?? 0);
     for (let k = 0; k < voiceCount; k++) {
       const note = (f: RollFrame) => f.harmony[k] ?? null;
-      const value = (f: RollFrame) => (f.corrected === null || f.target === null || f.harmony[k] === undefined ? null : f.corrected + f.harmony[k] - f.target);
+      const value = (f: RollFrame) => {
+        const h = f.harmony[k];
+        if (h === undefined) return null;
+        // Keys: the key plus the line's expression. Intervals: the corrected line moved by the interval.
+        if (keys) {
+          const line = this.displayMidi(f);
+          return line === null ? null : h + (line - Math.round(line));
+        }
+        return f.corrected === null || f.target === null ? null : f.corrected + h - f.target;
+      };
       this.strokeRuns(g, L, xOf, from, to, value, note, 1.75, 8, 0.85);
     }
 
@@ -808,6 +877,31 @@ export class PianoRoll {
         ctx.fillText(pitchClassName(m), L.keyW * 0.6 - 5, L.yOf(m) + 1);
       }
     }
+  }
+
+  /** Held keys: an accent bar along the key and a dot, plus a faint stripe across their lane. */
+  private drawHeldKeys(L: Layout): void {
+    if (!this.held.size) return;
+    const { ctx } = this;
+    ctx.save();
+    for (const m of this.held) {
+      if (m < L.lowNote || m > L.highNote) continue;
+      const y = L.yOf(m);
+      ctx.fillStyle = 'rgba(246, 196, 83, 0.10)';
+      ctx.fillRect(L.keyW, y - L.laneH / 2, L.w - L.keyW, L.laneH);
+      ctx.fillStyle = '#f6c453';
+      ctx.shadowColor = 'rgba(246, 196, 83, 0.9)';
+      ctx.shadowBlur = 10;
+      ctx.beginPath();
+      ctx.roundRect(2, y - L.laneH * 0.32, 4, L.laneH * 0.64, 2);
+      ctx.fill();
+      // The dot sits left of the key's letter (labels are right-aligned).
+      ctx.beginPath();
+      ctx.arc(16, y, Math.max(2.5, Math.min(5, L.laneH * 0.22)), 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    }
+    ctx.restore();
   }
 
   private fillKey(midi: number, x: number, y: number, w: number, h: number, r: number, base: string): void {

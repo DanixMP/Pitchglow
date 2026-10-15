@@ -8,10 +8,12 @@ import {
   loadCleanup,
   loadExportFormat,
   loadInput,
+  loadKeys,
   loadMetronome,
   loadTuning,
   type CleanupPrefs,
   type InputPrefs,
+  type KeysPrefs,
   type MetronomePrefs,
   type TuningPrefs,
 } from '../storage/settings';
@@ -43,6 +45,10 @@ export interface AppState {
   input: InputPrefs;
   /** Click track (Phase 17): on/off, level, accent. */
   metronome: MetronomePrefs;
+  /** Play-the-keys harmony (Phase 19): prefs, the held keys, and connected MIDI inputs (null = not started). */
+  keys: KeysPrefs;
+  heldKeys: number[];
+  midi: { devices: string[]; status: 'off' | 'on' | 'unsupported' | 'denied' };
   /** File format for exports (takes, processed takes, mixes); stems are always WAV. */
   exportFormat: 'wav' | 'mp3';
   /** An instrumental is being imported/decoded. */
@@ -97,6 +103,9 @@ export function createAppStore(): AppStore {
     source: 'mic',
     input: loadInput(),
     metronome: loadMetronome(),
+    keys: loadKeys(),
+    heldKeys: [],
+    midi: { devices: [], status: 'off' },
     exportFormat: loadExportFormat(),
     importing: false,
     detection: null,

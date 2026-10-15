@@ -110,6 +110,18 @@ non-destructive, can be undone, and is heard straight away while the song plays 
   <img src="docs/screenshots/note-editing.png" alt="Note editing: sung notes as blobs on the piano roll, one moved up a semitone and selected" width="760" />
 </p>
 
+### 🎹 Play the harmony
+
+Switch the Harmony section to **Keys** and hold notes, either on the keyboard at the left of the roll
+(click to latch, so a mouse can hold chords) or on a **MIDI keyboard**. Your voice sings every held note
+at once, Jacob Collier style, live in your headphones while you sing. Voices sit near your own pitch
+(or exactly as played) and keep your vibrato. Takes you record into a song remember the keys, so the
+harmony plays back and exports exactly as you heard it.
+
+<p align="center">
+  <img src="docs/screenshots/play-the-keys.png" alt="Play-the-keys: a chord held on the roll's keyboard, the voice's harmony lines on the held notes" width="760" />
+</p>
+
 ### 🎭 Voice character
 
 Turn your voice into someone else's: **Deeper**, **Younger**, **Chipmunk**, **Monster**, **Robot**
@@ -368,14 +380,14 @@ The microphone needs `localhost` or HTTPS.
 - [x] **v1:** live pitch visualizer, recorder, auto-tune (visual + audio), harmonizer, noise reduction, PWA
 - [x] **v2 "Studio":** three-column layout, songs & tracks, beat import with key/BPM detection, recording
       over the beat, mixer, effects, loop, song files, MP3
-- [ ] **v3 "Real-time & Neon studio"**
+- [x] **v3 "Real-time & Neon studio"**
   - [x] Real-time voice engine: every change instant during playback
   - [x] Hear yourself live: monitoring with auto-tune, harmony and effects
   - [x] Clean-up and the beat's key shift live too, plus voice character (formant shift, robot, whisper)
   - [x] "Neon studio" UX: custom sliders with snapping, context cursors, LED meters
   - [x] Metronome & grid: click, count-in on the beat, tap tempo, bar/beat lines, align takes to the beat
   - [x] Note editing: drag sung notes to new pitches and times, per-note correction
-  - [ ] Play-the-keys harmony (MIDI keyboard)
+  - [x] Play-the-keys harmony: on-screen keys or a MIDI keyboard, live and recorded with the take
 
 ## Credits & licenses
 

@@ -35,9 +35,11 @@ export function trackProcessSettings(track: Track, project: Project): ProcessSet
   const voice = trackVoiceOf(track);
   const neutral = isNeutralVoice(voice);
   const notes = track.noteEdits ?? [];
-  if (!base && !pitch && !fx.gate && !fx.deess && neutral && !notes.length) return null;
+  const keys = track.keys?.events.length ? { events: track.keys.events, voicing: track.keys.voicing, mix: track.tuning.harmonyMix } : null;
+  if (!base && !pitch && !fx.gate && !fx.deess && neutral && !notes.length && !keys) return null;
   return {
     ...(notes.length ? { notes } : {}),
+    ...(keys ? { keys } : {}),
     tune: base?.tune ?? null,
     denoise: base?.denoise ?? null,
     pitch,

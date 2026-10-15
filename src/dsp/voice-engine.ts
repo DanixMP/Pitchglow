@@ -10,6 +10,7 @@ import { correctTrack, type Correction, type TuneSettings } from './autotune';
 import { cleanupActive, CleanupStream, type CleanupAnalysis, type CleanupSettings } from './cleanup';
 import { GrainCache, type GrainVoice } from './grain-shape';
 import { harmonyCorrections } from './harmony';
+import { keyHarmonyCorrections, keyVoiceCount, type KeyEvent, type Voicing } from './keys';
 import { applyNoteEdits, buildWarp, isNeutralEdit, segmentNotes, warpToSource, type NoteEdit } from './note-edit';
 import { planGrains, renderGrains, type GrainPlan, type PsolaAnalysis } from './psola';
 import { nearestInScale, scaleMask, type Scale } from './scales';
@@ -85,6 +86,14 @@ export function leadCorrections(
   return lead;
 }
 
+/** Keys played while the take was sung (Phase 19): they replace the interval harmony voices. */
+export interface KeyHarmony {
+  events: KeyEvent[];
+  voicing: Voicing;
+  /** Level of the key voices together (as the harmony mix). */
+  mix: number;
+}
+
 /** Plans for a take with these settings; null = nothing to do (play the source as it is). */
 export function planVoices(
   analysis: PsolaAnalysis,
@@ -93,11 +102,23 @@ export function planVoices(
   semitones: number,
   voice: VoiceCharacter = NEUTRAL_VOICE,
   edits: readonly NoteEdit[] = [],
+  keys: KeyHarmony | null = null,
 ): VoicePlans | null {
   edits = edits.filter((e) => !isNeutralEdit(e));
-  if (!tune && !semitones && isNeutralVoice(voice) && !edits.length) return null;
+  const keyVoices = keys ? keyVoiceCount(keys.events) : 0;
+  if (!tune && !semitones && isNeutralVoice(voice) && !edits.length && !keyVoices) return null;
   const lead = leadCorrections(frames, tune, semitones, voice.monotone, edits);
   const warp = edits.some((e) => e.start !== undefined) ? buildWarp(segmentNotes(frames), edits, analysis.sampleRate, analysis.length) : null;
+  if (keys && keyVoices) {
+    // Play-the-keys: one voice per held key (voiced-only; silent where fewer keys are held).
+    return {
+      lead: planGrains(analysis, lead, true, grainVoice(voice, 0), warp),
+      harmonies: Array.from({ length: keyVoices }, (_, k) =>
+        planGrains(analysis, keyHarmonyCorrections(frames, lead, keys.events, keys.voicing, k), false, grainVoice(voice, k + 1), warp),
+      ),
+      harmonyGain: keys.mix / Math.sqrt(keyVoices),
+    };
+  }
   const voices = tune?.harmony?.voices ?? [];
   return {
     lead: planGrains(analysis, lead, true, grainVoice(voice, 0), warp),

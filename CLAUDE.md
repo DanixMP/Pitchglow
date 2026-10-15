@@ -279,6 +279,25 @@ Look: a near-black background (#0f0f10-ish), muted dark lane fills whose hue cyc
     - Dragging note 4 up 2 lanes gave shift +2. Heard 50.09 vs 48.04 after one undo (sung 48.01); redo is back.
     - Dragging it sideways 7 px moved the edit by +0.098 s, and the D3 was heard 0.097 s later at both ends.
     - Keys worked: N, →→, ↑, Shift+↑ (= +1.1), Delete, Esc.
+- **Play-the-keys harmony (Phase 19):**
+  - **Maths** (`src/dsp/keys.ts`, pure, tested): one harmony voice per held key (lowest key = first voice, at most `MAX_KEY_VOICES` = 4).
+    - Voicing **near** moves each key to the octave closest to the sung line (duplicates dropped); **played** keeps it.
+    - Each voice sings its key plus the line's expression (corrected − its nearest semitone), so vibrato and scoops ride along. With auto-tune at 0 ms the voices are exact.
+    - `KeyEvent { t, notes }` = the held set from t (s into the take). `addKeyEvent` drops repeats and replaces same-time changes; `keysAt`; `keyHarmonyCorrections` per slot.
+  - **Live** (`LiveVoice.setKeys(keys | null, voicing, mix)`): keys replace the interval voices from the next pitch frame without resetting the corrector. Keys mode always processes (no 25 ms jump on the first key). A separate `keys` message reaches the live worklet (`LiveKeysMessage`), re-applied when monitoring switches on; `AudioInput.setKeys`. The CPU fallback counts key voices.
+  - **Playback/export:** `planVoices(…, keys)` gives one voiced-only plan per key slot. **`planGrains` now skips grains where a non-passthrough voice's curve has no pitch inside a sung stretch**, so a slot is silent where fewer keys are held; interval harmonies are unchanged (their curves only lack pitch where unvoiced). Gain = mix / √voices.
+  - **Recording:** `Session.syncKeys` records every held-set change into the take (context time − the take's first sample). Keys already held at Record start at 0. A take recorded into a song keeps them as `track.keys = { events, voicing }` (the mix = the track's harmony mix). `trackProcessSettings` → `ProcessSettings.keys` → worker. "Remove the track's keys" (undoable); voicing changes re-plan the selected track's keys.
+  - **Inputs:**
+    - The roll's keyboard is playable in keys mode (`PianoRoll.setKeysPlayable`, `onKeyPress`, multi-touch via pointer ids). **Latch** (default): a click toggles a key, for chords with a mouse.
+    - Web MIDI (`src/audio/midi-input.ts`): every input, note on/off, sustain pedal CC 64 (keys released under the pedal stay until it lifts). Access is asked when keys mode turns on (or at start if it was on).
+    - Held keys are drawn on the roll (accent bar + dot on the key, a faint lane stripe).
+  - **Roll:** `setKeyHarmony({ voicing, held } | { voicing, at(frameIndex) })` draws the key voices as harmony lines and lit lanes: the held keys live; the track's recorded keys in playback (looked up by the take frame's own time, so note-timing warps don't matter).
+  - **UI:** Harmony section **Intervals | Keys** (`ui/panels/keys-panel.ts`; the tuning panel hides the interval chips and enables Mix in keys mode, even with auto-tune off). Also: voicing (Near my voice / As played), latch, the held notes + MIDI status, "Let go of all", "Remove the track's keys (n changes)". Prefs in `localStorage['recorder.keys']`.
+  - **Fix found on the way:** the transport's A/B buttons were picked with `.segmented .seg`, which would have grabbed any other segmented control; it's now `.seg[data-ab]`.
+  - **Verified in the app** (demo voice; output captured and measured):
+    - Two latched keys clicked on the roll's keyboard (F3 + C4) while listening with "Hear myself": 23× (F3) and 3.9× (C4, which the demo also sings) more energy at those notes than with the keys released.
+    - A take recorded with A3 held, then E4 from 2 s, kept the events (0 s [A3], 2 s [E4], 4.01 s []). Its playback had A3 77× stronger only in the first part and E4 19× only in the second, against the same take with its keys removed; undo brings them back.
+    - The pane refuses Web MIDI ("MIDI access was refused" shown); real MIDI keyboards are for the user to try in Chrome/Edge.
 - **Modes** (`AppState.mode`, driven by `Session`): `idle`, `listening` (live line, nothing saved), `recording` (live line + saving), `playback` (a saved recording is open and the roll follows `Player.currentTime`).
 
 ## Architecture
@@ -306,6 +325,7 @@ src/
     live-voice.ts         causal PSOLA for monitoring: tracker + corrector + live marks + 25 ms-delayed synthesis
     harmony.ts            diatonic harmony voices + mixed render (renderWithHarmony)
     note-edit.ts          sung notes (segmentation), note edits on the pitch curve, timing warp
+    keys.ts               play-the-keys harmony: voicing held keys against the line, key events, per-slot curves
     limiter.ts            look-ahead peak limiter
     fft.ts                radix-2 complex FFT
     cleanup.ts            clean-up as a restartable stream: STFT Wiener (paired frames) -> gate -> de-esser; analysis
@@ -327,6 +347,7 @@ src/
     mixdown.ts            OfflineAudioContext mixdown/stems/processed take through the same graph and engine
     sync.ts               take alignment math, click-loopback latency detection, count-in times
     metronome.ts          scheduled click sounds (latency calibration)
+    midi-input.ts         Web MIDI keyboards: note on/off + sustain pedal
     render-worker.ts      Web Worker: voice requests (prepare once per take + plans per change), key/tempo
     engine/
       engine-worklet.ts   AudioWorklet 'voice-engine': renders a take from source + plans, follows the transport
@@ -382,6 +403,7 @@ src/
       roll-hover.ts       note label under the pointer on the roll (with the crosshair cursor)
       tempo-panel.ts      Tempo & click section: BPM + tap, beats per bar, bar 1, click, align take
       note-panel.ts       Edit notes button + Note section (pitch, own correction, timing, reset); roll note callbacks
+      keys-panel.ts       Harmony Intervals | Keys switch, voicing, latch, MIDI status; the roll's playable keyboard
 public/                   manifest, icon.svg, icons/*.png (generated)
 scripts/make-icons.mjs    procedural icon renderer (no deps)
 vite.config.ts            base './', LAN HTTPS mode, build-time service worker
@@ -654,7 +676,9 @@ The user asked for every setting to work in real time: hearing your voice proces
 - [x] Found and fixed: a slow drag became several undo steps (time-window coalescing); drags are one step now
 - [ ] Real-world check (user): note splits on real singing (too many/few?), drag feel, stretched consonants
 
-### Phase 19 — Play-the-keys harmony
-- [ ] Clickable on-screen piano + Web MIDI keyboard input
-- [ ] Harmony voices follow held keys live (engine), voiced from the sung note
-- [ ] Record key events into the track so playback/export reproduce them
+### Phase 19 — Play-the-keys harmony — branch `realtime-engine`
+- [x] Clickable on-screen piano (the roll's keyboard; latch for mouse chords, multi-touch) + Web MIDI keyboard input (sustain pedal)
+- [x] Harmony voices follow held keys live (LiveVoice), voiced near the sung note (or as played), keeping its expression
+- [x] Record key events into the track so playback/export reproduce them (plans per key slot, silent where fewer keys are held); key voices drawn on the roll
+- [ ] Real-world check (user): a real MIDI keyboard in Chrome/Edge, chords while singing with headphones, near vs as-played voicing
+- [ ] Later: overdub keys onto an existing track during playback (today keys are recorded with the take)

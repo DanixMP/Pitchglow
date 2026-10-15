@@ -265,7 +265,28 @@
         <details id="harmony-panel" class="section" open>
           <summary class="section-head">Harmony</summary>
           <div class="section-body">
+            <div class="segmented harmony-mode" role="radiogroup" aria-label="Harmony from">
+              <button class="seg is-on" type="button" role="radio" aria-checked="true" data-harmony-mode="intervals">Intervals</button>
+              <button class="seg" type="button" role="radio" aria-checked="false" data-harmony-mode="keys">Keys</button>
+            </div>
             <div id="harmony-voices" class="harmony-voices" role="group" aria-label="Harmony voices"></div>
+            <div id="keys-controls" class="fx-controls" hidden>
+              <p class="section-hint">Hold notes on the keyboard at the left of the roll, or on a MIDI keyboard: your voice sings them. Turn on <b>Hear myself</b> to hear them while you sing; takes recorded into a song keep the keys.</p>
+              <div class="segmented" role="radiogroup" aria-label="Voicing">
+                <button class="seg is-on" type="button" role="radio" aria-checked="true" data-voicing="near">Near my voice</button>
+                <button class="seg" type="button" role="radio" aria-checked="false" data-voicing="played">As played</button>
+              </div>
+              <label class="switch switch-quiet">
+                <input id="keys-latch" type="checkbox" role="switch" />
+                <span class="switch-track" aria-hidden="true"></span>
+                <span class="switch-label">Latch on-screen keys <span class="switch-hint">click to hold, click again to let go (chords with a mouse)</span></span>
+              </label>
+              <p id="keys-status" class="keys-status" aria-live="polite"></p>
+              <div class="calibrate">
+                <button id="keys-release" class="btn btn-small" type="button">Let go of all</button>
+                <button id="keys-clear" class="btn btn-small btn-ghost" type="button" hidden>Remove the track's keys</button>
+              </div>
+            </div>
             <label class="slider-field">
               <span class="field-label">Mix</span>
               <input id="harmony-mix" type="range" min="0" max="100" step="1" value="60" data-detents="60" aria-label="Harmony mix" />

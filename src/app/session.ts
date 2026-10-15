@@ -19,6 +19,8 @@ import { exportLength, renderMix, renderStems, renderVoice } from '../audio/mixd
 import { cleanupNotes, cleanupSettingsOf, type ProcessSettings } from '../dsp/process';
 import { CLEANUP_OFF, type CleanupAnalysis } from '../dsp/cleanup';
 import type { VoicePlans } from '../dsp/voice-engine';
+import { addKeyEvent, keysAt, type KeyEvent, type Voicing } from '../dsp/keys';
+import { MidiInput } from '../audio/midi-input';
 import { buildWarp, isNeutralEdit, noteSpan, segmentNotes, warpToOutput, type NoteEdit, type SungNote } from '../dsp/note-edit';
 import {
   alignToBeat,
@@ -64,6 +66,7 @@ import {
   nextProjectName,
   removeTrack as removeTrackModel,
   titleFromFileName,
+  type TrackKeys,
   updateTrack as updateTrackModel,
   withInstrumental,
   withoutTake,
@@ -72,7 +75,7 @@ import {
 } from '../project/model';
 import { packFrames, unpackFrames } from '../storage/pitch-track';
 import { RecordingStore, type Asset, type RecordingMeta } from '../storage/recording-store';
-import type { CleanupPrefs, TuningPrefs } from '../storage/settings';
+import type { CleanupPrefs, KeysPrefs, TuningPrefs } from '../storage/settings';
 import type { PianoRoll } from '../ui/piano-roll';
 import { processedLabelOf, processSettingsOf, trackProcessSettings, tuneSettingsOf, wantsProcessed } from './processing';
 import { openProject, type AppStore, type RenderState } from './state';
@@ -125,7 +128,7 @@ export class Session {
   private sampleRate = 0;
   /** Context time the live pitch line counts from (when Listen/Record started). */
   private liveOrigin = 0;
-  private take: { audio: SampleBuffer; frames: PitchFrame[]; firstTime: number | null } | null = null;
+  private take: { audio: SampleBuffer; frames: PitchFrame[]; firstTime: number | null; keys: KeyEvent[] } | null = null;
   /** Recording over the song: when/where playback started, for aligning the take afterwards. */
   private sync: { playStart: number; songPosition: number; latency: number } | null = null;
   /** Calibration listens to raw blocks instead of the tracker. */
@@ -144,6 +147,15 @@ export class Session {
   private stash: { tuning: TuningPrefs; cleanup: CleanupPrefs } | null = null;
   /** Tap-tempo taps (seconds, performance clock). */
   private taps: number[] = [];
+  /** Play-the-keys: keys down (screen or MIDI), keys kept by the sustain pedal, the pedal. */
+  private keysDown = new Set<number>();
+  private sustained = new Set<number>();
+  private sustain = false;
+  private readonly midi = new MidiInput({
+    onNote: (midi, down) => this.keyPress(midi, down, 'midi'),
+    onSustain: (down) => this.setSustain(down),
+    onDevices: (devices) => this.store.set({ midi: { devices, status: 'on' } }),
+  });
   /** Sung notes per take (segmented once), and the note being dragged on the roll. */
   private takeNotes = new Map<string, SungNote[]>();
   private noteDragBase: { trackId: string; index: number; edit: NoteEdit; span: { start: number; end: number }; key: string } | null = null;
@@ -172,6 +184,8 @@ export class Session {
 
   async init(): Promise<void> {
     await this.player.loadEngine();
+    this.syncKeys();
+    if (this.store.get().keys.on) void this.startMidi();
     const db = await this.getDb();
     const [recordings, projects] = await Promise.all([db.list(), db.listProjects()]);
     this.store.set({ recordings, projects });
@@ -193,11 +207,15 @@ export class Session {
       this.sampleRate = await this.input.start(source, { noiseSuppression: micFilter });
     }
     this.liveOrigin = this.player.context.currentTime;
-    this.take = record ? { audio: new SampleBuffer(), frames: [], firstTime: null } : null;
+    // Keys already held when the take starts are part of it from its first sample.
+    const held = this.store.get().keys.on ? this.store.get().heldKeys : [];
+    this.take = record ? { audio: new SampleBuffer(), frames: [], firstTime: null, keys: addKeyEvent([], 0, held) } : null;
     this.roll.start();
     this.roll.setNotes(null, null);
+    this.roll.setKeyHarmony(null);
     this.store.set({ mode: record ? 'recording' : 'listening', recordingSeconds: 0, status: '' });
     this.syncMonitor();
+    this.syncKeys();
     const song = openProject(this.store.get());
     this.roll.setGrid(null);
     const { metronome, input } = this.store.get();
@@ -329,7 +347,7 @@ export class Session {
     return this.take && this.sampleRate ? this.take.audio.length / this.sampleRate : 0;
   }
 
-  private async saveTake(t: { audio: SampleBuffer; frames: PitchFrame[] }, offset = 0): Promise<void> {
+  private async saveTake(t: { audio: SampleBuffer; frames: PitchFrame[]; keys?: KeyEvent[] }, offset = 0): Promise<void> {
     const samples = t.audio.toFloat32();
     const duration = samples.length / this.sampleRate;
     if (duration < MIN_RECORDING_SECONDS) {
@@ -352,8 +370,10 @@ export class Session {
     if (this.store.get().projectId) {
       // Recording inside a song: the take becomes a new vocal track, with the settings it was sung with.
       this.takes.set(meta.id, loaded);
-      const { tuning, cleanup } = this.store.get();
-      this.addTrackFromTake(meta, tuning, cleanup, offset, true);
+      const { tuning, cleanup, keys } = this.store.get();
+      // Keys played while singing come along, so the track plays the same harmony back.
+      const played = keys.on && t.keys?.length ? { events: t.keys, voicing: keys.voicing } : undefined;
+      this.addTrackFromTake(meta, tuning, cleanup, offset, true, played);
     } else {
       this.showPreview(loaded, false);
     }
@@ -721,7 +741,7 @@ export class Session {
    * auto-tune scale is shifted to match and its pitch offset cancels the key shift, so it plays back
    * as sung.
    */
-  private addTrackFromTake(meta: RecordingMeta, tuning: TuningPrefs, cleanup: CleanupPrefs, offset = 0, sung = false): void {
+  private addTrackFromTake(meta: RecordingMeta, tuning: TuningPrefs, cleanup: CleanupPrefs, offset = 0, sung = false, keys?: TrackKeys): void {
     const project = openProject(this.store.get());
     if (!project) return;
     const shift = sung ? project.keyShift : 0;
@@ -734,6 +754,7 @@ export class Session {
       pitch: -shift + (sung && selected ? presetPitch(trackVoiceOf(selected)) : 0),
       ...(sung && selected?.fx ? { fx: structuredClone(selected.fx) } : {}),
       ...(sung && selected?.voice ? { voice: { ...selected.voice } } : {}),
+      ...(keys ? { keys } : {}),
     };
     this.mutateProject(project.id, (p) => addTrack(p, track));
     this.selectTrack(track.id);
@@ -918,6 +939,96 @@ export class Session {
     const fx: SongFx = { reverb: { ...cur.reverb, ...patch.reverb }, echo: { ...cur.echo, ...patch.echo } };
     this.mutateProject(project.id, (p) => ({ ...p, fx, updatedAt: Date.now() }), `songfx:${Object.keys(patch.reverb ?? patch.echo ?? {}).join(',')}`);
     this.player.setSongFx(fx, project.bpm ?? null);
+  }
+
+  // --- play-the-keys harmony (Phase 19) -------------------------------------------------------------
+
+  /** Keys mode on/off (harmony from held keys). Starts listening to MIDI keyboards the first time. */
+  setKeysOn(on: boolean): void {
+    this.store.set((s) => ({ keys: { ...s.keys, on } }));
+    if (on) void this.startMidi();
+    else this.releaseAllKeys();
+    this.syncKeys();
+  }
+
+  setKeysPrefs(patch: Partial<Pick<KeysPrefs, 'latch' | 'voicing'>>): void {
+    this.store.set((s) => ({ keys: { ...s.keys, ...patch } }));
+    if (patch.latch === false) this.releaseAllKeys();
+    this.syncKeys();
+  }
+
+  private async startMidi(): Promise<void> {
+    if (!MidiInput.supported) return this.store.set({ midi: { devices: [], status: 'unsupported' } });
+    const ok = await this.midi.start();
+    if (!ok) this.store.set({ midi: { devices: [], status: 'denied' } });
+  }
+
+  /**
+   * A key pressed or released: on the roll's keyboard (`screen`; with latch a press toggles it) or a
+   * MIDI keyboard (held while down, or until the sustain pedal comes up).
+   */
+  keyPress(midi: number, down: boolean, source: 'screen' | 'midi'): void {
+    if (!this.store.get().keys.on) return;
+    if (source === 'screen' && this.store.get().keys.latch) {
+      if (!down) return;
+      if (this.keysDown.has(midi)) this.keysDown.delete(midi);
+      else this.keysDown.add(midi);
+    } else if (down) {
+      this.keysDown.add(midi);
+      this.sustained.delete(midi);
+    } else {
+      this.keysDown.delete(midi);
+      if (this.sustain) this.sustained.add(midi);
+    }
+    this.syncKeys();
+  }
+
+  private setSustain(down: boolean): void {
+    this.sustain = down;
+    if (!down) this.sustained.clear();
+    this.syncKeys();
+  }
+
+  /** Lets go of every key (latched, held and sustained). */
+  releaseAllKeys(): void {
+    this.keysDown.clear();
+    this.sustained.clear();
+    this.syncKeys();
+  }
+
+  /** Sends the held keys to the live voice and the roll, and records changes into a take. */
+  syncKeys(): void {
+    const { keys, tuning } = this.store.get();
+    const held = keys.on ? [...new Set([...this.keysDown, ...this.sustained])].sort((a, b) => a - b) : [];
+    const prev = this.store.get().heldKeys;
+    if (held.length !== prev.length || held.some((n, i) => n !== prev[i])) this.store.set({ heldKeys: held });
+    this.input.setKeys(keys.on ? held : null, keys.voicing, tuning.harmonyMix);
+    this.roll.setKeysPlayable(keys.on);
+    this.roll.setHeldKeys(held);
+    // Live: the line's harmony follows the held keys.
+    if (this.isLive) this.roll.setKeyHarmony(keys.on ? { voicing: keys.voicing, held } : null);
+    const take = this.take;
+    if (take && keys.on) {
+      const t = take.firstTime === null ? 0 : this.player.context.currentTime - take.firstTime;
+      take.keys = addKeyEvent(take.keys, t, held);
+    }
+  }
+
+  /** Removes the keys recorded with a track (its harmony goes back to the interval voices). */
+  clearTrackKeys(trackId: string): void {
+    const project = openProject(this.store.get());
+    if (!project?.tracks.find((t) => t.id === trackId)?.keys) return;
+    this.mutateProject(project.id, (p) => updateTrackModel(p, trackId, { keys: undefined }));
+    this.updateTrackVoice(trackId);
+  }
+
+  /** Voicing of the keys recorded with a track (re-plans its harmony). Undoable. */
+  setTrackKeysVoicing(trackId: string, voicing: Voicing): void {
+    const project = openProject(this.store.get());
+    const track = project?.tracks.find((t) => t.id === trackId);
+    if (!project || !track?.keys) return;
+    this.mutateProject(project.id, (p) => updateTrackModel(p, trackId, { keys: { ...track.keys!, voicing } }));
+    this.updateTrackVoice(trackId);
   }
 
   // --- tempo & metronome (Phase 17) -------------------------------------------------------------
@@ -1266,6 +1377,11 @@ export class Session {
         }),
     );
     this.roll.setNoteEdits(selected?.noteEdits ?? []);
+    // Keys recorded with the track: drawn as its harmony lines (by the take's own frame times).
+    const keyTake = selected?.keys?.events.length && selected.takeId ? this.takes.get(selected.takeId) : undefined;
+    this.roll.setKeyHarmony(
+      keyTake && selected?.keys ? { voicing: selected.keys.voicing, at: (i) => keysAt(selected.keys!.events, keyTake.frames[i]?.time ?? 0) } : null,
+    );
     // While editing notes the view stays put (it would jump as notes move).
     this.roll.showRecording(selected ? shifted(selected) : [], this.player.duration, this.player.currentTime, state.noteMode);
     this.syncNoteBlobs();
@@ -1503,6 +1619,7 @@ export class Session {
           semitones: settings.pitch ?? 0,
           voice: settings.voice,
           notes: settings.notes,
+          keys: settings.keys,
           have: voice.version,
         });
         if (!r || !isCurrent()) return; // superseded, removed or closed

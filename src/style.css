@@ -1569,6 +1569,22 @@ body {
   background: rgba(246, 196, 83, 0.14);
 }
 
+/* --- Phase 19: play-the-keys harmony ----------------------------------------------------------- */
+
+.harmony-mode {
+  align-self: flex-start;
+}
+
+.keys-status {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.keys-status b {
+  color: var(--accent);
+}
+
 /* --- Phase 18: note editing ----------------------------------------------------------------------- */
 
 .roll-tool {
@@ -1600,6 +1616,10 @@ body {
   margin: 0;
   font-weight: 700;
   font-size: 13px;
+}
+
+#roll.is-keys-playable.is-over-keys {
+  cursor: pointer;
 }
 
 #roll.is-note-hover {

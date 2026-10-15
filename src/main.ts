@@ -5,13 +5,14 @@ import { processSettingsOf, wantsProcessed } from './app/processing';
 import { Session } from './app/session';
 import { createAppStore } from './app/state';
 import { setupPwa } from './pwa';
-import { saveCleanup, saveExportFormat, saveInput, saveMetronome, saveTuning } from './storage/settings';
+import { saveCleanup, saveExportFormat, saveInput, saveKeys, saveMetronome, saveTuning } from './storage/settings';
 import { Captions } from './ui/captions';
 import { $ } from './ui/dom';
 import { mountCleanupPanel } from './ui/panels/cleanup-panel';
 import { mountFxPanel } from './ui/panels/fx-panel';
 import { mountTempoPanel } from './ui/panels/tempo-panel';
 import { mountNotePanel } from './ui/panels/note-panel';
+import { mountKeysPanel } from './ui/panels/keys-panel';
 import { mountHeader } from './ui/panels/header';
 import { mountImportPanel } from './ui/panels/import-panel';
 import { mountInputPanel } from './ui/panels/input-panel';
@@ -49,6 +50,7 @@ mountCleanupPanel(store, captions);
 mountFxPanel(store, session);
 mountTempoPanel(store, session);
 mountNotePanel(store, session, roll);
+mountKeysPanel(store, session, roll);
 const transport = mountTransport(store, session, roll, captions);
 const readout = mountReadout(store, roll, session.player);
 mountOnboarding(store, captions);
@@ -60,6 +62,7 @@ store.watch(
   (s) => [s.tuning, s.cleanup] as const,
   () => {
     session.settingsChanged();
+    session.syncKeys(); // the harmony mix also sets the key voices' level
     const global = session.globalSettings();
     saveTuning(global.tuning);
     saveCleanup(global.cleanup);
@@ -78,6 +81,10 @@ store.watch(
 store.watch(
   (s) => s.exportFormat,
   (format) => saveExportFormat(format),
+);
+store.watch(
+  (s) => s.keys,
+  (keys) => saveKeys(keys),
 );
 store.watch(
   (s) => s.metronome,

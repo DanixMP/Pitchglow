@@ -3,10 +3,11 @@
 // Uses the app's shared AudioContext, so blocks and frames carry times on the same clock as playback.
 
 import type { TuneSettings } from '../dsp/autotune';
+import type { Voicing } from '../dsp/keys';
 import type { VoiceCharacter } from '../dsp/voice-engine';
 import { midiToFreq } from '../dsp/notes';
 import { sharedContext } from './context';
-import { LIVE_PROCESSOR, type LiveMessage, type LiveSettingsMessage } from './engine/live-protocol';
+import { LIVE_PROCESSOR, type LiveKeysMessage, type LiveMessage, type LiveSettingsMessage } from './engine/live-protocol';
 import liveWorkletUrl from './engine/live-worklet.ts?worker&url';
 import type { PitchFrame } from './pitch-tracker';
 
@@ -39,6 +40,7 @@ export class AudioInput {
   private live: AudioWorkletNode | null = null;
   private demo: { stop(): void; direct: GainNode } | null = null;
   private processing: LiveProcessing = { monitor: false, tune: null, semitones: 0, voice: null };
+  private keys: LiveKeysMessage = { type: 'keys', keys: null, voicing: 'near', mix: 0.6 };
   private _kind: InputKind | null = null;
   private _noiseSuppression = false;
   private _inputLatency = 0;
@@ -57,6 +59,12 @@ export class AudioInput {
     this.live?.port.postMessage(msg);
     // The demo voice plays itself quietly to the speakers; while monitoring, you hear it processed instead.
     if (this.demo) this.demo.direct.gain.value = p.monitor ? 0 : DEMO_DIRECT;
+  }
+
+  /** Play-the-keys (Phase 19): the held keys the harmony voices sing (null = off). Immediate. */
+  setKeys(keys: number[] | null, voicing: Voicing, mix: number): void {
+    this.keys = { type: 'keys', keys, voicing, mix };
+    this.live?.port.postMessage(this.keys);
   }
 
   /** Whether the running mic uses the browser's built-in noise suppression. */
@@ -104,6 +112,7 @@ export class AudioInput {
         else if (m.type === 'frame') this.handlers.onFrame(m.frame, m.at / rate);
         else this.handlers.onStats?.({ load: m.load, degraded: m.degraded, delaySeconds: m.delay / rate });
       };
+      live.port.postMessage(this.keys);
       live.port.postMessage(this.processing satisfies LiveSettingsMessage);
       // Keep the node pulled by the graph without making any sound (the monitor is routed separately).
       const mute = new GainNode(ctx, { gain: 0 });

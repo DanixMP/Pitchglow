@@ -163,9 +163,17 @@ export function planGrains(
 ): GrainPlan {
   const { length: n, sampleRate, times, periods, midi, regions } = analysis;
   const ratios = new Float64Array(periods.length);
+  // Voices without passthrough (harmonies) are silent where their curve has no pitch, even inside a
+  // sung stretch (a key voice with no key held there).
+  let silentFrames = false;
+  const silent = new Uint8Array(periods.length);
   for (let i = 0; i < periods.length; i++) {
     const c = corrections[i]?.corrected;
     ratios[i] = c === null || c === undefined || Number.isNaN(midi[i]) ? 1 : Math.pow(2, (c - midi[i]) / 12);
+    if (!passthrough && (c === null || c === undefined) && !Number.isNaN(midi[i])) {
+      silent[i] = 1;
+      silentFrames = true;
+    }
   }
   const unvoicedPeriod = Math.max(16, Math.round(sampleRate * UNVOICED_PERIOD_SECONDS));
   const plan = new PlanBuilder(n, passthrough, voice, warp);
@@ -190,7 +198,7 @@ export function planGrains(
       const a = marks[idx];
       const synthPeriod = periodAt(u) / ratioAt(u);
       // Grains are two analysis periods long (classic TD-PSOLA), whatever the shift.
-      plan.push(a, Math.round(t), Math.round(periodAt(a)), 1);
+      if (!silentFrames || !silent[nearestFrame(times, r.frameFrom, r.frameTo, u / sampleRate)]) plan.push(a, Math.round(t), Math.round(periodAt(a)), 1);
       t += synthPeriod;
     }
     cursor = r.end;
@@ -366,6 +374,18 @@ function interpolate(times: Float64Array, values: Float64Array, from: number, to
   }
   const u = (t - times[lo]) / (times[hi] - times[lo]);
   return values[lo] + (values[hi] - values[lo]) * u;
+}
+
+/** Index of the frame in [from, to) whose time is nearest `t`. */
+function nearestFrame(times: Float64Array, from: number, to: number, t: number): number {
+  let lo = from;
+  let hi = to - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (times[mid] <= t) lo = mid;
+    else hi = mid;
+  }
+  return Math.abs(times[hi] - t) < Math.abs(times[lo] - t) ? hi : lo;
 }
 
 function argmax(sig: Float32Array, from: number, to: number): number {

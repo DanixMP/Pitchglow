@@ -75,6 +75,23 @@ await sleep(5000);
 await page.screenshot({ path: `${OUT}/harmonizer.png` });
 log('harmonizer');
 
+// --- 2b. Play-the-keys: a chord held on the roll's keyboard, sung by the voice -----------------
+await page.evaluate(() => {
+  const { store, session } = window.recorder;
+  store.set((s) => ({ tuning: { ...s.tuning, harmony: [] } }));
+  session.setKeysOn(true);
+  session.setKeysPrefs({ voicing: 'near', latch: true });
+  for (const m of [57, 60, 64]) session.keyPress(m, true, 'screen');
+});
+await sleep(4500);
+await shoot(page, '.stage', `${OUT}/play-the-keys.png`, 0);
+await page.evaluate(() => {
+  const { session } = window.recorder;
+  session.releaseAllKeys();
+  session.setKeysOn(false);
+});
+log('play the keys');
+
 // --- 3. Hear myself (monitoring) readout in the Input section ----------------------------------
 await page.evaluate(() => {
   window.recorder.store.set((s) => ({ input: { ...s.input, monitor: true }, tuning: { ...s.tuning, harmony: [] } }));

@@ -21,7 +21,7 @@ export function mountTransport(store: AppStore, session: Session, roll: PianoRol
   const seek = $<HTMLInputElement>('seek');
   const timeCurrent = $('time-current');
   const timeTotal = $('time-total');
-  const abButtons = $$<HTMLButtonElement>('.segmented .seg');
+  const abButtons = $$<HTMLButtonElement>('.seg[data-ab]');
   const renderStatus = $('render-status');
   const exportBtn = $<HTMLButtonElement>('export-tuned');
   const exportLabel = exportBtn.querySelector('span')!;

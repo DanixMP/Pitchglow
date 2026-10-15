@@ -1,6 +1,7 @@
 // Auto-tune preferences, remembered per browser in localStorage (falls back to defaults).
 
 import { HARMONY_VOICES, type HarmonyVoice } from '../dsp/harmony';
+import type { Voicing } from '../dsp/keys';
 import { SCALE_TYPES, type ScaleType } from '../dsp/scales';
 
 export interface TuningPrefs {
@@ -160,6 +161,38 @@ export function loadMetronome(): MetronomePrefs {
 export function saveMetronome(prefs: MetronomePrefs): void {
   try {
     localStorage.setItem(METRONOME_KEY, JSON.stringify(prefs));
+  } catch {
+    // Storage unavailable: settings just won't persist.
+  }
+}
+
+// --- play-the-keys (Phase 19) -------------------------------------------------------------------
+
+export interface KeysPrefs {
+  /** Harmony from held keys instead of intervals. */
+  on: boolean;
+  /** On-screen keys stay down until clicked again (chords with a mouse). */
+  latch: boolean;
+  voicing: Voicing;
+}
+
+export const DEFAULT_KEYS: KeysPrefs = { on: false, latch: true, voicing: 'near' };
+
+const KEYS_KEY = 'recorder.keys';
+
+export function loadKeys(): KeysPrefs {
+  try {
+    const raw = JSON.parse(localStorage.getItem(KEYS_KEY) ?? 'null') as Partial<KeysPrefs> | null;
+    if (!raw) return { ...DEFAULT_KEYS };
+    return { on: raw.on === true, latch: raw.latch !== false, voicing: raw.voicing === 'played' ? 'played' : 'near' };
+  } catch {
+    return { ...DEFAULT_KEYS };
+  }
+}
+
+export function saveKeys(prefs: KeysPrefs): void {
+  try {
+    localStorage.setItem(KEYS_KEY, JSON.stringify(prefs));
   } catch {
     // Storage unavailable: settings just won't persist.
   }
