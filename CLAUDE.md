@@ -205,6 +205,27 @@ Look: a near-black background (#0f0f10-ish), muted dark lane fills whose hue cyc
   - **CPU, measured in real Chrome** (headless, `OfflineAudioContext`, 8 tracks): nothing on 9%; auto-tune 9%; + 3 harmonies 11%; formant 10%; whisper 16%; full clean-up 17%. A stereo beat with key shift adds ~3.8%; live monitoring ~3.5%.
     - **The desktop app's built-in browser pane runs this JS ~5–7× slower than Chrome** (FFT pair 0.71 ms vs 0.11 ms), so CPU figures measured there (Phases 13–14 below) overstate real use.
     - Benchmark scripts were run with puppeteer-core against `npm run dev` (see `scripts/screenshots.mjs` for the setup).
+- **Neon studio UX (Phase 16):**
+  - **Design tokens** sit at the end of `style.css`:
+    - glow `--glow-accent`/`--glow-fg`/`--glow-record`, `--led-green`;
+    - radius `--radius-sm/md/pill`, motion `--dur-fast`/`--dur`/`--ease`;
+    - context cursors `--cursor-crosshair`, `--cursor-ew`, `--cursor-ew-active` (neon SVG data URIs with a keyword fallback; `auto` on `hover: none`).
+    - `prefers-reduced-motion` turns transitions and animations off.
+  - **Neon slider** (`src/ui/slider.ts`, maths in `slider-math.ts`, tested). `watchSliders(document.body)` in `main.ts` enhances every `<input type="range">` in place, including the ones created later (MutationObserver).
+    - The native input stays as the source of truth (focus, keyboard, ARIA; panels keep their `input`/`change`/`dblclick` listeners). It moves inside a wrapper `.ns` that takes over its classes (so the layout CSS still applies) and draws track, fill, detent ticks, thumb and value bubble.
+    - `input.value = …` from code is caught by a per-instance setter, so the picture follows.
+    - Pointer: drag relative to the grab point (no jump); clicking the track jumps there; **Shift = fine** (×0.1); **detents** snap within 2.5% of the range (default: the 0 of a range that crosses it; `data-detents="…"`, empty = none); **Alt = free**.
+    - Wheel steps only while the slider is focused (so columns still scroll). Double-click resets (forwarded to the input, plus `data-default`). `touch-action: pan-y`, so panels still scroll on phones.
+    - Fill from the centre for bipolar ranges; `data-fill="start"` for volume faders. The bubble shows `aria-valuetext`, the field's `.slider-value` text, or the value.
+  - **Controls:** a glowing knob arc, switch, segmented control, chips, active M/S/LIM and the playing Play button; a red glow on Record.
+  - **LED meters:** the fill is a fixed green→amber→red gradient revealed by `clip-path` from `--level` (set by `tracks-panel`), segmented with a mask.
+  - **Context cursors:** a crosshair on the roll plus a **note label under the pointer** (`ui/panels/roll-hover.ts`, `PianoRoll.noteAt`, mouse/pen only); ↔ on clips, loop edges and sliders; a crosshair on the ruler to draw a loop; active ↔ while dragging.
+  - **Touch (`pointer: coarse`):** taller sliders with bigger thumbs, 40 px icon/track buttons and chips; the mixer's grid columns grow to match.
+  - **Verified:**
+    - Real-pointer drag in the browser: Formant 0 → +3.5 st (model updated, preset → custom, bubble "+3.5 st"); dragged back near 0, it snapped to exactly 0 with the detent lit.
+    - Arrow keys stepped 0 → 1; the wheel while focused stepped it; double-click reset it.
+    - The roll label read E3 / C3 at two heights.
+    - Real-Chrome screenshots at 1440, 900 and 390 px (`npm run screenshots`, which now also makes `tablet.png` and shows a value bubble).
 - **Modes** (`AppState.mode`, driven by `Session`): `idle`, `listening` (live line, nothing saved), `recording` (live line + saving), `playback` (a saved recording is open and the roll follows `Player.currentTime`).
 
 ## Architecture
@@ -281,6 +302,8 @@ src/
     recordings-list.ts    takes list items (play, rename, export, delete; + / drag into the open song)
     icons.ts              shared SVG icons, icon buttons, inline name inputs, take drag MIME type
     knob.ts               rotary knob (drag, wheel, arrows, double-click to reset)
+    slider.ts             Neon slider: enhances every range input in place (detents, fine drag, bubble, wheel)
+    slider-math.ts        pure slider maths: positions, steps, detents, fill origin, relative drag
     captions.ts           word-by-word explainer captions over the roll
     colors.ts             lane/key color palette
     format.ts             time formatting
@@ -299,6 +322,7 @@ src/
       cleanup-panel.ts    Noise reduction section
       fx-panel.ts         Voice (presets, formant, whisper), Effects (track) and Song FX (key shift, reverb, echo) sections
       onboarding.ts       one-time studio tips (captions) when features first come up
+      roll-hover.ts       note label under the pointer on the roll (with the crosshair cursor)
 public/                   manifest, icon.svg, icons/*.png (generated)
 scripts/make-icons.mjs    procedural icon renderer (no deps)
 vite.config.ts            base './', LAN HTTPS mode, build-time service worker
@@ -549,12 +573,13 @@ The user asked for every setting to work in real time: hearing your voice proces
 - [x] Found and fixed: silent mix rebuilds during playback (since Phase 8); clean-up preparation stuck when everything was switched off; whisper LPC cost
 - [ ] Listening test (user): voice presets on real vocals, clean-up amounts while playing, key-shifted beats (artefacts beyond ±4 st)
 
-### Phase 16 — UX overhaul ("Neon studio")
-- [ ] Design tokens (colour, glow, radius, motion) + reduced-motion support
-- [ ] `Slider` component: detents/snap, Alt free, Shift fine, value bubble, wheel, keys, double-click reset, ARIA; replaces every range input
-- [ ] Neon knobs, toggles, segmented controls, LED meters; consistent hover/active/focus states
-- [ ] Context cursors: roll crosshair + note label, clip grab/grabbing, loop/slider resize; none on touch
-- [ ] Inspector/mixer/transport polish, touch targets ≥ 40 px on phones; checked at 1440/900/390 px
+### Phase 16 — UX overhaul ("Neon studio") — branch `realtime-engine`
+- [x] Design tokens (colour, glow, radius, motion) + reduced-motion support
+- [x] `Slider` component: detents/snap, Alt free, Shift fine, value bubble, wheel, keys, double-click reset, ARIA; replaces every range input (24 in a song, all enhanced; tests for the maths)
+- [x] Neon knobs, toggles, segmented controls, LED meters; consistent hover/active/focus states
+- [x] Context cursors: roll crosshair + note label, clip grab/grabbing, loop/slider resize; none on touch
+- [x] Inspector/mixer/transport polish (faders fill from the left, brighter rails), touch targets ≥ 40 px on phones; checked at 1440/900/390 px in real Chrome
+- [ ] Feel check (user): slider snapping strength, bubble placement, cursors on your mouse/trackpad
 
 ### Phase 17 — Metronome & grid
 - [ ] Click track (playback and recording, accent, volume), tap tempo / set BPM

@@ -100,6 +100,15 @@ Turn your voice into someone else's: **Deeper**, **Younger**, **Chipmunk**, **Mo
 moves the vowel colour without changing the pitch, so a voice can sound bigger or smaller and still sing
 the same notes. It works during playback, in exports and live in your headphones.
 
+### 🎚️ Neon controls
+
+Every slider is a custom control. It snaps to "home" values like 0 dB or centre pan (hold
+<kbd>Alt</kbd> to place it freely), goes ten times finer with <kbd>Shift</kbd>, shows its value in a
+bubble while you drag, and resets with a double-click. The meters are LED-style, and on desktop the
+cursor changes with what's under it: a crosshair with the **note name** over the piano roll, ↔ on
+clips, loop edges and sliders. Everything stays keyboard- and screen-reader-friendly, and on phones
+the controls grow to finger size.
+
 ### ✨ Effects
 
 <table>
@@ -337,7 +346,7 @@ The microphone needs `localhost` or HTTPS.
   - [x] Real-time voice engine: every change instant during playback
   - [x] Hear yourself live: monitoring with auto-tune, harmony and effects
   - [x] Clean-up and the beat's key shift live too, plus voice character (formant shift, robot, whisper)
-  - [ ] "Neon studio" UX: custom sliders with snapping, context cursors, LED meters
+  - [x] "Neon studio" UX: custom sliders with snapping, context cursors, LED meters
   - [ ] Metronome & grid, note editing (drag sung notes), play-the-keys harmony (MIDI keyboard)
 
 ## Credits & licenses
