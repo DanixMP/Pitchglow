@@ -380,13 +380,14 @@ src/
     recordings-list.ts    takes list items (play, rename, export, delete; + / drag into the open song)
     icons.ts              shared SVG icons, icon buttons, inline name inputs, take drag MIME type
     knob.ts               rotary knob (drag, wheel, arrows, double-click to reset)
+    popout.ts             pop-out inspector sections: floating, draggable, resizable windows; dock back; remembered
     slider.ts             Neon slider: enhances every range input in place (detents, fine drag, bubble, wheel)
     slider-math.ts        pure slider maths: positions, steps, detents, fill origin, relative drag
     captions.ts           word-by-word explainer captions over the roll
     colors.ts             lane/key color palette
     format.ts             time formatting
     panels/               each mounts onto existing markup, renders from the store, calls Session actions
-      layout.ts           phone tabs, tablet takes drawer (inert when closed, focus return)
+      layout.ts           phone tabs, tablet takes drawer (inert when closed, focus return), collapsible columns + rails
       header.ts           title cards / take name / recording timer
       live-controls.ts    Listen / Record, status line, first-run intro caption
       input-panel.ts      Mic / Demo tone, mic noise filter
@@ -417,11 +418,26 @@ tests/                    vitest unit tests (dsp, tracker, wav, packing, storage
 - 760–1099 px: center + inspector, with Takes as a slide-in drawer (☰ button, Esc/backdrop to close).
 - <760 px: the center fills the screen, and a bottom tab bar (Takes · Controls) opens a panel under the roll (max 44dvh); tapping the open tab collapses it.
 - The page itself never scrolls; columns scroll independently.
+- **Collapsible columns** (≥1100 px for Songs/Takes, ≥760 px for the inspector): « / » buttons in the column heads, or **[** / **]**, close a column to a 44 px **rail**.
+  - The left rail has an open button plus Songs/Takes buttons; the right rail has an open button and a vertical "Inspector" label.
+  - State: `state.layout = { leftCollapsed, rightCollapsed }`, in `localStorage['recorder.layout']`. Classes `.is-left-collapsed` / `.is-right-collapsed` on `#studio` switch the grid, with a short transition. Phones keep the tab bar.
+- **Pop-out sections** (`src/ui/popout.ts`): every inspector section (`details.section[id]`) gets a ⧉ button in its title.
+  - It moves the *same* element into a floating `.float-panel` (fixed, draggable by the title, resizable from the corner, click to bring to front), so every panel's bindings keep working.
+  - A dashed placeholder with a **Dock** button holds its place in the inspector. The dock icon in the window's title, or the placeholder, puts it back.
+  - A drag doesn't fold the section (its click is swallowed); a plain click still does. Windows stay on screen (clamped on drag and resize).
+  - A hidden section (e.g. Note outside note mode) hides its window too.
+  - Positions/widths are kept in `localStorage['recorder.popouts']`. They are measured with `offset*`, because the open animation scales the window; the height follows the content.
+  - Below 760 px everything docks (the remembered windows come back when wide again).
+  - Verified (synthetic + real pointer, real Chrome):
+    - a slider in a floating Effects window edits the track;
+    - a drag moves the window exactly and is remembered;
+    - after a reload it's back at the same place;
+    - on the phone viewport it docks, and on the wide one it floats again.
 
 Data flow: mic → live AudioWorklet (`PitchTracker` inside `LiveVoice`: downsample, YIN, median filter) → `PitchFrame { time, freq, midi, clarity, rms }` posted with its context frame → `Session.onFrame` → `PianoRoll.push()` → canvas drawn on each `requestAnimationFrame`. With "Hear myself" on, the same worklet's output (the processed voice) → monitor track chain → master.
 While recording, the same blocks and frames are also collected into a take. On Stop the take is saved to IndexedDB and opened in playback mode.
 
-Shortcuts: **R** = record/stop, **T** = auto-tune on/off, **Space** = play/pause and **A** = original/tuned (playback mode), **L** = loop on/off (song open), **M** = click on/off (song open), **Q** = align the selected take to the beat (playback), **N** = edit notes (then ↑/↓ pitch, Shift = 0.1 st, ←/→ next note, Delete reset, Esc done), **Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y** = undo/redo (song open).
+Shortcuts: **R** = record/stop, **T** = auto-tune on/off, **Space** = play/pause and **A** = original/tuned (playback mode), **L** = loop on/off (song open), **M** = click on/off (song open), **Q** = align the selected take to the beat (playback), **[** / **]** = close/open Songs+Takes / the inspector, **N** = edit notes (then ↑/↓ pitch, Shift = 0.1 st, ←/→ next note, Delete reset, Esc done), **Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y** = undo/redo (song open).
 
 ## Commands
 
@@ -682,3 +698,13 @@ The user asked for every setting to work in real time: hearing your voice proces
 - [x] Record key events into the track so playback/export reproduce them (plans per key slot, silent where fewer keys are held); key voices drawn on the roll
 - [ ] Real-world check (user): a real MIDI keyboard in Chrome/Edge, chords while singing with headphones, near vs as-played voicing
 - [ ] Later: overdub keys onto an existing track during playback (today keys are recorded with the take)
+
+---
+
+## UX round (after v3, 2026-10-15)
+
+The user asked for more UX work: first a collapsible Songs column, then pop-able inspector menus. They chose pop-out floating windows for the inspector sections, and a thin rail for a closed column.
+
+- [x] Songs & Takes column closes to a rail with one click (« / [ ); remembered
+- [x] Inspector closes to a rail too (» / ] ); each section pops out into a floating, draggable, resizable window and docks back with one click; remembered; docked on phones
+- [ ] Feel check (user): rail width, window placement, dragging on a trackpad

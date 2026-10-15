@@ -9,11 +9,13 @@ import {
   loadExportFormat,
   loadInput,
   loadKeys,
+  loadLayout,
   loadMetronome,
   loadTuning,
   type CleanupPrefs,
   type InputPrefs,
   type KeysPrefs,
+  type LayoutPrefs,
   type MetronomePrefs,
   type TuningPrefs,
 } from '../storage/settings';
@@ -90,6 +92,8 @@ export interface AppState {
   mobileTab: MobileTab;
   /** Tablet layout: takes drawer open. */
   takesDrawerOpen: boolean;
+  /** Desktop: Songs/Takes and the inspector closed to rails. */
+  layout: LayoutPrefs;
   /** Note editing on the roll (Phase 18): on/off and the selected note (index into the take's notes). */
   noteMode: boolean;
   selectedNote: number | null;
@@ -127,6 +131,7 @@ export function createAppStore(): AppStore {
     status: '',
     mobileTab: null,
     takesDrawerOpen: false,
+    layout: loadLayout(),
     noteMode: false,
     selectedNote: null,
   });

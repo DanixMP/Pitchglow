@@ -17,6 +17,7 @@ import { mountHeader } from './ui/panels/header';
 import { mountImportPanel } from './ui/panels/import-panel';
 import { mountInputPanel } from './ui/panels/input-panel';
 import { mountLayout } from './ui/panels/layout';
+import { mountPopouts } from './ui/popout';
 import { mountLiveControls } from './ui/panels/live-controls';
 import { mountOnboarding } from './ui/panels/onboarding';
 import { mountReadout } from './ui/panels/readout';
@@ -55,6 +56,7 @@ const transport = mountTransport(store, session, roll, captions);
 const readout = mountReadout(store, roll, session.player);
 mountOnboarding(store, captions);
 mountRollHover(roll, $<HTMLCanvasElement>('roll'));
+mountPopouts($('controls-col'));
 
 // Inspector settings changed: apply them (to the take, or the selected track of the open song),
 // then persist the *global* defaults (a track's own settings are saved with its song).
@@ -142,6 +144,10 @@ document.addEventListener('keydown', (e) => {
     session.toggleLoop();
   } else if (e.key === 'm' && s.projectId) {
     store.set((st) => ({ metronome: { ...st.metronome, on: !st.metronome.on } }));
+  } else if (e.key === '[') {
+    store.set((st) => ({ layout: { ...st.layout, leftCollapsed: !st.layout.leftCollapsed } }));
+  } else if (e.key === ']') {
+    store.set((st) => ({ layout: { ...st.layout, rightCollapsed: !st.layout.rightCollapsed } }));
   } else if (e.key === 'n' && s.projectId && s.mode === 'playback') {
     session.toggleNoteMode();
   } else if (e.key === 'q' && s.projectId && s.mode === 'playback' && s.selectedTrackId) {

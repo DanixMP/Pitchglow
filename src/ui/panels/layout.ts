@@ -1,7 +1,9 @@
 // Responsive shell: 3 columns on desktop, takes drawer on tablet, bottom tab bar on phones.
+// Desktop columns close to a thin rail with one click ([ and ] too), remembered per browser.
 // Only toggles classes/ARIA; the actual layout is in style.css.
 
 import type { AppStore, MobileTab } from '../../app/state';
+import { saveLayout } from '../../storage/settings';
 import { $, $$ } from '../dom';
 
 export function mountLayout(store: AppStore): void {
@@ -24,6 +26,34 @@ export function mountLayout(store: AppStore): void {
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && store.get().takesDrawerOpen) store.set({ takesDrawerOpen: false });
   });
+
+  // Collapsible columns.
+  const setLayout = (patch: Partial<ReturnType<AppStore['get']>['layout']>) => store.set((s) => ({ layout: { ...s.layout, ...patch } }));
+  $('left-collapse').addEventListener('click', () => setLayout({ leftCollapsed: true }));
+  $('left-open').addEventListener('click', () => setLayout({ leftCollapsed: false }));
+  for (const b of $$<HTMLButtonElement>('[data-rail-open]')) {
+    b.addEventListener('click', () => {
+      setLayout({ leftCollapsed: false });
+      if (b.dataset.railOpen === 'takes') $('takes-search').focus({ preventScroll: true });
+      else $('song-new').focus({ preventScroll: true });
+    });
+  }
+  $('right-collapse').addEventListener('click', () => setLayout({ rightCollapsed: true }));
+  $('right-open').addEventListener('click', () => setLayout({ rightCollapsed: false }));
+  store.watch(
+    (s) => s.layout,
+    (layout) => {
+      studio.classList.toggle('is-left-collapsed', layout.leftCollapsed);
+      studio.classList.toggle('is-right-collapsed', layout.rightCollapsed);
+      for (const [id, open] of [['left-collapse', !layout.leftCollapsed], ['left-open', !layout.leftCollapsed], ['right-collapse', !layout.rightCollapsed], ['right-open', !layout.rightCollapsed]] as const) {
+        $(id).setAttribute('aria-expanded', String(open));
+      }
+      saveLayout(layout);
+    },
+  );
+  const initial = store.get().layout;
+  studio.classList.toggle('is-left-collapsed', initial.leftCollapsed);
+  studio.classList.toggle('is-right-collapsed', initial.rightCollapsed);
 
   store.watch(
     (s) => s.mobileTab,

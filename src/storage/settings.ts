@@ -198,6 +198,33 @@ export function saveKeys(prefs: KeysPrefs): void {
   }
 }
 
+// --- layout -------------------------------------------------------------------------------------
+
+/** Desktop columns closed to a rail (remembered per browser). */
+export interface LayoutPrefs {
+  leftCollapsed: boolean;
+  rightCollapsed: boolean;
+}
+
+const LAYOUT_KEY = 'recorder.layout';
+
+export function loadLayout(): LayoutPrefs {
+  try {
+    const raw = JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? 'null') as Partial<LayoutPrefs> | null;
+    return { leftCollapsed: raw?.leftCollapsed === true, rightCollapsed: raw?.rightCollapsed === true };
+  } catch {
+    return { leftCollapsed: false, rightCollapsed: false };
+  }
+}
+
+export function saveLayout(prefs: LayoutPrefs): void {
+  try {
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify(prefs));
+  } catch {
+    // Storage unavailable: the layout just won't be remembered.
+  }
+}
+
 // --- export format ----------------------------------------------------------------------------
 
 const EXPORT_KEY = 'recorder.exportFormat';

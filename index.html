@@ -16,6 +16,19 @@
   </head>
   <body>
     <div id="studio" class="studio">
+      <!-- Left rail: what stays of Songs/Takes when that column is closed (desktop) -->
+      <nav id="rail-left" class="rail rail-left" aria-label="Songs and takes (closed)">
+        <button id="left-open" class="icon-btn rail-btn" type="button" aria-label="Open songs and takes" aria-controls="takes-col" aria-expanded="false" title="Open songs and takes ( [ )">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.4 7.4 7.8 6l6 6-6 6-1.4-1.4L11 12zm6 0L13.8 6l6 6-6 6-1.4-1.4L17 12z"/></svg>
+        </button>
+        <button class="icon-btn rail-btn" type="button" data-rail-open="songs" aria-label="Songs" title="Songs">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3z"/></svg>
+        </button>
+        <button class="icon-btn rail-btn" type="button" data-rail-open="takes" aria-label="Takes" title="Takes">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11z"/></svg>
+        </button>
+      </nav>
+
       <!-- Left column: songs + takes library (desktop), drawer (tablet), tab panel (phone) -->
       <aside id="takes-col" class="col col-left" aria-label="Songs and takes">
         <section class="side-section" aria-labelledby="songs-title">
@@ -29,6 +42,9 @@
               <button id="song-new" class="btn btn-small" type="button">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></svg>
                 <span>New song</span>
+              </button>
+              <button id="left-collapse" class="icon-btn col-collapse" type="button" aria-label="Close songs and takes" aria-controls="takes-col" aria-expanded="true" title="Close this column ( [ )">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.6 7.4 16.2 6l-6 6 6 6 1.4-1.4-4.6-4.6zM11.6 7.4 10.2 6l-6 6 6 6 1.4-1.4L7 12z"/></svg>
               </button>
               <button id="takes-close" class="icon-btn drawer-close" type="button" aria-label="Close panel">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19l5.6-5.6 5.6 5.6 1.4-1.4-5.6-5.6L19 6.4 17.6 5 12 10.6z"/></svg>
@@ -168,6 +184,12 @@
 
       <!-- Right column: inspector (desktop/tablet), tab panel (phone) -->
       <aside id="controls-col" class="col col-right" aria-label="Controls">
+        <div class="col-head inspector-head">
+          <h2 class="col-title">Inspector</h2>
+          <button id="right-collapse" class="icon-btn col-collapse" type="button" aria-label="Close the inspector" aria-controls="controls-col" aria-expanded="true" title="Close this column ( ] ); pop single sections out with their ⧉ button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.4 7.4 7.8 6l6 6-6 6-1.4-1.4L11 12zm6 0L13.8 6l6 6-6 6-1.4-1.4L17 12z"/></svg>
+          </button>
+        </div>
         <details id="note-panel" class="section" open hidden>
           <summary class="section-head">Note</summary>
           <div class="section-body">
@@ -198,7 +220,7 @@
           </div>
         </details>
 
-        <details class="section" open>
+        <details id="input-panel" class="section" open>
           <summary class="section-head">Input</summary>
           <div class="section-body">
             <div class="source" role="radiogroup" aria-label="Input">
@@ -426,6 +448,14 @@
           <span>Controls</span>
         </button>
       </nav>
+      <!-- Right rail: what stays of the inspector when it is closed -->
+      <nav id="rail-right" class="rail rail-right" aria-label="Inspector (closed)">
+        <button id="right-open" class="icon-btn rail-btn" type="button" aria-label="Open the inspector" aria-controls="controls-col" aria-expanded="false" title="Open the inspector ( ] )">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.6 7.4 16.2 6l-6 6 6 6 1.4-1.4-4.6-4.6zM11.6 7.4 10.2 6l-6 6 6 6 1.4-1.4L7 12z"/></svg>
+        </button>
+        <span class="rail-label" aria-hidden="true">Inspector</span>
+      </nav>
+
       <div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
     </div>
     <input id="beat-file" type="file" accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg,.oga,.opus,.flac,.webm,.recsong" hidden />
