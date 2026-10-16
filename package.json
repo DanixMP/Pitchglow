@@ -1,11 +1,11 @@
 {
-  "name": "recorder",
-  "productName": "Recorder",
+  "name": "pitchglow",
+  "productName": "PitchGlow",
   "private": true,
   "version": "0.1.0",
-  "description": "Record your voice, see it on piano-key lanes, and auto-tune it to any scale.",
+  "description": "Sing, see your voice as a glowing pitch line on piano lanes, and auto-tune it live: harmonies, voice effects and a mini studio.",
   "author": "DanixMP",
-  "homepage": "https://github.com/DanixMP/Recorder",
+  "homepage": "https://github.com/DanixMP/PitchGlow",
   "license": "MIT",
   "type": "module",
   "main": "electron/main.cjs",
@@ -37,8 +37,8 @@
     "@breezystack/lamejs": "^1.2.7"
   },
   "build": {
-    "appId": "io.github.danixmp.recorder",
-    "productName": "Recorder",
+    "appId": "io.github.danixmp.pitchglow",
+    "productName": "PitchGlow",
     "copyright": "Copyright © 2026 DanixMP",
     "directories": {
       "output": "release",
@@ -73,12 +73,12 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Recorder",
+      "shortcutName": "PitchGlow",
       "license": "LICENSE",
-      "artifactName": "Recorder-Setup-${version}.${ext}"
+      "artifactName": "PitchGlow-Setup-${version}.${ext}"
     },
     "portable": {
-      "artifactName": "Recorder-${version}-portable.${ext}"
+      "artifactName": "PitchGlow-${version}-portable.${ext}"
     },
     "mac": {
       "icon": "build/icon.png",
@@ -86,9 +86,9 @@
       "target": [
         "dmg"
       ],
-      "artifactName": "Recorder-${version}-${arch}.${ext}",
+      "artifactName": "PitchGlow-${version}-${arch}.${ext}",
       "extendInfo": {
-        "NSMicrophoneUsageDescription": "Recorder listens to your voice to draw its pitch and tune it."
+        "NSMicrophoneUsageDescription": "PitchGlow listens to your voice to draw its pitch and tune it."
       }
     },
     "linux": {
@@ -97,12 +97,12 @@
       "target": [
         "AppImage"
       ],
-      "artifactName": "Recorder-${version}-${arch}.${ext}"
+      "artifactName": "PitchGlow-${version}-${arch}.${ext}"
     },
     "publish": {
       "provider": "github",
       "owner": "DanixMP",
-      "repo": "Recorder",
+      "repo": "PitchGlow",
       "releaseType": "draft"
     }
   }

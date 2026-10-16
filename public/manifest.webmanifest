@@ -1,6 +1,6 @@
 {
-  "name": "Recorder — Auto-Tune Voice Recorder",
-  "short_name": "Recorder",
+  "name": "PitchGlow — sing, see and auto-tune your voice",
+  "short_name": "PitchGlow",
   "description": "Record your voice, see it on piano-key lanes, and auto-tune it to any scale.",
   "start_url": "./",
   "scope": "./",

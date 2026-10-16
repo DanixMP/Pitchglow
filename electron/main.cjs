@@ -1,4 +1,4 @@
-// Desktop app (Electron): a window around the built web app (dist/).
+// PitchGlow desktop app (Electron): a window around the built web app (dist/).
 //
 // The app is served from a privileged `app://recorder/` scheme rather than file://, so the page is a
 // secure origin like the website: microphone, AudioWorklets and module workers load normally and
@@ -11,6 +11,7 @@
 //   npm run dist:win        build the Windows installer + portable .exe into release/
 
 const { app, BrowserWindow, Menu, net, protocol, session, shell, systemPreferences } = require('electron');
+const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
@@ -18,6 +19,16 @@ const SCHEME = 'app';
 const ORIGIN = `${SCHEME}://recorder`;
 const DIST = path.join(__dirname, '..', 'dist');
 const devUrl = process.argv.find((a) => a.startsWith('--dev-url='))?.slice('--dev-url='.length) ?? null;
+
+// The app was called "Recorder" in v0.1.0: keep using that profile (songs, takes, settings) when
+// it has data and PitchGlow's has none yet. (Electron creates the userData folder before this runs,
+// so look for the song database rather than the folder.) The app:// host also stays "recorder", so
+// the stored data keeps the same origin.
+{
+  const hasData = (dir) => fs.existsSync(path.join(dir, 'IndexedDB'));
+  const legacy = path.join(app.getPath('appData'), 'Recorder');
+  if (!hasData(app.getPath('userData')) && hasData(legacy)) app.setPath('userData', legacy);
+}
 
 protocol.registerSchemesAsPrivileged([
   { scheme: SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true, codeCache: true } },
@@ -76,7 +87,7 @@ async function start() {
     height: 900,
     minWidth: 380,
     minHeight: 600,
-    title: 'Recorder',
+    title: 'PitchGlow',
     backgroundColor: '#08080a',
     show: false,
     autoHideMenuBar: true,

@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🎙️ Recorder
+# ✨ PitchGlow
 
 ### Sing, see your pitch as a glowing line, and auto-tune it in real time.
 
@@ -198,9 +198,9 @@ Prefer a normal app to a browser tab? Download it from the repository's **Releas
 
 | System | File |
 |---|---|
-| Windows | `Recorder-Setup-<version>.exe` (installer: Start-menu and desktop shortcuts, uninstaller) or `Recorder-<version>-portable.exe` (no install) |
-| macOS | `Recorder-<version>-<arch>.dmg` |
-| Linux | `Recorder-<version>-x86_64.AppImage` |
+| Windows | `PitchGlow-Setup-<version>.exe` (installer: Start-menu and desktop shortcuts, uninstaller) or `PitchGlow-<version>-portable.exe` (no install) |
+| macOS | `PitchGlow-<version>-<arch>.dmg` |
+| Linux | `PitchGlow-<version>-x86_64.AppImage` |
 
 It's the same app in an [Electron](https://www.electronjs.org/) window, working fully offline. Your songs are kept
 in the app's own storage, separate from the browser's. The builds aren't code-signed yet, so Windows

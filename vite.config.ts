@@ -76,7 +76,7 @@ self.addEventListener('fetch', (event) => {
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string };
 
 export default defineConfig(({ mode }) => ({
-  // Relative base so the build works from any sub-path (e.g. GitHub Pages /Recorder/).
+  // Relative base so the build works from any sub-path (e.g. GitHub Pages /PitchGlow/).
   base: './',
   // Shown in the About panel.
   define: { __APP_VERSION__: JSON.stringify(pkg.version) },

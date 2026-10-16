@@ -65,17 +65,17 @@ export function unpackSong(bytes: Uint8Array): SongPackage {
   try {
     files = readZip(bytes);
   } catch {
-    throw new Error('This isn’t a song file saved by Recorder.');
+    throw new Error('This isn’t a song file saved by PitchGlow (or Recorder, its earlier name).');
   }
   const json = files.get('song.json');
   let manifest: Manifest;
   try {
     manifest = JSON.parse(new TextDecoder().decode(json)) as Manifest;
   } catch {
-    throw new Error('This isn’t a song file saved by Recorder.');
+    throw new Error('This isn’t a song file saved by PitchGlow (or Recorder, its earlier name).');
   }
-  if (manifest?.format !== FORMAT || !Array.isArray(manifest.project?.tracks)) throw new Error('This isn’t a song file saved by Recorder.');
-  if (manifest.version > VERSION) throw new Error('This song file was saved by a newer version of Recorder.');
+  if (manifest?.format !== FORMAT || !Array.isArray(manifest.project?.tracks)) throw new Error('This isn’t a song file saved by PitchGlow (or Recorder, its earlier name).');
+  if (manifest.version > VERSION) throw new Error('This song file was saved by a newer version of PitchGlow.');
   const need = (name: string) => {
     const data = files.get(name);
     if (!data) throw new Error(`The song file is missing ${name}.`);
