@@ -1,6 +1,6 @@
 <div align="center">
 
-# ✨ PitchGlow
+# PitchGlow
 
 ### Sing, see your pitch as a glowing line, and auto-tune it in real time.
 
