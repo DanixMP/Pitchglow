@@ -1,4 +1,6 @@
-# Recorder — Voice Recorder + Auto-Tune with Piano-Roll Visualization
+# PitchGlow — Voice Recorder + Auto-Tune with Piano-Roll Visualization
+
+The app is called **PitchGlow** (it was "Recorder" until v0.1.0; the repo is `DanixMP/PitchGlow`). Every user-facing name says PitchGlow. Internal identifiers keep the old name on purpose, so existing data stays reachable: the IndexedDB database `recorder`, the `recorder.*` localStorage keys, the desktop app's `app://recorder` origin, the `.recsong` extension, and `window.recorder` (dev hook). The desktop app keeps using a v0.1.0 `%APPDATA%/Recorder` profile when that one has a song database (`IndexedDB`) and PitchGlow's has none. (Electron creates the userData folder before `main.cjs` runs, so "the folder exists" can't be the test.) Verified with the packaged app: it opened the old profile's database and wrote nothing new under `%APPDATA%/PitchGlow`.
 
 ## Goal
 
@@ -421,12 +423,12 @@ tests/                    vitest unit tests (dsp, tracker, wav, packing, storage
   - Keys **1–5**; a caption names the mode; `state.workspace` in `localStorage['recorder.workspace']`; `body[data-workspace]` for mode-specific CSS. Phones show icons with the active mode's label.
   - Verified in Chrome: each mode shows exactly its sections and mixer state; Edit toggles note mode both ways.
 - **Desktop app (Electron)** (`electron/main.cjs`, `electron-builder` config in `package.json` → `build`):
-  - The built `dist/` is served on a privileged **`app://recorder/`** scheme (`protocol.handle` + `net.fetch`, no path escape), not file://. So it's a secure origin: the mic, AudioWorklets and module workers load, and IndexedDB persists in the app's own profile (`%APPDATA%/Recorder`).
+  - The built `dist/` is served on a privileged **`app://recorder/`** scheme (`protocol.handle` + `net.fetch`, no path escape), not file://. So it's a secure origin: the mic, AudioWorklets and module workers load, and IndexedDB persists in the app's own profile (`%APPDATA%/PitchGlow`; an existing v0.1.0 `%APPDATA%/Recorder` profile is reused).
   - Permissions: microphone (audio only) and MIDI; everything else denied. Other-site links open in the default browser (window-open handler + `will-navigate`).
   - Single instance; no menu bar on Windows/Linux; `backgroundThrottling: false`; macOS asks for the mic (`NSMicrophoneUsageDescription`).
   - `pwa.ts` skips the service worker and the Install button inside Electron (service workers aren't available on `app://`).
   - `@breezystack/lamejs` moved to devDependencies (Vite bundles it), so the package has no runtime `node_modules`.
-  - Targets: Windows NSIS installer (`Recorder-Setup-<v>.exe`: per-user, choose folder, shortcuts, MIT license page) + portable exe; macOS dmg; Linux AppImage. Output in `release/` (gitignored). Icon `build/icon.png` (512 px).
+  - Targets: Windows NSIS installer (`PitchGlow-Setup-<v>.exe`: per-user, choose folder, shortcuts, MIT license page) + portable exe; macOS dmg; Linux AppImage. Output in `release/` (gitignored). Icon `build/icon.png` (512 px).
   - **Releases:** `.github/workflows/release.yml` runs on a `v*` tag (or by hand with an existing tag): Windows/macOS/Linux runners do `npm ci`, test, build, `electron-builder --publish never` and upload their files as artifacts. Then one `release` job creates **a single draft** release with all installers (`softprops/action-gh-release`; unsigned: `CSC_IDENTITY_AUTO_DISCOVERY=false`).
     - Fix after v0.1.0: when each job published by itself (`--publish always`), they raced and made two drafts (the dmg landed in its own).
   - Verified: `npm run dist:win` built both exes (~111 MB). The packaged app, driven over DevTools:

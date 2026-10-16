@@ -189,7 +189,7 @@ export function mountAbout(): void {
       if (!est?.usage) throw new Error();
       const mb = est.usage / (1024 * 1024);
       const persisted = (await navigator.storage.persisted?.()) ? ', protected from automatic clean-up' : '';
-      el.textContent = `This device holds ${mb < 1 ? `${Math.max(1, Math.round(est.usage / 1024))} KB` : `${mb.toFixed(1)} MB`} of Recorder data${persisted}.`;
+      el.textContent = `This device holds ${mb < 1 ? `${Math.max(1, Math.round(est.usage / 1024))} KB` : `${mb.toFixed(1)} MB`} of PitchGlow data${persisted}.`;
     } catch {
       el.textContent = 'Your takes and songs are stored in this browser only.';
     }

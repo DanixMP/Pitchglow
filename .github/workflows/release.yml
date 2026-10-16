@@ -65,14 +65,14 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
-          name: Recorder ${{ inputs.tag || github.ref_name }}
+          name: PitchGlow ${{ inputs.tag || github.ref_name }}
           draft: true
           generate_release_notes: true
           body: |
             ## Download
-            - **Windows:** `Recorder-Setup-*.exe` (installer) or `Recorder-*-portable.exe` (no install)
-            - **macOS (Apple silicon):** `Recorder-*-arm64.dmg`
-            - **Linux:** `Recorder-*-x86_64.AppImage`
+            - **Windows:** `PitchGlow-Setup-*.exe` (installer) or `PitchGlow-*-portable.exe` (no install)
+            - **macOS (Apple silicon):** `PitchGlow-*-arm64.dmg`
+            - **Linux:** `PitchGlow-*-x86_64.AppImage`
 
             The builds aren't code-signed yet: on Windows choose *More info → Run anyway*; on macOS right-click the app → *Open* the first time.
           files: files/*
