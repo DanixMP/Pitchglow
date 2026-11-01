@@ -53,7 +53,7 @@ Pick a **key and scale**: out-of-scale lanes disappear, and the keyboard shows t
   settings glide into each note and let vibrato through.
 - **Scales:** Chromatic, Major, Minor, Harmonic minor, Major/Minor pentatonic and Blues, in any key.
 
-### 🎶 One voice, many notes: the harmonizer
+### 🎶 One voice, many notes: the harmonizerr
 
 Stack harmony voices a 3rd, 5th or octave above or below your **auto-tuned** melody. They move by
 *scale steps*, so harmonies stay in key, and every voice gets its own glowing line.
